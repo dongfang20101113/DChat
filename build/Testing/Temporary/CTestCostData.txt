@@ -1,0 +1,10 @@
+protocol_tests 2 0.0039163
+render_tests 2 0.0033724
+rounded_tests 2 0.0062619
+bubble_tests 2 0.00706585
+image_preview_tests 2 0.00496725
+history_tests 2 0.00358325
+server_command_tests 2 0.0035104
+auth_tests 2 0.0242488
+file_transfer_tests 2 0.0042597
+---

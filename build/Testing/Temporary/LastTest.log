@@ -1,0 +1,616 @@
+Start testing: Sep 25 05:12 �й���׼ʱ��
+----------------------------------------------------------
+1/9 Testing: protocol_tests
+1/9 Test: protocol_tests
+Command: "D:/codes/dchat/build/test_protocol.exe"
+Directory: D:/codes/dchat/build
+"protocol_tests" start time: Sep 25 05:12 �й���׼ʱ��
+Output:
+----------------------------------------------------------
+== dchat protocol tests ==
+[1] parsing
+  ok   command and text are split
+  ok   command is uppercased, rest is trimmed
+  ok   words split keeps inner spacing inside each word
+  ok   rest preserves inner spaces
+  ok   blank line yields empty command
+  ok   trailing carriage return is ignored
+[2] building lines
+  ok   command is uppercased
+  ok   newlines are stripped
+  ok   invalid command name is rejected
+  ok   带下划线的命令名可以构造
+  ok   FILE_DATA 也能构造
+  ok   FILE_END 也能构造
+  ok   命令名里的数字也可以
+  ok   连字符仍然算非法命令名
+  ok   empty command is rejected
+  ok   line length is capped
+[3] nickname rules
+  ok   surrounding spaces are trimmed
+  ok   empty nickname is rejected
+  ok   inner space is rejected
+  ok   colon is rejected
+  ok   13 characters is too long
+  ok   12 characters is fine
+  ok   chinese nickname is allowed
+  ok   utf-8 character counting
+  ok   utf-8 truncate keeps whole characters
+[4] stream framing
+  ok   first line extracted without CR
+  ok   second line extracted
+  ok   partial line is buffered
+  ok   line completed by later chunk
+  ok   buffer is empty afterwards
+  ok   healthy stream is not flagged
+  ok   over-long line without terminator is flagged
+  ok   line at the size limit is accepted
+[5] message builders
+  ok   say message format
+  ok   joined message format
+  ok   error text is utf-8 chinese
+
+36 checks, 0 failures
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"protocol_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"protocol_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/9 Testing: render_tests
+2/9 Test: render_tests
+Command: "D:/codes/dchat/build/test_render.exe"
+Directory: D:/codes/dchat/build
+"render_tests" start time: Sep 25 05:12 �й���׼ʱ��
+Output:
+----------------------------------------------------------
+== dchat render tests ==
+[1] SAY 解析（气泡靠左还是靠右就靠这里）
+  ok   普通 SAY 能解析
+  ok   昵称与正文分离
+  ok   别人的消息不是自己的（气泡靠左）
+  ok   没有时间字段时 time 为空
+  ok   带时间戳的 SAY 能解析
+  ok   时间/昵称/正文都正确
+  ok   自己的 SAY 能解析
+  ok   自己发的消息标记为 own（气泡靠右）
+  ok   非 SAY 行不会被当成消息
+  ok   缺少昵称的 SAY 解析失败
+[2] @提及判定
+  ok   普通提及
+  ok   开头提及
+  ok   后接中文标点也算（中文不用空格分词）
+  ok   后接中文也算
+  ok   不区分大小写
+  ok   中文昵称也能被提及
+  ok   @alicex 不算提及 alice
+  ok   邮箱式写法不算
+  ok   没有 @ 就不算
+  ok   自己昵称为空时不算
+  ok   @all 命中且不区分大小写
+  ok   @allx 与邮箱写法不算 @all
+[3] 解析出的提及标记
+  ok   被 @ 的消息标记 mention（气泡高亮）
+  ok   @all 也算提及
+  ok   普通消息不标记 mention
+  ok   没有提到我时不标记（同一条消息旁观者视角）
+  ok   自己 @ 自己算自己的消息，不提醒自己
+  ok   MentionsMe 认出给我的消息
+  ok   系统消息不算给我的
+[4] 系统提示解析
+  ok   欢迎语
+  ok   加入通知
+  ok   离开通知
+  ok   在线名单
+  ok   系统消息
+  ok   公告被识别为公告并保留时间与内容
+  ok   错误消息被标记为 error
+  ok   登录成功提示被识别为通知并带出用户名
+  ok   PONG
+  ok   未知命令按原文显示
+  ok   空行不产生提示
+  ok   没有时间字段也能解析
+[5] 昵称配色稳定性
+  ok   同一个昵称始终是同一个颜色
+  ok   颜色下标始终落在调色板范围内
+  ok   不同昵称多数会分到不同颜色
+[6] 未读提示规则
+  ok   窗口不在前台时计入未读
+  ok   窗口在前台时不计未读
+  ok   不在前台 + 有人叫我 → 闪任务栏
+  ok   不在前台但只是普通消息 → 不闪
+  ok   已经在看就不必闪
+  ok   无未读时标题不变
+  ok   有未读时标题前置计数
+
+51 checks, 0 failures
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"render_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"render_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/9 Testing: rounded_tests
+3/9 Test: rounded_tests
+Command: "D:/codes/dchat/build/test_rounded.exe"
+Directory: D:/codes/dchat/build
+"rounded_tests" start time: Sep 25 05:12 �й���׼ʱ��
+Output:
+----------------------------------------------------------
+== rounded control tests ==
+[1] 胶囊按钮：圆角外面不能残留旧内容
+  ok   画布上不再有任何哨兵色像素（底色铺满）
+  ok   左上角是背景色（不是方块残留）
+  ok   右上角是背景色
+  ok   左下角是背景色
+  ok   右下角是背景色
+  ok   中心是填充色
+  ok   左端中点附近已是填充色（胶囊形状画到了边缘）
+[2] 圆角半径自适应
+  ok   半径 8 时底色依然铺满
+  ok   半径 8 时左上角仍是背景色
+  ok   半径 8 时中心仍是填充色
+  ok   半径超出可用范围时自动夹到上限，也不会漏底
+  ok   半径夹到上限后左上角仍是背景色
+[3] 圆角外框（记录区/输入框用）
+  ok   只画边框：内部保持原样
+  ok   只画边框：圆角外不改动画布
+  ok   边框确实画出来了（有足够多的非背景像素）
+
+15 checks, 0 failures
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"rounded_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"rounded_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/9 Testing: bubble_tests
+4/9 Test: bubble_tests
+Command: "D:/codes/dchat/build/test_bubble.exe"
+Directory: D:/codes/dchat/build
+"bubble_tests" start time: Sep 25 05:12 �й���׼ʱ��
+Output:
+----------------------------------------------------------
+== dchat bubble tests ==
+[1] 左右对齐（微信式布局）
+  ok   自己的消息贴右边距
+  ok   自己的消息位于右半边
+  ok   别人的消息贴左边距
+  ok   别人的消息位于左半边
+  ok   系统提示左右居中
+  ok   气泡从给定行位置开始（逐条向下排）
+[2] 尺寸与内边距
+  ok   高度 = 文字高 + 上下内边距
+  ok   文字左右各留 paddingX 内边距
+  ok   极短文字也保证最小宽度
+  ok   超长文字被夹到宽度上限
+  ok   夹取后仍在视口内
+  ok   宽度上限大于视口时也不越界
+[3] 换行测量
+  ok   短文本一行内测出合理尺寸
+  ok   长文本换行后高度变大
+  ok   换行后宽度不超过限制
+  ok   空文本也占一行高度
+  ok   宽度为 0 时返回空尺寸
+[4] 系统提示要比正文更紧凑
+  ok   系统提示字号更小（负值越大字越小）
+  ok   系统提示的内边距更小
+  ok   同样文字下系统提示占的高度更小
+  ok   同样文字下系统提示的宽度更小
+[5] 全服公告要比正文更大
+  ok   公告字号更大
+  ok   公告留白更多
+  ok   公告可以更宽
+  ok   同样文字下公告更高（字更大、留白更多）
+  ok   公告居中显示
+
+26 checks, 0 failures
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"bubble_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"bubble_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/9 Testing: image_preview_tests
+5/9 Test: image_preview_tests
+Command: "D:/codes/dchat/build/test_image_preview.exe"
+Directory: D:/codes/dchat/build
+"image_preview_tests" start time: Sep 25 05:12 �й���׼ʱ��
+Output:
+----------------------------------------------------------
+== dchat image preview tests ==
+[1] 图片类型
+  ok   png
+  ok   扩展名大小写不敏感
+  ok   带路径、中文名也行
+  ok   bmp / webp / gif 都算图片
+  ok   txt 不是图片
+  ok   没有扩展名不是图片
+  ok   只有扩展名本身（没点）不算
+[2] 视频类型
+  ok   mp4
+  ok   mkv，大小写不敏感
+  ok   webm / avi
+  ok   以 .txt 结尾就不算视频
+  ok   视频不算图片
+[3] 能不能预览
+  ok   图片和视频都能预览
+  ok   压缩包 / 可执行文件不预览
+
+14 checks, 0 failures
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"image_preview_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"image_preview_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/9 Testing: history_tests
+6/9 Test: history_tests
+Command: "D:/codes/dchat/build/test_history.exe"
+Directory: D:/codes/dchat/build
+"history_tests" start time: Sep 25 05:12 �й���׼ʱ��
+Output:
+----------------------------------------------------------
+== dchat input history tests ==
+[1] 没有历史时按上键无效
+  ok   空历史按上键返回 false
+  ok   空历史按上键不改动输入框
+  ok   没在翻历史时按下键也不动
+  ok   历史条数为 0
+[2] 发一条之后能按上键取回
+  ok   按上键取到内容
+  ok   取回的正是刚发的那条
+  ok   只有一条时再按上键无效（第一条则无效）
+  ok   无效时输入框内容保持不变
+  ok   按上键后按下键回到空草稿
+[3] 连续按上键依次往前翻
+  ok   第一次按上键是最新一条
+  ok   再按是上一条
+  ok   再按是最旧一条
+  ok   最旧一条时再按无效
+  ok   下键往回翻
+  ok   继续下键到最新一条
+[4] 草稿会被保留
+  ok   上键取到历史消息
+  ok   翻回底部恢复草稿
+  ok   再次上键仍是历史消息
+  ok   新草稿被正确记住
+[5] 发送后从最新一条重新开始
+  ok   先翻到旧消息
+  ok   发送后按上键是最新发的
+  ok   下键回到草稿（发送后草稿是空的）
+[6] 边界情况
+  ok   空字符串不会进历史
+  ok   历史条数有上限（不会无限增长）
+  ok   上键取到的是最新一条
+  ok   一直按上键停在最旧保留的那条（不会越界）
+  ok   重置浏览状态后仍能正常取历史
+
+27 checks, 0 failures
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"history_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"history_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/9 Testing: server_command_tests
+7/9 Test: server_command_tests
+Command: "D:/codes/dchat/build/test_server_command.exe"
+Directory: D:/codes/dchat/build
+"server_command_tests" start time: Sep 25 05:12 �й���׼ʱ��
+Output:
+----------------------------------------------------------
+== dchat server command tests ==
+[1] /ban：带时间与不带时间（永久）
+  ok   /ban alice 1h 解析正确
+  ok   不给时长就是永久封禁
+  ok   永久封禁不报错
+  ok   /ban 缺昵称给出提示
+  ok   时长里带空格时提示写法
+  ok   无法识别的单位会报错
+[2] /op 与 /deop
+  ok   /op 解析正确
+  ok   /op 缺昵称给出提示
+  ok   /deop 支持中文昵称
+  ok   /deop 缺昵称给出提示
+[3] /kick 与 /unban
+  ok   /kick 解析正确
+  ok   /kick 缺昵称给出提示
+  ok   /unban 解析正确
+  ok   /unban 缺昵称给出提示
+[3.5] /say 全服公告
+  ok   /say 解析正确
+  ok   公告内容完整（含空格）
+  ok   公告内部空格保留，首尾空格去掉
+  ok   /say 没内容时给出用法提示
+  ok   /say 也算命令
+  ok   /say 大小写不敏感
+  ok   '/' 不在首位 → 普通消息
+[4] 哪些内容会被当成指令
+  ok   以 / 开头 → 命令
+  ok   大小写不敏感
+  ok   /op 也算命令
+  ok   指令名打错（/bann）也算命令尝试，不会当成聊天发出去
+  ok   任何 / 开头的内容都算命令尝试
+  ok   没有 / 开头 → 普通消息
+  ok   / 不在首位 → 普通消息
+  ok   空消息不是命令
+  ok   打错的指令名给出未知指令提示
+  ok   指令名对但参数不对：算已知指令，给出用法提示
+[5] 时长写法
+  ok   30s 解析为 30 秒
+  ok   10m 解析为 600 秒
+  ok   2h 解析为 7200 秒
+  ok   1d 解析为 86400 秒
+  ok   1w 解析为 604800 秒
+  ok   1h30m 解析为 5400 秒
+  ok   1d12h 解析为 129600 秒
+  ok   2w3d 解析为 1468800 秒
+  ok   90 解析为 90 秒
+  ok   1h30 解析为 3630 秒
+  ok   1W 解析为 604800 秒
+  ok   10M 解析为 600 秒
+  ok   拒绝非法时长 (空)
+  ok   拒绝非法时长 abc
+  ok   拒绝非法时长 1x
+  ok   拒绝非法时长 0s
+  ok   拒绝非法时长 -5s
+  ok   拒绝非法时长 s10
+  ok   拒绝非法时长 1h30x
+  ok   拒绝非法时长 12.5m
+  ok   拒绝非法时长 200y
+[6] 时长与封禁显示
+  ok   5400 秒
+  ok   永久封禁显示为「永久」
+  ok   45 秒
+  ok   1 周
+[7] 其它指令与容错
+  ok   /help
+  ok   /bans
+  ok   /ops 列出管理员名单
+  ok   /oplist 是 /ops 的别名
+  ok   控制台里不带 / 也能用
+  ok   控制台里不带 / 也能用
+  ok   未知指令给出提示
+  ok   指令大小写不敏感，昵称保持原样
+  ok   空行不产生指令
+  ok   帮助里包含 /op 与 /deop
+  ok   帮助里包含 /ops
+  ok   帮助里说明了永久封禁
+  ok   帮助里说明了时长单位
+  ok   开头的 UTF-8 BOM 不影响解析
+[8] /changepassword
+  ok   一个参数 = 改自己的密码
+  ok   改自己的密码不是控制台专用
+  ok   改自己的密码不需要管理员权限
+  ok   两个参数 = 给指定账号改密码
+  ok   给别的账号改密码标记为仅控制台可用
+  ok   这条走的是控制台路径，不需要聊天框管理员权限
+  ok   不给参数时提示用法
+  ok   参数太多时提示用法（密码里不能有空格）
+  ok   密码太短时给出密码规则，而不是权限问题
+  ok   参数写错时也按自助指令处理，先报真实原因
+  ok   参数太多时也按自助指令处理
+  ok   密码里带空格时被拒绝
+  ok   指令大小写不敏感，密码保持原样
+  ok   keyword 用于日志（不会记录密码）
+  ok   控制台里不带 / 也能用
+  ok   帮助里包含 /changepassword
+  ok   识别出改自己的密码
+  ok   大小写不敏感
+  ok   参数不合规则也照样识别（免得把密码记进历史）
+  ok   只写了指令名也识别
+  ok   没有 '/' 是普通消息
+  ok   指令名多了字符就不算（比如 changepasswordx）
+  ok   '/' 不在首位是普通消息
+  ok   别的指令不算
+  ok   普通聊天原样记进历史
+  ok   指令原样记进历史（能按 ↑ 翻回来）
+  ok   带参数的指令也原样记
+  ok   改密码只记指令名，密码不进历史
+  ok   给别的账号改密码也只记指令名
+  ok   大小写不敏感，长度也去掉
+  ok   只写指令名时也不会凭空带出密码
+[9] Tab 指令补全
+  ok   输入 / 后第一次 Tab 补到第一个指令
+  ok   继续按 Tab 循环到下一个
+  ok   继续循环（按分组顺序）
+  ok   每个候选都有对应的用法说明和分组（面板要用）
+  ok   /ban 带 <昵称> [时长] 说明、归到「玩家管理」
+  ok   /say 的说明是 <公告内容>
+  ok   同一分组的候选连续排列（面板据此画分组标题）
+  ok   指令至少分成 3 个分组
+  ok   昵称候选归到「在线成员」，没有用法说明
+  ok   第一次按 Tab 会带回全部候选（界面用它列出候选）
+  ok   候选里是带 '/' 的指令名
+  ok   同一轮里后续按 Tab 不再报候选
+  ok   第一次按 Tab 选中第 0 个候选
+  ok   用户改成别的前缀时重新开始一轮（按新前缀补全）
+  ok   Suggest 只给候选列表、不选中任何一项（界面用它实时刷新浮层）
+  ok   Suggest 会按前缀过滤
+  ok   Suggest 会把'正在补的词之前的内容'带回来（点候选时要用）
+  ok   循环一整圈回到第一个
+  ok   按前缀补全
+  ok   只有一个候选时保持不动
+  ok   前缀大小写不敏感
+  ok   补全 /help
+  ok   普通聊天不补全
+  ok   空输入不补全
+  ok   已经在打第二个参数时不补全
+  ok   没有匹配就原样返回
+  ok   从头开始
+  ok   用户改过内容后重新开始一轮
+  ok   再改一次又能正常补全
+[10] Tab 参数补全（在线昵称）
+  ok   打字 /kick + 空格 后 Tab 补第一个在线成员
+  ok   候选就是在线名单
+  ok   继续按 Tab 循环到下一个人
+  ok   中文昵称也能补
+  ok   循环回第一个
+  ok   按前缀补昵称
+  ok   只有一个匹配时不动
+  ok   /ban 也能补昵称
+  ok   /op 也能补昵称
+  ok   /unban 也能补昵称
+  ok   /say 不补昵称
+  ok   /changepassword 不补昵称（那条是控制台专用）
+  ok   第二个参数（时长）不补全
+  ok   没写 '/' 的普通消息不补全
+  ok   没有匹配的昵称就原样
+  ok   没有人在线时不补全
+
+146 checks, 0 failures
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"server_command_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"server_command_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/9 Testing: auth_tests
+8/9 Test: auth_tests
+Command: "D:/codes/dchat/build/test_auth.exe"
+Directory: D:/codes/dchat/build
+"auth_tests" start time: Sep 25 05:12 �й���׼ʱ��
+Output:
+----------------------------------------------------------
+== dchat auth tests ==
+[1] 密码规则
+  ok   6 位以上、无空格 → 通过
+  ok   空密码被拒绝
+  ok   太短被拒绝
+  ok   太长被拒绝
+  ok   含空格被拒绝
+  ok   错误提示非空
+[2] 加盐哈希
+  ok   账号记录带盐与派生值
+  ok   记录里不含明文密码
+  ok   正确密码校验通过
+  ok   错误密码校验失败
+  ok   空密码校验失败
+  ok   同样的盐与迭代次数得到同样的派生值
+  ok   换一个盐，派生值不同
+  ok   迭代次数不同，派生值不同
+  ok   同一个密码两次注册的盐不同（避免彩虹表）
+[3] 账号文件读写
+  ok   序列化包含用户名
+  ok   序列化不含明文密码
+  ok   解析成功
+  ok   解析出两条账号
+  ok   往返后字段一致
+  ok   解析出来的账号仍能校验密码
+  ok   中文用户名正确
+  ok   能按名字找到账号
+  ok   找不到时返回空
+[4] 坏文件容错
+  ok   解析坏文件不崩溃
+  ok   只保留完整的一行
+  ok   迭代次数被读出来
+  ok   缺少迭代次数时用默认值
+  ok   空文件解析成空列表
+[5] 改密码
+  ok   账号不存在时返回失败
+  ok   空列表指针不崩溃
+  ok   改密码成功
+  ok   旧密码立刻失效
+  ok   新密码可以登录
+  ok   改密码会换一个新的盐
+  ok   改一个人的密码不影响别人
+  ok   账号文件里依然没有明文密码
+  ok   改完密码后文件仍能解析
+  ok   写盘再读回来仍能用新密码登录
+
+39 checks, 0 failures
+<end of output>
+Test time =   0.05 sec
+----------------------------------------------------------
+Test Passed.
+"auth_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"auth_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+9/9 Testing: file_transfer_tests
+9/9 Test: file_transfer_tests
+Command: "D:/codes/dchat/build/test_file_transfer.exe"
+Directory: D:/codes/dchat/build
+"file_transfer_tests" start time: Sep 25 05:12 �й���׼ʱ��
+Output:
+----------------------------------------------------------
+== dchat file transfer tests ==
+[1] Base64 编码（RFC 4648 标准向量）
+  ok   空数据编码成空串
+  ok   f -> Zg==
+  ok   fo -> Zm8=
+  ok   foo -> Zm9v
+  ok   foob -> Zm9vYg==
+  ok   fooba -> Zm9vYmE=
+  ok   foobar -> Zm9vYmFy
+[2] Base64 解码与往返
+  ok   空串解码成空数据
+  ok   foobar 往返正确
+  ok   单字节往返
+  ok   两字节往返
+  ok   长度 0..200 的任意字节都能原样往返
+  ok   长度不是 4 的倍数要拒绝
+  ok   非法字符要拒绝
+  ok   填充符只能出现在最后
+  ok   非法的尾部填充要拒绝
+  ok   两个填充符却带三个字符要拒绝
+[3] 文件名清理
+  ok   路径穿越只保留最后一段
+  ok   Windows 绝对路径只保留文件名
+  ok   多层目录只保留文件名
+  ok   非法字符被替换
+  ok   中文名原样保留
+  ok   结尾的点被去掉
+  ok   全是空格时兜底成 file
+  ok   只有点号时兜底成 file
+  ok   空名字兜底成 file
+  ok   控制字符被替换
+  ok   超长名字被截断到上限
+  ok   截断后仍然保留扩展名
+  ok   中文长名字也被截断到上限（不会切坏字符）
+[4] 重名处理
+  ok   没有同名文件时原样返回
+  ok   目录结尾带分隔符也行
+  ok   已存在同名文件时加 (2)
+  ok   连 (2) 也占用了就加到 (3)
+  ok   中文文件名正常
+  ok   没有扩展名也行
+[5] 字节数格式化
+  ok   0 字节
+  ok   1023 字节
+  ok   1024 -> 1.0 KB
+  ok   1536 -> 1.5 KB
+  ok   1 MB
+  ok   5.5 MB
+[6] 分块与协议行长上限
+  ok   10 MB 按 2048 字节切成 5120 块
+  ok   64 MB 上限对应 32768 块，数量可控
+  ok   最坏情况的 FILE_DATA 不超过单行上限
+  ok   而且留了 512 字节余量
+  ok   FILE_FROM 也在上限内
+
+47 checks, 0 failures
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"file_transfer_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"file_transfer_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Sep 25 05:12 �й���׼ʱ��

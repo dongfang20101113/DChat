@@ -1,0 +1,16 @@
+D:/codes/dchat/build/CMakeFiles/dchat_protocol.dir
+D:/codes/dchat/build/CMakeFiles/dchat_server.dir
+D:/codes/dchat/build/CMakeFiles/dchat_ui.dir
+D:/codes/dchat/build/CMakeFiles/dchat_client.dir
+D:/codes/dchat/build/CMakeFiles/test_protocol.dir
+D:/codes/dchat/build/CMakeFiles/test_render.dir
+D:/codes/dchat/build/CMakeFiles/test_rounded.dir
+D:/codes/dchat/build/CMakeFiles/test_bubble.dir
+D:/codes/dchat/build/CMakeFiles/test_image_preview.dir
+D:/codes/dchat/build/CMakeFiles/test_history.dir
+D:/codes/dchat/build/CMakeFiles/test_server_command.dir
+D:/codes/dchat/build/CMakeFiles/test_auth.dir
+D:/codes/dchat/build/CMakeFiles/test_file_transfer.dir
+D:/codes/dchat/build/CMakeFiles/test.dir
+D:/codes/dchat/build/CMakeFiles/edit_cache.dir
+D:/codes/dchat/build/CMakeFiles/rebuild_cache.dir
