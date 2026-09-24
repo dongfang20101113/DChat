@@ -1,0 +1,4 @@
+﻿#include <windows.h>
+#include "resource.h"
+
+IDI_DCHAT ICON "@CMAKE_CURRENT_SOURCE_DIR@/resources/dchat.ico"

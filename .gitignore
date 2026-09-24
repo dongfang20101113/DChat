@@ -1,0 +1,33 @@
+﻿# 构建产物
+build/
+*.exe
+*.obj
+*.a
+*.o
+*.dll
+*.exp
+*.lib
+*.pdb
+*.ilk
+.ninja_deps
+.ninja_log
+CMakeCache.txt
+CMakeFiles/
+
+# 运行期数据（账号文件里有密码哈希，绝不能发布！）
+dchat-users.txt
+users.txt
+received/
+downloads/
+
+# 编辑器和系统
+.vscode/
+.vs/
+.idea/
+*.user
+Thumbs.db
+desktop.ini
+
+# 临时文件
+*.tmp
+*.log
