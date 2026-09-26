@@ -1,10 +1,10 @@
-Start testing: Sep 25 05:12 �й���׼ʱ��
+Start testing: Sep 26 10:13 �й���׼ʱ��
 ----------------------------------------------------------
-1/9 Testing: protocol_tests
-1/9 Test: protocol_tests
+1/10 Testing: protocol_tests
+1/10 Test: protocol_tests
 Command: "D:/codes/dchat/build/test_protocol.exe"
 Directory: D:/codes/dchat/build
-"protocol_tests" start time: Sep 25 05:12 �й���׼ʱ��
+"protocol_tests" start time: Sep 26 10:13 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat protocol tests ==
@@ -52,18 +52,18 @@ Output:
 
 36 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.04 sec
 ----------------------------------------------------------
 Test Passed.
-"protocol_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"protocol_tests" end time: Sep 26 10:13 �й���׼ʱ��
 "protocol_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-2/9 Testing: render_tests
-2/9 Test: render_tests
+2/10 Testing: render_tests
+2/10 Test: render_tests
 Command: "D:/codes/dchat/build/test_render.exe"
 Directory: D:/codes/dchat/build
-"render_tests" start time: Sep 25 05:12 �й���׼ʱ��
+"render_tests" start time: Sep 26 10:13 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat render tests ==
@@ -127,18 +127,18 @@ Output:
 
 51 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.04 sec
 ----------------------------------------------------------
 Test Passed.
-"render_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"render_tests" end time: Sep 26 10:13 �й���׼ʱ��
 "render_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-3/9 Testing: rounded_tests
-3/9 Test: rounded_tests
+3/10 Testing: rounded_tests
+3/10 Test: rounded_tests
 Command: "D:/codes/dchat/build/test_rounded.exe"
 Directory: D:/codes/dchat/build
-"rounded_tests" start time: Sep 25 05:12 �й���׼ʱ��
+"rounded_tests" start time: Sep 26 10:13 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == rounded control tests ==
@@ -163,18 +163,18 @@ Output:
 
 15 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.04 sec
 ----------------------------------------------------------
 Test Passed.
-"rounded_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"rounded_tests" end time: Sep 26 10:13 �й���׼ʱ��
 "rounded_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-4/9 Testing: bubble_tests
-4/9 Test: bubble_tests
+4/10 Testing: bubble_tests
+4/10 Test: bubble_tests
 Command: "D:/codes/dchat/build/test_bubble.exe"
 Directory: D:/codes/dchat/build
-"bubble_tests" start time: Sep 25 05:12 �й���׼ʱ��
+"bubble_tests" start time: Sep 26 10:13 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat bubble tests ==
@@ -212,18 +212,18 @@ Output:
 
 26 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.05 sec
 ----------------------------------------------------------
 Test Passed.
-"bubble_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"bubble_tests" end time: Sep 26 10:13 �й���׼ʱ��
 "bubble_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-5/9 Testing: image_preview_tests
-5/9 Test: image_preview_tests
+5/10 Testing: image_preview_tests
+5/10 Test: image_preview_tests
 Command: "D:/codes/dchat/build/test_image_preview.exe"
 Directory: D:/codes/dchat/build
-"image_preview_tests" start time: Sep 25 05:12 �й���׼ʱ��
+"image_preview_tests" start time: Sep 26 10:13 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat image preview tests ==
@@ -247,18 +247,95 @@ Output:
 
 14 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.04 sec
 ----------------------------------------------------------
 Test Passed.
-"image_preview_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"image_preview_tests" end time: Sep 26 10:13 �й���׼ʱ��
 "image_preview_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-6/9 Testing: history_tests
-6/9 Test: history_tests
+6/10 Testing: server_rules_tests
+6/10 Test: server_rules_tests
+Command: "D:/codes/dchat/build/test_server_rules.exe"
+Directory: D:/codes/dchat/build
+"server_rules_tests" start time: Sep 26 10:13 �й���׼ʱ��
+Output:
+----------------------------------------------------------
+== dchat server rules tests ==
+[1] 默认值
+  ok   chatinterval 默认 0（不限制）
+  ok   documentsize 默认 64 MB
+  ok   keepchathistory 默认关闭
+  ok   maxservertemp 默认 1048 MB
+  ok   一共 4 条规则
+  ok   四条规则名都能识别（大小写不敏感）
+  ok   不认识的规则名返回非法
+  ok   MB 转字节
+[2] set / add / remove
+  ok   set 设成绝对值
+  ok   add 在当前值上加
+  ok   remove 减过头会夹到最小值 0
+  ok   被夹住时提示里会说
+  ok   超过范围会被夹到 60000 ms
+  ok   只看不改时返回当前值
+[3] 规则之间的约束
+  ok   documentsize 超过 maxservertemp 时被拒绝（默认 1048）
+  ok   提示里指出要先调大哪个
+  ok   maxservertemp 不能小于当前 documentsize
+  ok   先把 maxservertemp 调大
+  ok   再调大 documentsize 就成功了
+[4] 布尔规则与未知规则
+  ok   true 打开聊天记录保留
+  ok   false 关闭
+  ok   布尔规则不能用 add/remove
+  ok   数值规则不能用 true/false
+  ok   未知规则给出提示
+[5] 规则说明与发给客户端的 RULES 行
+  ok   全部规则说明里四条都在
+  ok   说明里带当前值
+  ok   布尔规则显示 true/false
+  ok   发给客户端的 RULES 行格式正确
+  ok   关闭时最后一位是 0
+  ok   取值范围说明里有上限
+  ok   布尔规则的范围说明
+[6] dchat-rules.txt 读写
+  ok   序列化出来的文件以注释行开头
+  ok   数值规则写进去了
+  ok   布尔规则写进去了
+  ok   四条规则都能读回来
+  ok   写出去再读回来完全一致（往返正确）
+  ok   只认有效行：注释 / 坏值 / 未知规则都被跳过
+  ok   行尾注释不影响取值
+  ok   坏值那一行保持默认
+  ok   超出范围的会被夹到上限
+  ok   布尔值写错时保持默认
+  ok   文件里 documentsize 比 maxservertemp 大时会被夹下来
+  ok   空文件读到 0 条（保持原值）
+  ok   传空指针不会崩
+[9] 规则元数据（Tab 补全用）
+  ok   四条规则各有一份元数据
+  ok   每条规则都带一句灰色说明
+  ok   元数据里的规则名和 AllRuleNames 顺序一致
+  ok   只有 keepchathistory 是布尔规则
+  ok   布尔规则的判断大小写不敏感
+  ok   不认识的规则不是布尔规则
+  ok   IsKnownRule 仍然认得这四条规则
+  ok   IsKnownRule 不会把别的前缀当规则
+
+52 checks, 0 failures
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"server_rules_tests" end time: Sep 26 10:13 �й���׼ʱ��
+"server_rules_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/10 Testing: history_tests
+7/10 Test: history_tests
 Command: "D:/codes/dchat/build/test_history.exe"
 Directory: D:/codes/dchat/build
-"history_tests" start time: Sep 25 05:12 �й���׼ʱ��
+"history_tests" start time: Sep 26 10:13 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat input history tests ==
@@ -298,18 +375,18 @@ Output:
 
 27 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.04 sec
 ----------------------------------------------------------
 Test Passed.
-"history_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"history_tests" end time: Sep 26 10:13 �й���׼ʱ��
 "history_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-7/9 Testing: server_command_tests
-7/9 Test: server_command_tests
+8/10 Testing: server_command_tests
+8/10 Test: server_command_tests
 Command: "D:/codes/dchat/build/test_server_command.exe"
 Directory: D:/codes/dchat/build
-"server_command_tests" start time: Sep 25 05:12 �й���׼ʱ��
+"server_command_tests" start time: Sep 26 10:13 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat server command tests ==
@@ -444,7 +521,8 @@ Output:
   ok   循环一整圈回到第一个
   ok   按前缀补全
   ok   只有一个候选时保持不动
-  ok   前缀大小写不敏感
+  ok   /CH 按前缀补全（大小写不敏感）
+  ok   同一前缀有多个候选时继续按 Tab 轮到下一个
   ok   补全 /help
   ok   普通聊天不补全
   ok   空输入不补全
@@ -470,21 +548,80 @@ Output:
   ok   没写 '/' 的普通消息不补全
   ok   没有匹配的昵称就原样
   ok   没有人在线时不补全
+[11] /cp 简写与 /ip（仅控制台）
+  ok   /cp 一个参数 = 改自己的密码（和 /changepassword 行为一致）
+  ok   /cp 自助改密码：不需要权限、也不是控制台专用
+  ok   /cp <昵称> <新密码> 同样是控制台专用
+  ok   /CP 大小写不敏感
+  ok   /cp 不给参数时提示用法
+  ok   /cp 的密码规则和 /changepassword 一样
+  ok   /cp 里的密码同样不进输入历史
+  ok   /cp 记进历史时只留指令名
+  ok   /ip <昵称> 解析正确，并标记为仅控制台可用
+  ok   /ip 不给昵称时提示用法
+  ok   /ip 参数太多时提示用法
+  ok   帮助里列出了 /cp 和 /ip
+  ok   Tab 候选浮层里也有 /cp 和 /ip
+  ok   输入 /cp 能补全到 /cp
+[12] /chatrule 解析
+  ok   /chatrule 不带参数 = 列出全部规则，且仅控制台可用
+  ok   /chatrule <规则> = 只看这一条
+  ok   set 写法解析正确
+  ok   add 写法解析正确
+  ok   remove 写法解析正确
+  ok   布尔规则直接写 true/false
+  ok   false 也认
+  ok   未知规则名在解析阶段就报错
+  ok   set 后面没跟值会提示取值范围
+  ok   缺少 set/add/remove 时提示用法
+  ok   参数太多会报错
+  ok   布尔规则多写一个参数会报错
+  ok   帮助里列出了 /chatrule
+[13] Tab 参数补全（/chatrule 的规则名与取值）
+  ok   打 /chatrule + 空格 会列出全部规则名
+  ok   规则名按顺序给出，并分到「服务器规则」组
+  ok   每个规则名都带灰色用法说明
+  ok   按前缀过滤规则名
+  ok   keep 前缀能补到 keepchathistory
+  ok   Tab 把规则名补进输入框
+  ok   规则名也能按 Tab 循环
+  ok   再按 Tab 轮到下一条规则
+  ok   数值规则的第 2 个参数补 set / add / remove
+  ok   set 也能按前缀过滤
+  ok   布尔规则第 2 个参数直接给 true / false
+  ok   布尔规则也接受先写 set
+  ok   set 之后只剩 true / false 两个候选
+  ok   true 按前缀补全
+  ok   Tab 补布尔值
+  ok   数值规则的值没有候选（自己填数字）
+  ok   不认识的规则名不会冒出 true/false
+  ok   第 4 个参数没有候选
+[14] Tab 参数补全（/ip 与已注册名单）
+  ok   /ip 补在线 + 已注册的人
+  ok   在线成员排在前面，然后是已注册但不在线的
+  ok   候选按「在线成员 / 已注册玩家」分组
+  ok   /ip 能补到不在线的人
+  ok   Tab 补 /ip 的昵称
+  ok   /ban 也能补不在线的人
+  ok   /op 也能补
+  ok   在线的人不会在候选里出现两次
+  ok   没给已注册名单时只补在线成员（老行为不变）
+  ok   /say 仍然不补昵称
 
-146 checks, 0 failures
+202 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.05 sec
 ----------------------------------------------------------
 Test Passed.
-"server_command_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"server_command_tests" end time: Sep 26 10:13 �й���׼ʱ��
 "server_command_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-8/9 Testing: auth_tests
-8/9 Test: auth_tests
+9/10 Testing: auth_tests
+9/10 Test: auth_tests
 Command: "D:/codes/dchat/build/test_auth.exe"
 Directory: D:/codes/dchat/build
-"auth_tests" start time: Sep 25 05:12 �й���׼ʱ��
+"auth_tests" start time: Sep 26 10:13 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat auth tests ==
@@ -535,18 +672,18 @@ Output:
 
 39 checks, 0 failures
 <end of output>
-Test time =   0.05 sec
+Test time =   0.08 sec
 ----------------------------------------------------------
 Test Passed.
-"auth_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"auth_tests" end time: Sep 26 10:13 �й���׼ʱ��
 "auth_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-9/9 Testing: file_transfer_tests
-9/9 Test: file_transfer_tests
+10/10 Testing: file_transfer_tests
+10/10 Test: file_transfer_tests
 Command: "D:/codes/dchat/build/test_file_transfer.exe"
 Directory: D:/codes/dchat/build
-"file_transfer_tests" start time: Sep 25 05:12 �й���׼ʱ��
+"file_transfer_tests" start time: Sep 26 10:13 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat file transfer tests ==
@@ -606,11 +743,11 @@ Output:
 
 47 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.04 sec
 ----------------------------------------------------------
 Test Passed.
-"file_transfer_tests" end time: Sep 25 05:12 �й���׼ʱ��
+"file_transfer_tests" end time: Sep 26 10:13 �й���׼ʱ��
 "file_transfer_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-End testing: Sep 25 05:12 �й���׼ʱ��
+End testing: Sep 26 10:13 �й���׼ʱ��

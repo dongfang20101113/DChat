@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -20,6 +21,7 @@
 #include "protocol.h"
 #include "auth.h"
 #include "file_transfer.h"
+#include "server_rules.h"
 #include "server_command.h"
 
 namespace {
@@ -78,7 +80,57 @@ std::vector<std::shared_ptr<StoredFile>> g_files;
 unsigned long long g_fileSeq = 0;
 
 constexpr std::size_t kMaxStoredFiles = 16;                        // 最多同时保留 16 个
-constexpr unsigned long long kMaxStoredBytes = 256ull * 1024 * 1024;  // 内存里最多 256 MB
+// ---- 服务器规则（/chatrule 改，只能控制台改）----
+std::mutex g_rulesMutex;
+dchat::ServerRules g_rules;
+
+dchat::ServerRules CurrentRules() {
+    std::lock_guard<std::mutex> lock(g_rulesMutex);
+    return g_rules;
+}
+
+// 服务端暂存的总预算：文件 + 聊天记录都算在 maxservertemp 里
+unsigned long long TempBudgetBytes() {
+    return dchat::RuleMbToBytes(CurrentRules().maxServerTempMb);
+}
+
+std::string g_rulesPath = "dchat-rules.txt";  // 规则文件（可用 --rules 指定）
+
+// 从规则文件读规则；文件不存在就用默认值并把默认值写出来
+void LoadRules() {
+    std::ifstream in(g_rulesPath, std::ios::binary);
+    if (!in) {
+        Log("no rules file yet, will create: " + g_rulesPath);
+        std::ofstream out(g_rulesPath, std::ios::binary | std::ios::trunc);
+        if (out) out << dchat::SerializeRules(CurrentRules());
+        return;
+    }
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    dchat::ServerRules loaded;
+    {
+        std::lock_guard<std::mutex> lock(g_rulesMutex);
+        loaded = g_rules;
+    }
+    const int count = dchat::ParseRules(text, &loaded);
+    {
+        std::lock_guard<std::mutex> lock(g_rulesMutex);
+        g_rules = loaded;
+    }
+    Log("loaded " + std::to_string(count) + " rule(s) from " + g_rulesPath);
+    const dchat::ServerRules now = CurrentRules();
+    Log("rules: chatinterval=" + std::to_string(now.chatIntervalMs) + "ms documentsize=" +
+        std::to_string(now.documentSizeMb) + "MB keepchathistory=" +
+        (now.keepChatHistory ? "true" : "false") + " maxservertemp=" +
+        std::to_string(now.maxServerTempMb) + "MB");
+}
+
+// 把当前规则写回文件（每次 /chatrule 改成功都会调用）
+bool SaveRules() {
+    std::ofstream out(g_rulesPath, std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out << dchat::SerializeRules(CurrentRules());
+    return out.good();
+}
 constexpr int kFileTtlSeconds = 30 * 60;                           // 30 分钟后过期
 constexpr std::size_t kMaxThumbBytes = 128 * 1024;                 // 缩略图上限
 
@@ -108,10 +160,11 @@ std::string StoreFile(const std::string& owner, const std::string& nameB64,
                       const std::string& data, const std::string& thumb) {
     std::lock_guard<std::mutex> lock(g_filesMutex);
     for (const std::string& line : ExpireFilesLocked()) Log("stored file expired: " + line);
-    if (data.size() > kMaxStoredBytes) return std::string();  // 单个就超总量，存不下
+    const unsigned long long budget = TempBudgetBytes();
+    if (data.size() > budget) return std::string();  // 单个就超总量，存不下
     // 腾地方：先按最旧的删，直到数量和总量都满足
     while (!g_files.empty() && (g_files.size() >= kMaxStoredFiles ||
-                                StoredBytesLocked() + data.size() > kMaxStoredBytes)) {
+                                StoredBytesLocked() + data.size() > budget)) {
         Log("stored file evicted (no room): " + g_files.front()->id + "（" +
             g_files.front()->owner + " 上传）");
         g_files.erase(g_files.begin());
@@ -129,6 +182,59 @@ std::string StoreFile(const std::string& owner, const std::string& nameB64,
 }
 
 // 按 ID 取文件（同时做过期清理）；找不到返回 nullptr
+// ---- 聊天记录缓存：keepchathistory 打开时，新加入的人能看到之前的记录和文件 ----
+std::mutex g_historyMutex;
+std::deque<std::string> g_history;  // 已经广播出去的 SAY / ANNOUNCE 行（原样保存）
+unsigned long long g_historyBytes = 0;
+constexpr std::size_t kMaxHistoryLines = 2000;
+
+unsigned long long StoredBytesTotal() {
+    std::lock_guard<std::mutex> lock(g_filesMutex);
+    return StoredBytesLocked();
+}
+
+void RememberHistory(const std::string& line) {
+    std::lock_guard<std::mutex> lock(g_historyMutex);
+    g_history.push_back(line);
+    g_historyBytes += line.size() + 1;
+    const unsigned long long budget = TempBudgetBytes();
+    // 行数和总预算都要守（预算 = 文件 + 聊天记录，由 maxservertemp 决定）
+    while (!g_history.empty() && (g_history.size() > kMaxHistoryLines ||
+                                  g_historyBytes + StoredBytesTotal() > budget)) {
+        g_historyBytes -= g_history.front().size() + 1;
+        g_history.pop_front();
+    }
+}
+
+std::vector<std::string> HistorySnapshot() {
+    std::lock_guard<std::mutex> lock(g_historyMutex);
+    return std::vector<std::string>(g_history.begin(), g_history.end());
+}
+
+std::size_t HistoryCount() {
+    std::lock_guard<std::mutex> lock(g_historyMutex);
+    return g_history.size();
+}
+
+// 把预算外的文件和聊天记录裁掉（maxservertemp 调小时立刻生效）
+void EnforceTempBudget() {
+    const unsigned long long budget = TempBudgetBytes();
+    {
+        std::lock_guard<std::mutex> lock(g_filesMutex);
+        while (!g_files.empty() && StoredBytesLocked() > budget) {
+            Log("stored file evicted (over maxservertemp): " + g_files.front()->id);
+            g_files.erase(g_files.begin());
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_historyMutex);
+        while (!g_history.empty() && g_historyBytes + StoredBytesTotal() > budget) {
+            g_historyBytes -= g_history.front().size() + 1;
+            g_history.pop_front();
+        }
+    }
+}
+
 std::shared_ptr<StoredFile> FindStoredFile(const std::string& id) {
     std::lock_guard<std::mutex> lock(g_filesMutex);
     for (const std::string& line : ExpireFilesLocked()) Log("stored file expired: " + line);
@@ -201,6 +307,7 @@ struct Client {
     std::mutex sendMutex;
     // 正在上传的文件（收齐后由服务器暂存，别人点击下载时才发出去）
     std::shared_ptr<PendingUpload> upload;
+    std::chrono::steady_clock::time_point lastMessage{};  // chatinterval 用：上一条消息的时间
 
     bool SendLine(const std::string& line) {
         if (sock == INVALID_SOCKET) return false;
@@ -409,6 +516,49 @@ std::string NickList() {
     return list;
 }
 
+// 所有"服务器知道的名字"：已注册账号 + 管理员 + 黑名单里的名字。
+// 发给客户端做 Tab 补全（/ban /op /unban /ip 要能补到不在线的人）。
+// 单行有 4096 字节上限，太长就截断（只影响补全提示，不影响功能）。
+std::string KnownNameList() {
+    std::vector<std::string> names;
+    {
+        std::lock_guard<std::mutex> lock(g_usersMutex);
+        for (const dchat::UserRecord& user : g_users) names.push_back(user.name);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_opMutex);
+        for (const std::string& name : g_ops) names.push_back(name);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_banMutex);
+        for (const BanEntry& entry : g_bans) names.push_back(entry.name);
+    }
+    std::string list;
+    std::vector<std::string> unique;
+    for (const std::string& name : names) {
+        if (name.empty()) continue;
+        if (std::find(unique.begin(), unique.end(), name) != unique.end()) continue;  // 去重
+        unique.push_back(name);
+        const std::string piece = (list.empty() ? "" : ", ") + name;
+        if (list.size() + piece.size() > 3500) break;  // 留出命令名和时间的余量
+        list += piece;
+    }
+    return list;
+}
+
+// 把名单发给一个客户端（只在登录成功后发，避免未登录的连接看到账号名）
+void SendKnownNames(const std::shared_ptr<Client>& client) {
+    if (!client || client->nick.empty()) return;
+    client->SendLine(Timed("KNOWN", KnownNameList()));
+}
+
+void BroadcastKnownNames() {
+    for (const auto& client : ClientSnapshot()) {
+        if (client->nick.empty()) continue;
+        client->SendLine(Timed("KNOWN", KnownNameList()));
+    }
+}
+
 bool NickTaken(const std::string& nick, const Client* self) {
     for (const auto& client : ClientSnapshot())
         if (client.get() != self && client->nick == nick) return true;
@@ -453,6 +603,14 @@ bool NotifyByName(const std::string& name, const std::string& text) {
     return true;
 }
 
+// 查在线客户端的地址（形如 192.168.1.5:51234）；不在线返回空串
+std::string AddressOf(const std::string& name) {
+    for (const auto& client : ClientSnapshot()) {
+        if (client->nick == name) return client->address;
+    }
+    return std::string();
+}
+
 // 执行一条指令。source 为 nullptr 表示来自服务器控制台；否则把结果回给这个人（不广播）
 void ExecuteCommand(const dchat::ServerCommand& command, Client* source) {
     auto reply = [&](const std::string& text, bool isError) {
@@ -488,6 +646,7 @@ void ExecuteCommand(const dchat::ServerCommand& command, Client* source) {
             reply("已封禁 " + command.name + "（" + duration + "）", false);
             Broadcast(Timed("SYS", command.name + " 已被管理员封禁（" + duration + "）"));
             if (KickByName(command.name)) Log("kicked banned user: " + command.name);
+            BroadcastKnownNames();  // 黑名单变了，让客户端的 Tab 补全跟上
             break;
         }
         case dchat::ServerCommand::Kind::Kick: {
@@ -505,6 +664,7 @@ void ExecuteCommand(const dchat::ServerCommand& command, Client* source) {
                           : (command.name + " 不在黑名单里"),
                   !removed);
             if (removed) Broadcast(Timed("SYS", command.name + " 的封禁已解除"));
+            if (removed) BroadcastKnownNames();
             break;
         }
         case dchat::ServerCommand::Kind::Op: {
@@ -515,6 +675,7 @@ void ExecuteCommand(const dchat::ServerCommand& command, Client* source) {
                         : (command.name + " 已经是管理员"),
                   !added);
             if (added) Broadcast(Timed("SYS", command.name + " 已成为管理员"));
+            if (added) BroadcastKnownNames();
             break;
         }
         case dchat::ServerCommand::Kind::Deop: {
@@ -525,6 +686,7 @@ void ExecuteCommand(const dchat::ServerCommand& command, Client* source) {
                           : (command.name + " 不是管理员"),
                   !removed);
             if (removed) Broadcast(Timed("SYS", command.name + " 的管理员权限已取消"));
+            if (removed) BroadcastKnownNames();
             break;
         }
         case dchat::ServerCommand::Kind::ListBans:
@@ -537,7 +699,11 @@ void ExecuteCommand(const dchat::ServerCommand& command, Client* source) {
             break;
         case dchat::ServerCommand::Kind::Say:
             Log("announce: " + command.text);
-            Broadcast(Timed("ANNOUNCE", command.text));  // 全服公告：客户端会大字居中显示
+            {
+                const std::string announce = Timed("ANNOUNCE", command.text);
+                Broadcast(announce);  // 全服公告：客户端会大字居中显示
+                RememberHistory(announce);  // 公告也进聊天记录缓存
+            }
             reply("公告已发出：" + command.text, false);
             break;
         case dchat::ServerCommand::Kind::ChangePassword: {
@@ -567,6 +733,63 @@ void ExecuteCommand(const dchat::ServerCommand& command, Client* source) {
                 if (!self && NotifyByName(target, "你的密码已被管理员修改")) {
                     Log("notified " + target + " about the password change");
                 }
+            }
+            break;
+        }
+        case dchat::ServerCommand::Kind::ChatRule: {
+            // 查看 / 修改服务器规则（只有控制台能到这里，客户端那条路被 consoleOnly 拦掉了）
+            if (command.rule.empty()) {
+                for (const std::string& row : dchat::AllRuleNames()) {
+                    Log("  " + dchat::DescribeRule(CurrentRules(), row));
+                }
+                Log("  用法：/chatrule <规则> [set|add|remove] <值>（布尔规则用 true/false）");
+                break;
+            }
+            dchat::RuleAction action = dchat::RuleAction::Show;
+            long long value = 0;
+            bool boolValue = false;
+            if (command.ruleAction == "set") action = dchat::RuleAction::Set;
+            if (command.ruleAction == "add") action = dchat::RuleAction::Add;
+            if (command.ruleAction == "remove") action = dchat::RuleAction::Remove;
+            if (command.ruleAction == "setbool") {
+                action = dchat::RuleAction::SetBool;
+                boolValue = (command.ruleValue == "true");
+            }
+            if (action != dchat::RuleAction::Show && action != dchat::RuleAction::SetBool) {
+                try {
+                    value = std::stoll(command.ruleValue);
+                } catch (...) {
+                    Log("chatrule: 值不是整数：" + command.ruleValue);
+                    break;
+                }
+            }
+            dchat::RuleChange change;
+            {
+                std::lock_guard<std::mutex> lock(g_rulesMutex);
+                change = dchat::ApplyRule(&g_rules, command.rule, action, value, boolValue);
+            }
+            Log("chatrule: " + change.message);
+            if (change.ok && change.changed) {
+                // 规则改动持久化：写回 dchat-rules.txt，重启后依然生效
+                if (!SaveRules()) Log("！规则文件写入失败：" + g_rulesPath);
+                Broadcast(RulesLineForClient(CurrentRules()));  // 让客户端更新本地检查
+                if (change.rule == "maxservertemp") {
+                    EnforceTempBudget();  // 调小了就立刻按新上限裁掉
+                    Log("after maxservertemp: files=" + std::to_string(StoredBytesTotal()) +
+                        " bytes, history lines=" + std::to_string(HistoryCount()));
+                }
+            }
+            break;
+        }
+        case dchat::ServerCommand::Kind::ShowIp: {
+            // 只在服务器控制台可用：查某个在线客户端的 IP 和端口
+            const std::string address = AddressOf(command.name);
+            if (address.empty()) {
+                Log("ip lookup: " + command.name + " 不在线");
+                reply(command.name + " 当前不在线（只有在线时才能查到地址）", true);
+            } else {
+                Log("ip of " + command.name + ": " + address);
+                reply(command.name + " 的地址：" + address, false);
             }
             break;
         }
@@ -611,6 +834,28 @@ void BanMaintenanceLoop() {
 }
 
 // 认证通过后加入房间：登记昵称、打招呼、广播加入
+// 新加入的人：把之前的聊天记录和还留着的文件卡片回放给他（keepchathistory 打开时）
+void ReplayHistoryTo(const std::shared_ptr<Client>& client) {
+    if (!CurrentRules().keepChatHistory) return;
+    const std::vector<std::string> lines = HistorySnapshot();
+    std::vector<std::string> offers;
+    {
+        std::lock_guard<std::mutex> lock(g_filesMutex);
+        for (const auto& file : g_files) {
+            offers.push_back(Timed("FILE_OFFER", file->owner + " " + file->id + " " + file->nameB64 +
+                                                     " " + std::to_string(file->size) + " " +
+                                                     (file->thumb.empty() ? "0" : "1")));
+        }
+    }
+    if (lines.empty() && offers.empty()) return;
+    client->SendLine(Timed("SYS", "—— 以下是加入之前的聊天记录（keepchathistory 已打开）——"));
+    for (const std::string& line : lines) client->SendLine(line);
+    if (!offers.empty()) {
+        client->SendLine(Timed("SYS", "房间里还留着这些文件，点卡片可以下载："));
+        for (const std::string& offer : offers) client->SendLine(offer);
+    }
+}
+
 bool CompleteLogin(const std::shared_ptr<Client>& client, const std::string& nick) {
     int remainingSeconds = 0;
     bool permanent = false;
@@ -632,6 +877,9 @@ bool CompleteLogin(const std::shared_ptr<Client>& client, const std::string& nic
     Broadcast(Timed("JOINED", nick), client.get());
     client->SendLine(Timed("SYS", "你好，" + nick + "！直接输入内容按回车即可发言。"));
     client->SendLine(Timed("NAMES", NickList()));
+    SendKnownNames(client);  // 已注册账号名单：Tab 补 /ban /op /unban /ip 用
+    client->SendLine(RulesLineForClient(CurrentRules()));  // 把当前规则告诉客户端
+    ReplayHistoryTo(client);                                // keepchathistory 打开时补历史
     Log(client->address + " joined as " + nick);
     return true;
 }
@@ -667,7 +915,7 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
 
         if (msg.command == "REGISTER") {
             if (UserExists(name, nullptr)) {
-                client->SendLine(Timed("ERROR", "用户名已存在，请直接登录（把确认密码留空）"));
+                client->SendLine(Timed("ERROR", "用户名已存在，请到「登录」界面直接登录"));
                 return true;
             }
             {
@@ -681,10 +929,11 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             }
             Log("registered account: " + name);
             client->SendLine(Timed("SYS", "注册成功，账号已保存"));
+            BroadcastKnownNames();  // 新账号也进别人的 Tab 补全名单
         } else {
             dchat::UserRecord user;
             if (!UserExists(name, &user)) {
-                client->SendLine(Timed("ERROR", "用户名不存在，请先注册（在连接窗口填写确认密码）"));
+                client->SendLine(Timed("ERROR", "用户名不存在，请先注册（点「没有账号？注册新账号」）"));
                 Log("login failed (no such user): " + name);
                 return true;
             }
@@ -745,7 +994,20 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             ExecuteCommand(command, client.get());
             return true;
         }
-        Broadcast(Timed("SAY", client->nick + " " + msg.rest));  // 连发送者一起发，便于回显
+        // chatinterval：两条消息之间的最小间隔（0 = 不限制）
+        const int interval = CurrentRules().chatIntervalMs;
+        const auto now = std::chrono::steady_clock::now();
+        if (interval > 0 && client->lastMessage.time_since_epoch().count() != 0 &&
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - client->lastMessage).count() <
+                interval) {
+            client->SendLine(Timed("ERROR", "发言太快了：当前规则 chatinterval = " +
+                                                std::to_string(interval) + " ms"));
+            return true;
+        }
+        client->lastMessage = now;
+        const std::string sayLine = Timed("SAY", client->nick + " " + msg.rest);
+        Broadcast(sayLine);  // 连发送者一起发，便于回显
+        RememberHistory(sayLine);
         Log("MSG " + client->nick + ": " + msg.rest);
         return true;
     }
@@ -784,9 +1046,11 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
                 client->SendLine(Timed("ERROR", "文件大小无法识别：" + words[2]));
                 return true;
             }
-            if (bytes > dchat::kMaxFileBytes) {
-                client->SendLine(Timed("ERROR", "文件太大了，单个文件最多 " +
-                                                  dchat::FormatBytes(dchat::kMaxFileBytes)));
+            const unsigned long long sizeLimit = dchat::RuleMbToBytes(CurrentRules().documentSizeMb);
+            if (bytes > sizeLimit) {  // documentsize 规则决定单文件上限
+                client->SendLine(Timed("ERROR", "文件太大了：当前规则 documentsize = " +
+                                                  std::to_string(CurrentRules().documentSizeMb) +
+                                                  " MB（" + dchat::FormatBytes(sizeLimit) + "）"));
                 return true;
             }
             if (client->upload) {
@@ -1039,6 +1303,7 @@ int main(int argc, char** argv) {
         if ((arg == "--port" || arg == "-p") && i + 1 < argc) port = std::atoi(argv[++i]);
         if ((arg == "--users" || arg == "-u") && i + 1 < argc) g_usersPath = argv[++i];
         if ((arg == "--bind" || arg == "-b") && i + 1 < argc) bindAddress = argv[++i];
+        if ((arg == "--rules" || arg == "-r") && i + 1 < argc) g_rulesPath = argv[++i];
     }
     if (port <= 0 || port > 65535) {
         std::printf("invalid port: %d\n", port);
@@ -1089,7 +1354,11 @@ int main(int argc, char** argv) {
     Log("dchat server listening on port " + std::to_string(port) + " (Ctrl+C to stop)");
     LoadUsers();
     Log("accounts file: " + g_usersPath + "（密码以加盐哈希保存，不存明文）");
+    LoadRules();
+    Log("rules file: " + g_rulesPath + "（/chatrule 改完会自动写回）");
     Log("管理员指令：/ban <昵称> <时长>  /kick <昵称>  /unban <昵称>  /bans  /op <昵称>  /say <公告>");
+    Log("查在线地址：/ip <昵称>（仅控制台）    改密码：/changepassword 或简写 /cp");
+    Log("服务器规则：/chatrule（仅控制台）—— chatinterval / documentsize / keepchathistory / maxservertemp");
     Log("给别的账号改密码：/changepassword <昵称> <新密码>（聊天框里玩家只能改自己的）");
     Log("完整帮助：/help");
     // 启动时把本机地址列出来，方便告诉别人用哪个地址连

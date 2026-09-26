@@ -7,6 +7,7 @@ D:/codes/dchat/build/CMakeFiles/test_render.dir
 D:/codes/dchat/build/CMakeFiles/test_rounded.dir
 D:/codes/dchat/build/CMakeFiles/test_bubble.dir
 D:/codes/dchat/build/CMakeFiles/test_image_preview.dir
+D:/codes/dchat/build/CMakeFiles/test_server_rules.dir
 D:/codes/dchat/build/CMakeFiles/test_history.dir
 D:/codes/dchat/build/CMakeFiles/test_server_command.dir
 D:/codes/dchat/build/CMakeFiles/test_auth.dir

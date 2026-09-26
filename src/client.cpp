@@ -46,6 +46,7 @@
 #include "resource.h"
 #include "rounded.h"
 #include "server_command.h"  // LooksLikePasswordCommand：改密码那一行不进输入历史
+#include "server_rules.h"    // RuleMbToBytes / 服务器规则
 
 namespace {
 
@@ -133,6 +134,7 @@ std::map<HWND, bool> g_hover;
 
 dchat::TabCompleter g_tabComplete;  // Tab 指令补全的状态
 std::vector<std::string> g_onlineNicks;  // 当前在线昵称（Tab 补参数用）
+std::vector<std::string> g_knownNicks;   // 服务器下发的已注册昵称（可能不在线，Tab 也补）
 
 // 输入框上方的候选浮层（类似 Minecraft 的 Tab 提示）
 constexpr const wchar_t* kSuggestClass = L"DchatSuggestWnd";
@@ -171,19 +173,25 @@ std::string StripTimePrefix(const std::string& rest) {
     return rest;
 }
 
-void SetOnlineNicks(const std::string& list) {  // "alice, bob"
-    g_onlineNicks.clear();
+// 把 "alice, bob" 这样的名单拆成一个个昵称
+void ParseNickList(const std::string& list, std::vector<std::string>* out) {
+    out->clear();
     std::size_t begin = 0;
     while (begin <= list.size()) {
         const std::size_t comma = list.find(',', begin);
         const std::string name =
             TrimAscii(list.substr(begin, comma == std::string::npos ? std::string::npos
                                                                     : comma - begin));
-        if (!name.empty() && name != "(暂时没人设置昵称)") g_onlineNicks.push_back(name);
+        if (!name.empty() && name != "(暂时没人设置昵称)") out->push_back(name);
         if (comma == std::string::npos) break;
         begin = comma + 1;
     }
 }
+
+void SetOnlineNicks(const std::string& list) { ParseNickList(list, &g_onlineNicks); }
+
+// 服务器发的 KNOWN：所有已注册账号（含不在线的），补 /ban /op /unban /ip 时用
+void SetKnownNicks(const std::string& list) { ParseNickList(list, &g_knownNicks); }
 
 void AddOnlineNick(const std::string& name) {
     if (name.empty()) return;
@@ -219,7 +227,9 @@ int g_unread = 0;
 std::string g_host = "127.0.0.1";
 std::string g_nick = "user";
 bool g_authPending = false;      // 已发出登录/注册请求，等待服务器回应
+bool g_authed = false;           // 已经登录成功（连上但还没登录时状态栏显示"未登录"）
 bool g_heartbeatPending = false; // 刚发过心跳 PING（对应的 PONG 不显示成提示）
+int g_maxFileMb = 64;            // 服务器当前的单文件上限（由服务器发的 RULES 行更新）
 int g_port = dchat::kDefaultPort;
 
 // ---------------- 配色 ----------------
@@ -1100,11 +1110,11 @@ void UpdateStatus() {
     if (!ui.hStatus) return;
     std::wstring text;
     if (IsConnected()) {
-        text = L"已连接 " + Utf8ToWide(g_host) + L":" + std::to_wstring(g_port) + L"　用户：" +
-               Utf8ToWide(g_nick);
+        text = L"已连接 " + Utf8ToWide(g_host) + L":" + std::to_wstring(g_port);
+        text += g_authed ? (L"　用户：" + Utf8ToWide(g_nick)) : L"　未登录";
         if (!g_transferStatus.empty()) text += L"　｜ " + Utf8ToWide(g_transferStatus);
     } else {
-        text = L"未连接　点右边「连接」填写服务器地址、用户名和密码";
+        text = L"未连接　点右边「连接」填服务器地址，连上后再登录或注册";
     }
     SetWindowTextW(ui.hStatus, text.c_str());
     EnableWindow(ui.hConnect, !IsConnected());
@@ -1243,11 +1253,15 @@ void DisconnectFromServer(bool showNotice) {
     g_running = false;
     if (g_sock != INVALID_SOCKET) ::shutdown(g_sock, SD_BOTH);
     if (g_recvThread.joinable()) g_recvThread.join();
-    if (g_sock != INVALID_SOCKET) {
-        ::closesocket(g_sock);
-        g_sock = INVALID_SOCKET;
-    }
-    ResetTransfers("连接已断开，接收中断");  // 没传完的文件不留半个在硬盘上
+        if (g_sock != INVALID_SOCKET) {
+            ::closesocket(g_sock);
+            g_sock = INVALID_SOCKET;
+        }
+        g_onlineNicks.clear();  // 断开后名单作废：下次连接由服务器重新下发
+        g_knownNicks.clear();
+        g_authed = false;
+        g_authPending = false;
+        ResetTransfers("连接已断开，接收中断");  // 没传完的文件不留半个在硬盘上
     UpdateStatus();
     if (showNotice) ViewAddItem(ItemKind::Notice, "已断开连接", dchat::NowTimeString());
 }
@@ -1493,10 +1507,12 @@ void StartSendFile(const std::wstring& path) {
         ViewAddItem(ItemKind::Error, "这是个空文件，没必要发送", dchat::NowTimeString());
         return;
     }
-    if (static_cast<unsigned long long>(size.QuadPart) > dchat::kMaxFileBytes) {
+    // 用服务器下发的单文件上限（RULES 行），没收到就按默认值
+    const unsigned long long maxBytes = dchat::RuleMbToBytes(g_maxFileMb);
+    if (static_cast<unsigned long long>(size.QuadPart) > maxBytes) {
         CloseHandle(file);
         ViewAddItem(ItemKind::Error,
-                    "文件太大了，单个文件最多 " + dchat::FormatBytes(dchat::kMaxFileBytes),
+                    "文件太大了：服务器当前限制单个文件最多 " + dchat::FormatBytes(maxBytes),
                     dchat::NowTimeString());
         return;
     }
@@ -1817,47 +1833,61 @@ constexpr int kDlgFirstRowY = 76;
 constexpr int kDlgTextPadX = 10;
 constexpr int kDlgTextPadY = 4;
 constexpr int kDlgFieldRadius = 8;
-constexpr int kDlgCheckY = kDlgFirstRowY + 5 * kDlgRowH - 2;  // 「显示密码」那一行
 constexpr int kDlgCheckH = 22;
 constexpr int kDlgCheckW = 120;
-constexpr int kDlgTipY = kDlgCheckY + kDlgCheckH + 6;
+constexpr int kDlgTipH = 18;
 constexpr int kDlgButtonH = 32;
-constexpr int kDlgButtonW = 132;
-constexpr int kDlgCancelW = 88;
+constexpr int kDlgButtonW = 120;      // 主按钮（连接 / 登录 / 注册并登录）
+constexpr int kDlgCancelW = 78;       // 「断开」
+constexpr int kDlgSwitchW = 150;      // 「没有账号？注册新账号」/「已有账号？去登录」
 constexpr int kDlgButtonGap = 8;
-constexpr int kDlgButtonY = kDlgTipY + 26;
-constexpr int kDlgHeight = kDlgButtonY + kDlgButtonH + 14;
 // 注意：这里不能用 WS_CLIPCHILDREN —— 输入框的圆角底板是靠父窗口画在编辑框
 // 底下的，加了它就会把编辑框那块区域裁掉，编辑框只剩自己的白底。
 constexpr DWORD kDlgStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_POPUP;
 constexpr DWORD kDlgExStyle = WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT;
 
+// 对话框的纵向排布：N 行输入框 →（可选的「显示密码」）→ 提示行 → 按钮行
+struct DialogLayout {
+    int checkY = 0;   // 「显示密码」那一行的顶端
+    int tipY = 0;     // 灰色/红色提示行
+    int buttonY = 0;
+    int height = 0;   // 客户区高度
+};
+
+DialogLayout ComputeDialogLayout(int rows, bool withShowCheck) {
+    DialogLayout out;
+    int y = kDlgFirstRowY + rows * kDlgRowH - 2;
+    out.checkY = y;
+    if (withShowCheck) y += kDlgCheckH + 6;
+    out.tipY = y;
+    out.buttonY = out.tipY + kDlgTipH + 8;
+    out.height = out.buttonY + kDlgButtonH + 14;
+    return out;
+}
+
+// ---------------- 第一步：连接（只填服务器地址 + 端口）----------------
 struct ConnectDialogState {
     std::string host;
-    std::string user;
-    std::string password;
     int port = dchat::kDefaultPort;
-    bool isRegister = false;  // 填了确认密码 = 注册
     bool accepted = false;
     bool done = false;
-    bool showPassword = false;  // 「显示密码」：勾上后两个密码框显示明文
-    std::wstring error;         // 校验失败的原因：显示在对话框里，不弹系统消息框
-    RECT fieldRect[5]{};        // 五行输入框的圆角底板（自绘用）
-    HWND edits[5]{};            // 五个编辑框（判断焦点高亮用）
+    std::wstring error;   // 校验失败的原因：显示在对话框里，不弹系统消息框
+    RECT fieldRect[2]{};  // 两行输入框的圆角底板（自绘用）
+    HWND edits[2]{};      // 两个编辑框（判断焦点高亮用）
     HBRUSH fieldBrush = nullptr;  // 编辑框自己的底色（和圆角底板同色），随对话框创建/销毁
 };
 
-// 「显示密码」：把两个密码框的遮挡字符设成 0（明文）或 ●（默认的圆点）。
+// 「显示密码」：把密码框的遮挡字符设成 0（明文）或 ●（默认的圆点）。
 // 改完之后要连父窗口一起重画：编辑框自己只重画文字，而它底下的圆角底板
 // 是父窗口画的，不一起重画就会留下上一次的点号/明文。
-void ApplyPasswordMask(HWND dlg, ConnectDialogState* state) {
-    if (!state) return;
-    const WPARAM mask = state->showPassword ? 0 : static_cast<WPARAM>(0x25CF);
-    for (int i = 3; i <= 4; ++i) {  // 密码 / 确认密码
-        if (!state->edits[i]) continue;
-        SendMessageW(state->edits[i], EM_SETPASSWORDCHAR, mask, 0);
-        if (dlg) InvalidateRect(dlg, &state->fieldRect[i], TRUE);
-        RedrawWindow(state->edits[i], nullptr, nullptr,
+void ApplyPasswordMask(HWND dlg, const HWND* edits, const RECT* rects, int count,
+                       bool showPassword) {
+    const WPARAM mask = showPassword ? 0 : static_cast<WPARAM>(0x25CF);
+    for (int i = 0; i < count; ++i) {
+        if (!edits[i]) continue;
+        SendMessageW(edits[i], EM_SETPASSWORDCHAR, mask, 0);
+        if (dlg && rects) InvalidateRect(dlg, &rects[i], TRUE);
+        RedrawWindow(edits[i], nullptr, nullptr,
                      RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
     }
 }
@@ -1872,19 +1902,16 @@ LRESULT CALLBACK ConnectDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // 编辑框自带的底色：和圆角底板同色，这样它能自己把内容擦干净
             state->fieldBrush = CreateSolidBrush(g_palette->bubbleOther);
 
-            const std::wstring values[5] = {Utf8ToWide(state->host), std::to_wstring(state->port),
-                                            Utf8ToWide(state->user), L"", L""};
-            const int ids[5] = {IDD_HOST, IDD_PORT, IDD_USER, IDD_PASSWORD, IDD_CONFIRM};
-            for (int i = 0; i < 5; ++i) {
+            const std::wstring values[2] = {Utf8ToWide(state->host), std::to_wstring(state->port)};
+            const int ids[2] = {IDD_HOST, IDD_PORT};
+            for (int i = 0; i < 2; ++i) {
                 const int top = kDlgFirstRowY + i * kDlgRowH;
                 state->fieldRect[i] =
                     RECT{kDlgFieldX, top, kDlgFieldX + kDlgFieldW, top + kDlgFieldH};
-                const bool isPassword = i == 3 || i == 4;
                 // 无边框 + 内缩：圆角底板由父窗口画，文字因此自带内边距
                 state->edits[i] = CreateWindowW(
                     L"EDIT", values[i].c_str(),
-                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL |
-                        (isPassword ? ES_PASSWORD : 0),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
                     state->fieldRect[i].left + kDlgTextPadX, top + kDlgTextPadY,
                     kDlgFieldW - kDlgTextPadX * 2, kDlgFieldH - kDlgTextPadY * 2, hwnd,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(ids[i])), nullptr, nullptr);
@@ -1892,14 +1919,15 @@ LRESULT CALLBACK ConnectDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
 
             // 两个圆角自绘按钮：主操作靠右（和主窗口的「发送」一样用强调色）
+            const DialogLayout layout = ComputeDialogLayout(2, false);
             HWND cancel = CreateWindowW(
                 L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                kDlgWidth - kDlgPad - kDlgButtonW - kDlgButtonGap - kDlgCancelW, kDlgButtonY,
+                kDlgWidth - kDlgPad - kDlgButtonW - kDlgButtonGap - kDlgCancelW, layout.buttonY,
                 kDlgCancelW, kDlgButtonH, hwnd,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDD_CANCEL)), nullptr, nullptr);
             HWND ok = CreateWindowW(
-                L"BUTTON", L"登录 / 注册", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                kDlgWidth - kDlgPad - kDlgButtonW, kDlgButtonY, kDlgButtonW, kDlgButtonH, hwnd,
+                L"BUTTON", L"连接", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                kDlgWidth - kDlgPad - kDlgButtonW, layout.buttonY, kDlgButtonW, kDlgButtonH, hwnd,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDD_OK)), nullptr, nullptr);
             const HWND buttons[2] = {ok, cancel};
             for (HWND button : buttons) {
@@ -1907,15 +1935,6 @@ LRESULT CALLBACK ConnectDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 // 复用主窗口按钮那套自绘 + 悬停/按下反馈
                 SetWindowLongPtrW(button, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc));
             }
-
-            // 「显示密码」勾选框（自绘，样式和整体一致）
-            HWND show = CreateWindowW(
-                L"BUTTON", L"显示密码", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                kDlgFieldX, kDlgCheckY, kDlgCheckW, kDlgCheckH, hwnd,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDD_SHOW)), nullptr, nullptr);
-            SendMessageW(show, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
-            SetWindowLongPtrW(show, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc));
-            ApplyPasswordMask(hwnd, state);  // 默认遮挡（勾选框没勾）
             return 0;
         }
         case WM_DESTROY:
@@ -1940,7 +1959,7 @@ LRESULT CALLBACK ConnectDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DrawTextIn(dc, L"连接到聊天服务器", titleRect, ui.fontLarge, g_palette->text,
                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
             const RECT subRect{kDlgPad, 42, client.right - kDlgPad, 60};
-            DrawTextIn(dc, L"填好服务器地址和账号，点「登录 / 注册」进入房间", subRect,
+            DrawTextIn(dc, L"先连上服务器，连上之后再登录或注册账号", subRect,
                        ui.fontSmall, g_palette->system,
                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
             HBRUSH lineBrush = CreateSolidBrush(g_palette->border);
@@ -1948,9 +1967,9 @@ LRESULT CALLBACK ConnectDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             FillRect(dc, &lineRect, lineBrush);
             DeleteObject(lineBrush);
 
-            // 五行：右对齐标签 + 圆角输入底板（有焦点的那行用强调色描边）
-            const wchar_t* labels[5] = {L"服务器地址", L"端口", L"用户名", L"密码", L"确认密码"};
-            for (int i = 0; i < 5; ++i) {
+            // 两行：右对齐标签 + 圆角输入底板（有焦点的那行用强调色描边）
+            const wchar_t* labels[2] = {L"服务器地址", L"端口"};
+            for (int i = 0; i < 2; ++i) {
                 const RECT labelRect{kDlgPad, state->fieldRect[i].top, kDlgFieldX - 10,
                                      state->fieldRect[i].bottom};
                 DrawTextIn(dc, labels[i], labelRect, ui.font, g_palette->system,
@@ -1965,8 +1984,10 @@ LRESULT CALLBACK ConnectDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             const bool hasError = !state->error.empty();
             const std::wstring tip =
                 hasError ? state->error
-                         : L"提示：填「确认密码」= 注册新账号；留空 = 登录已有账号";
-            const RECT tipRect{kDlgPad, kDlgTipY, client.right - kDlgPad, kDlgTipY + 18};
+                         : L"本机测试填 127.0.0.1；连上以后再填账号";
+            const DialogLayout layout = ComputeDialogLayout(2, false);
+            const RECT tipRect{kDlgPad, layout.tipY, client.right - kDlgPad,
+                               layout.tipY + kDlgTipH};
             DrawTextIn(dc, tip, tipRect, ui.fontSmall,
                        hasError ? g_palette->error : g_palette->time,
                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
@@ -1975,11 +1996,7 @@ LRESULT CALLBACK ConnectDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_DRAWITEM: {
             const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lp);
-            if (item && item->CtlID == IDD_SHOW) {
-                DrawOwnerCheckbox(item, state ? state->showPassword : false, ui.font);
-            } else {
-                DrawOwnerButton(item);
-            }
+            DrawOwnerButton(item);  // 连接对话框里只有按钮（勾选框在账号窗口那边）
             return TRUE;
         }
         case WM_CTLCOLOREDIT:
@@ -2013,36 +2030,21 @@ LRESULT CALLBACK ConnectDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 return 0;
             }
-            if (id == IDD_SHOW) {
-                state->showPassword = !state->showPassword;
-                ApplyPasswordMask(hwnd, state);
-                InvalidateRect(GetDlgItem(hwnd, IDD_SHOW), nullptr, TRUE);
-                return 0;
-            }
             if (id == IDD_OK) {
                 // 校验失败时把原因写在对话框底部、并把焦点挪到那一行，
                 // 不弹系统消息框（深色主题下它会是一块刺眼的浅色）
                 auto fail = [&](const wchar_t* text, int field) {
                     state->error = text;
                     InvalidateRect(hwnd, nullptr, FALSE);
-                    if (field >= 0 && field < 5 && state->edits[field]) {
+                    if (field >= 0 && field < 2 && state->edits[field]) {
                         SetFocus(state->edits[field]);
                     }
                 };
                 wchar_t host[128] = {0};
                 wchar_t port[32] = {0};
-                wchar_t user[64] = {0};
-                wchar_t password[128] = {0};
-                wchar_t confirm[128] = {0};
                 GetDlgItemTextW(hwnd, IDD_HOST, host, 128);
                 GetDlgItemTextW(hwnd, IDD_PORT, port, 32);
-                GetDlgItemTextW(hwnd, IDD_USER, user, 64);
-                GetDlgItemTextW(hwnd, IDD_PASSWORD, password, 128);
-                GetDlgItemTextW(hwnd, IDD_CONFIRM, confirm, 128);
                 const int parsedPort = _wtoi(port);
-                dchat::NickError nickError = dchat::NickError::None;
-                const std::string normalizedUser = dchat::NormalizeNick(WideToUtf8(user), &nickError);
-                dchat::PasswordError passwordError = dchat::PasswordError::None;
                 if (WideToUtf8(host).empty()) {
                     fail(L"请填写服务器地址（本机测试用 127.0.0.1）", 0);
                     return 0;
@@ -2051,24 +2053,8 @@ LRESULT CALLBACK ConnectDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     fail(L"端口请填 1-65535（服务器默认 5555）", 1);
                     return 0;
                 }
-                if (normalizedUser.empty()) {
-                    fail(Utf8ToWide(dchat::NickErrorText(nickError)).c_str(), 2);
-                    return 0;
-                }
-                if (!dchat::ValidatePassword(WideToUtf8(password), &passwordError)) {
-                    fail(Utf8ToWide(dchat::PasswordErrorText(passwordError)).c_str(), 3);
-                    return 0;
-                }
-                const std::string confirmText = WideToUtf8(confirm);
-                if (!confirmText.empty() && confirmText != WideToUtf8(password)) {
-                    fail(L"两次输入的密码不一致", 4);
-                    return 0;
-                }
                 state->host = WideToUtf8(host);
                 state->port = parsedPort;
-                state->user = normalizedUser;
-                state->password = WideToUtf8(password);
-                state->isRegister = !confirmText.empty();  // 填了确认密码 = 注册
                 state->accepted = true;
                 state->done = true;
                 DestroyWindow(hwnd);
@@ -2105,7 +2091,8 @@ bool PromptConnect(HWND parent, ConnectDialogState& state) {
         RegisterClassExW(&wc);
         registered = true;
     }
-    RECT rc{0, 0, kDlgWidth, kDlgHeight};
+    const DialogLayout layout = ComputeDialogLayout(2, false);
+    RECT rc{0, 0, kDlgWidth, layout.height};
     AdjustWindowRectEx(&rc, kDlgStyle, FALSE, kDlgExStyle);
     const int width = rc.right - rc.left;
     const int height = rc.bottom - rc.top;
@@ -2124,7 +2111,7 @@ bool PromptConnect(HWND parent, ConnectDialogState& state) {
         if (y + height > monitor.rcWork.bottom) y = monitor.rcWork.bottom - height;
     }
 
-    HWND dlg = CreateWindowExW(kDlgExStyle, L"DchatConnectDlg", L"登录 / 注册", kDlgStyle, x, y,
+    HWND dlg = CreateWindowExW(kDlgExStyle, L"DchatConnectDlg", L"连接到聊天服务器", kDlgStyle, x, y,
                                width, height, parent, nullptr, GetModuleHandleW(nullptr), &state);
     if (!dlg) return false;
     HICON icon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_DCHAT));
@@ -2135,8 +2122,9 @@ bool PromptConnect(HWND parent, ConnectDialogState& state) {
     ApplySystemDarkMode(dlg);  // 标题栏跟随主题（客户区颜色由自绘负责）
     EnableWindow(parent, FALSE);
     ShowWindow(dlg, SW_SHOW);
-    // 服务器地址是记住的，所以焦点直接落在用户名上（打开就能敲账号）
-    SetFocus(GetDlgItem(dlg, IDD_USER));
+    // 地址是记住的：进来就全选，直接敲就能换一台服务器
+    SetFocus(GetDlgItem(dlg, IDD_HOST));
+    SendDlgItemMessageW(dlg, IDD_HOST, EM_SETSEL, 0, -1);
     MSG msg;
     while (!state.done && GetMessageW(&msg, nullptr, 0, 0) > 0) {
         // 回车 = 提交，Esc = 取消。这个窗口不是真正的对话框，
@@ -2162,12 +2150,459 @@ bool PromptConnect(HWND parent, ConnectDialogState& state) {
     return state.accepted;
 }
 
+// ---------------- 第二步：登录 / 注册（两个独立的界面）----------------
+// 连上服务器之后才弹出来。登录和注册是**两个不同的窗口**（标题栏、标题、输入框、
+// 按钮都不一样）：登录窗口只有用户名 + 密码，注册窗口多一个确认密码。
+// 左下角的按钮在两者之间切换，已经填好的内容会带到另一个界面，不用重打。
+constexpr int IDD_SWITCH = 106;  // 「没有账号？注册新账号」/「已有账号？去登录」
+
+struct AuthDialogState {
+    HWND parent = nullptr;
+    std::string host;             // 显示用："已连接到 host:port"
+    int port = dchat::kDefaultPort;
+    bool isRegister = false;      // 当前显示的是哪个界面
+    bool pending = false;         // 请求已经发出去，正等服务器回答
+    bool accepted = false;        // 登录 / 注册成功
+    bool done = false;            // 该关窗口了（成功、取消、或出错退出）
+    bool showPassword = false;    // 「显示密码」勾选框
+    std::wstring error;           // 红色提示（服务器拒绝的原因 / 本地校验失败）
+    std::wstring info;            // 灰色提示（"正在登录…"）
+    std::string user;             // 提交出去的用户名（成功后就是昵称）
+    // 切换界面时把已经填的内容带过去
+    std::wstring prefillUser, prefillPassword, prefillConfirm;
+    HWND dlg = nullptr;           // 当前显示的窗口（登录窗口或注册窗口）
+    HWND edits[3]{};              // 用户名 / 密码 / 确认密码（注册界面才用第三个）
+    RECT fieldRect[3]{};          // 三行输入框的圆角底板
+    HBRUSH fieldBrush = nullptr;
+    DialogLayout layout;
+};
+
+// 打开的账号窗口：服务器回了 ERROR / LOGGEDIN 时，把结果写进这个窗口（没开就是 nullptr）
+AuthDialogState* g_authDlg = nullptr;
+
+int AuthRowCount(const AuthDialogState& state) { return state.isRegister ? 3 : 2; }
+
+void SwitchAuthWindow(AuthDialogState* state, bool toRegister);  // 定义在下面
+
+void LayoutAuthWindow(AuthDialogState* state) {
+    if (!state) return;
+    const int rows = AuthRowCount(*state);
+    state->layout = ComputeDialogLayout(rows, true);
+    for (int i = 0; i < 3; ++i) {
+        const int top = kDlgFirstRowY + i * kDlgRowH;
+        state->fieldRect[i] = RECT{kDlgFieldX, top, kDlgFieldX + kDlgFieldW, top + kDlgFieldH};
+    }
+    if (!state->dlg) return;
+    RECT rc{0, 0, kDlgWidth, state->layout.height};
+    AdjustWindowRectEx(&rc, kDlgStyle, FALSE, kDlgExStyle);
+    RECT wr{};
+    GetWindowRect(state->dlg, &wr);
+    SetWindowPos(state->dlg, nullptr, wr.left, wr.top, rc.right - rc.left, rc.bottom - rc.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    for (int i = 0; i < 3; ++i) {
+        const bool used = i < rows;
+        ShowWindow(state->edits[i], used ? SW_SHOW : SW_HIDE);
+        if (!used) continue;
+        SetWindowPos(state->edits[i], nullptr, state->fieldRect[i].left + kDlgTextPadX,
+                     state->fieldRect[i].top + kDlgTextPadY, kDlgFieldW - kDlgTextPadX * 2,
+                     kDlgFieldH - kDlgTextPadY * 2, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    SetWindowPos(GetDlgItem(state->dlg, IDD_SHOW), nullptr, kDlgFieldX, state->layout.checkY,
+                 kDlgCheckW, kDlgCheckH, SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(GetDlgItem(state->dlg, IDD_SWITCH), nullptr, kDlgPad, state->layout.buttonY,
+                 kDlgSwitchW, kDlgButtonH, SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(GetDlgItem(state->dlg, IDD_CANCEL), nullptr,
+                 kDlgWidth - kDlgPad - kDlgButtonW - kDlgButtonGap - kDlgCancelW,
+                 state->layout.buttonY, kDlgCancelW, kDlgButtonH,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(GetDlgItem(state->dlg, IDD_OK), nullptr, kDlgWidth - kDlgPad - kDlgButtonW,
+                 state->layout.buttonY, kDlgButtonW, kDlgButtonH,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    InvalidateRect(state->dlg, nullptr, TRUE);
+}
+
+// 服务器对 LOGIN / REGISTER 的回答：写进还开着的账号窗口。
+// ok = true 表示认证通过（窗口自动关掉，回到主窗口）；
+// ok = false 时把原因显示成红色提示，连接不动，用户可以改完再提交、或者切到另一个界面。
+void AuthDialogOnResult(bool ok, const std::wstring& text) {
+    AuthDialogState* state = g_authDlg;
+    if (!state) return;
+    state->pending = false;
+    if (ok) {
+        state->accepted = true;
+        state->done = true;
+        if (state->dlg) DestroyWindow(state->dlg);
+        return;
+    }
+    state->error = text;
+    state->info.clear();
+    if (state->dlg) {
+        // 失败后不需要改尺寸，重画就行（提示行会把红色原因显示出来）
+        InvalidateRect(state->dlg, nullptr, TRUE);
+    }
+}
+
+LRESULT CALLBACK AuthDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* state = reinterpret_cast<AuthDialogState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+        case WM_CREATE: {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            state = static_cast<AuthDialogState*>(cs->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+            state->dlg = hwnd;
+            state->fieldBrush = CreateSolidBrush(g_palette->bubbleOther);
+
+            const std::wstring values[3] = {state->prefillUser, state->prefillPassword,
+                                            state->prefillConfirm};
+            const int ids[3] = {IDD_USER, IDD_PASSWORD, IDD_CONFIRM};
+            for (int i = 0; i < 3; ++i) {
+                const bool isPassword = i >= 1;
+                state->edits[i] = CreateWindowW(
+                    L"EDIT", values[i].c_str(),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL |
+                        (isPassword ? ES_PASSWORD : 0),
+                    0, 0, 10, 10, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ids[i])),
+                    nullptr, nullptr);
+                SendMessageW(state->edits[i], WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
+            }
+            HWND ok = CreateWindowW(L"BUTTON", state->isRegister ? L"注册并登录" : L"登录",
+                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
+                                    hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDD_OK)),
+                                    nullptr, nullptr);
+            HWND cancel = CreateWindowW(L"BUTTON", L"断开", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                                              BS_OWNERDRAW,
+                                        0, 0, 10, 10, hwnd,
+                                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDD_CANCEL)),
+                                        nullptr, nullptr);
+            HWND sw = CreateWindowW(
+                L"BUTTON", state->isRegister ? L"已有账号？去登录" : L"没有账号？注册新账号",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10, hwnd,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDD_SWITCH)), nullptr, nullptr);
+            HWND show = CreateWindowW(L"BUTTON", L"显示密码", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                                              BS_OWNERDRAW,
+                                      0, 0, 10, 10, hwnd,
+                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDD_SHOW)),
+                                      nullptr, nullptr);
+            const HWND buttons[4] = {ok, cancel, sw, show};
+            for (HWND button : buttons) {
+                SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
+                SetWindowLongPtrW(button, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc));
+            }
+            LayoutAuthWindow(state);
+            ApplyPasswordMask(hwnd, state->edits + 1, state->fieldRect + 1, 2,
+                              state->showPassword);
+            return 0;
+        }
+        case WM_DESTROY:
+            if (state && state->fieldBrush) {
+                DeleteObject(state->fieldBrush);
+                state->fieldBrush = nullptr;
+            }
+            if (state && state->dlg == hwnd) state->dlg = nullptr;
+            return 0;
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            HBRUSH bg = CreateSolidBrush(g_palette->windowBg);
+            FillRect(dc, &client, bg);
+            DeleteObject(bg);
+
+            const bool reg = state->isRegister;
+            const RECT titleRect{kDlgPad, 14, client.right - kDlgPad, 40};
+            DrawTextIn(dc, reg ? L"注册新账号" : L"登录", titleRect, ui.fontLarge, g_palette->text,
+                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            const RECT subRect{kDlgPad, 42, client.right - kDlgPad, 60};
+            const std::wstring sub = L"已连接到 " + Utf8ToWide(state->host) + L":" +
+                                     std::to_wstring(state->port) +
+                                     (reg ? L"　注册成功后会自动登录" : L"　用已有账号登录");
+            DrawTextIn(dc, sub, subRect, ui.fontSmall, g_palette->system,
+                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+            HBRUSH lineBrush = CreateSolidBrush(g_palette->border);
+            const RECT lineRect{kDlgPad, 66, client.right - kDlgPad, 67};
+            FillRect(dc, &lineRect, lineBrush);
+            DeleteObject(lineBrush);
+
+            const wchar_t* labels[3] = {L"用户名", L"密码", L"确认密码"};
+            const int rows = AuthRowCount(*state);
+            for (int i = 0; i < rows; ++i) {
+                const RECT labelRect{kDlgPad, state->fieldRect[i].top, kDlgFieldX - 10,
+                                     state->fieldRect[i].bottom};
+                DrawTextIn(dc, labels[i], labelRect, ui.font, g_palette->system,
+                           DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                const bool focused = GetFocus() == state->edits[i];
+                ui::DrawRoundedControl(dc, state->fieldRect[i], kDlgFieldRadius,
+                                       g_palette->windowBg, g_palette->bubbleOther,
+                                       focused ? g_palette->accent : g_palette->border);
+            }
+
+            const bool hasError = !state->error.empty();
+            const std::wstring tip =
+                hasError ? state->error
+                         : (state->pending
+                                ? state->info
+                                : (reg ? L"确认密码要和上面一致；注册成功就自动进房间"
+                                       : L"还没有账号？点左下角「没有账号？注册新账号」"));
+            const RECT tipRect{kDlgPad, state->layout.tipY, client.right - kDlgPad,
+                               state->layout.tipY + kDlgTipH};
+            DrawTextIn(dc, tip, tipRect, ui.fontSmall,
+                       hasError ? g_palette->error : g_palette->time,
+                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_DRAWITEM: {
+            // 「显示密码」是勾选框，其余按钮走通用自绘
+            const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lp);
+            if (item && item->CtlID == IDD_SHOW) {
+                DrawOwnerCheckbox(item, state ? state->showPassword : false, ui.font);
+            } else {
+                DrawOwnerButton(item);
+            }
+            return TRUE;
+        }
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORSTATIC: {
+            HDC dc = reinterpret_cast<HDC>(wp);
+            SetTextColor(dc, g_palette->text);
+            SetBkColor(dc, g_palette->bubbleOther);
+            SetBkMode(dc, TRANSPARENT);
+            return reinterpret_cast<LRESULT>(state && state->fieldBrush ? state->fieldBrush
+                                                                        : GetStockObject(NULL_BRUSH));
+        }
+        case WM_COMMAND: {
+            if (!state) return 0;
+            const int id = LOWORD(wp);
+            const int code = HIWORD(wp);
+            if (code == EN_SETFOCUS || code == EN_KILLFOCUS) {
+                InvalidateRect(hwnd, nullptr, FALSE);  // 焦点边框跟着挪
+                return 0;
+            }
+            if (code == EN_CHANGE) {
+                if (!state->error.empty()) {  // 开始改了就把上一次的红色提示清掉
+                    state->error.clear();
+                    InvalidateRect(hwnd, nullptr, TRUE);
+                }
+                return 0;
+            }
+            if (id == IDD_SHOW) {
+                state->showPassword = !state->showPassword;
+                ApplyPasswordMask(hwnd, state->edits + 1, state->fieldRect + 1, 2,
+                                  state->showPassword);
+                InvalidateRect(GetDlgItem(hwnd, IDD_SHOW), nullptr, TRUE);
+                return 0;
+            }
+            if (id == IDD_SWITCH) {
+                if (state->pending) return 0;  // 正在等服务器回答，先别切界面
+                SwitchAuthWindow(state, !state->isRegister);
+                return 0;
+            }
+            if (id == IDD_OK) {
+                if (state->pending) return 0;  // 别重复提交
+                auto fail = [&](const wchar_t* text, int field) {
+                    state->error = text;
+                    state->info.clear();
+                    InvalidateRect(hwnd, nullptr, TRUE);
+                    if (field >= 0 && field < 3 && state->edits[field]) {
+                        SetFocus(state->edits[field]);
+                    }
+                };
+                wchar_t user[64] = {0};
+                wchar_t password[128] = {0};
+                wchar_t confirm[128] = {0};
+                GetDlgItemTextW(hwnd, IDD_USER, user, 64);
+                GetDlgItemTextW(hwnd, IDD_PASSWORD, password, 128);
+                if (state->isRegister) GetDlgItemTextW(hwnd, IDD_CONFIRM, confirm, 128);
+
+                dchat::NickError nickError = dchat::NickError::None;
+                const std::string normalizedUser = dchat::NormalizeNick(WideToUtf8(user), &nickError);
+                const std::string passwordText = WideToUtf8(password);
+                dchat::PasswordError passwordError = dchat::PasswordError::None;
+                if (normalizedUser.empty()) {
+                    fail(Utf8ToWide(dchat::NickErrorText(nickError)).c_str(), 0);
+                    return 0;
+                }
+                if (!dchat::ValidatePassword(passwordText, &passwordError)) {
+                    fail(Utf8ToWide(dchat::PasswordErrorText(passwordError)).c_str(), 1);
+                    return 0;
+                }
+                if (state->isRegister) {
+                    const std::string confirmText = WideToUtf8(confirm);
+                    if (confirmText.empty()) {
+                        fail(L"请再输一遍密码（确认密码）", 2);
+                        return 0;
+                    }
+                    if (confirmText != passwordText) {
+                        fail(L"两次输入的密码不一致", 2);
+                        return 0;
+                    }
+                }
+                state->user = normalizedUser;
+                state->prefillUser = user;
+                state->prefillPassword = password;
+                state->prefillConfirm = confirm;
+                state->pending = true;
+                state->error.clear();
+                state->info = state->isRegister ? L"正在注册…" : L"正在登录…";
+                g_authPending = true;
+                const std::string line = dchat::BuildLine(
+                    state->isRegister ? "REGISTER" : "LOGIN", normalizedUser + " " + passwordText);
+                if (!SendRawLine(line)) {
+                    state->pending = false;
+                    g_authPending = false;
+                    fail(L"发送登录请求失败，连接可能已断开", -1);
+                    return 0;
+                }
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
+            if (id == IDD_CANCEL) {  // 「断开」：整个登录流程结束（调用方负责断开连接）
+                state->done = true;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            return 0;
+        }
+        case WM_CLOSE:
+            if (state) state->done = true;
+            DestroyWindow(hwnd);
+            return 0;
+        default:
+            break;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// 打开当前模式对应的窗口（登录窗口 / 注册窗口）
+HWND OpenAuthWindow(AuthDialogState* state, int x, int y) {
+    const wchar_t* cls = state->isRegister ? L"DchatRegisterDlg" : L"DchatLoginDlg";
+    const wchar_t* title = state->isRegister ? L"注册新账号" : L"登录";
+    const DialogLayout layout = ComputeDialogLayout(AuthRowCount(*state), true);
+    RECT rc{0, 0, kDlgWidth, layout.height};
+    AdjustWindowRectEx(&rc, kDlgStyle, FALSE, kDlgExStyle);
+    HWND dlg = CreateWindowExW(kDlgExStyle, cls, title, kDlgStyle, x, y, rc.right - rc.left,
+                               rc.bottom - rc.top, state->parent, nullptr, GetModuleHandleW(nullptr),
+                               state);
+    if (!dlg) return nullptr;
+    HICON icon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_DCHAT));
+    if (icon) {
+        SendMessageW(dlg, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
+        SendMessageW(dlg, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
+    }
+    ApplySystemDarkMode(dlg);
+    return dlg;
+}
+
+// 在「登录」和「注册」两个界面之间切换：记下已经填的内容，换成另一个窗口显示
+void SwitchAuthWindow(AuthDialogState* state, bool toRegister) {
+    if (!state || !state->dlg) return;
+    wchar_t user[64] = {0};
+    wchar_t password[128] = {0};
+    wchar_t confirm[128] = {0};
+    GetDlgItemTextW(state->dlg, IDD_USER, user, 64);
+    GetDlgItemTextW(state->dlg, IDD_PASSWORD, password, 128);
+    if (state->isRegister) GetDlgItemTextW(state->dlg, IDD_CONFIRM, confirm, 128);
+    state->prefillUser = user;
+    state->prefillPassword = password;
+    state->prefillConfirm = confirm;
+
+    RECT wr{};
+    GetWindowRect(state->dlg, &wr);
+    HWND old = state->dlg;
+    state->dlg = nullptr;  // 先清掉：WM_DESTROY 里就不会再动它
+    DestroyWindow(old);
+
+    state->isRegister = toRegister;
+    state->error.clear();
+    state->info.clear();
+    HWND dlg = OpenAuthWindow(state, wr.left, wr.top);
+    if (!dlg) {
+        state->done = true;  // 窗口建不出来就别卡着了
+        return;
+    }
+    ShowWindow(dlg, SW_SHOW);
+    SetFocus(GetDlgItem(dlg, IDD_USER));
+    SendDlgItemMessageW(dlg, IDD_USER, EM_SETSEL, 0, -1);
+}
+
+bool PromptAuth(HWND parent, AuthDialogState& state) {
+    static bool registered = false;
+    if (!registered) {
+        const wchar_t* classes[2] = {L"DchatLoginDlg", L"DchatRegisterDlg"};
+        for (const wchar_t* name : classes) {
+            WNDCLASSEXW wc{};
+            wc.cbSize = sizeof(wc);
+            wc.style = CS_HREDRAW | CS_VREDRAW;
+            wc.lpfnWndProc = AuthDialogProc;
+            wc.hInstance = GetModuleHandleW(nullptr);
+            wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+            wc.hbrBackground = nullptr;  // 客户区背景由 WM_PAINT 用主题色绘制
+            wc.lpszClassName = name;
+            RegisterClassExW(&wc);
+        }
+        registered = true;
+    }
+    state.parent = parent;
+
+    const DialogLayout layout = ComputeDialogLayout(AuthRowCount(state), true);
+    RECT rc{0, 0, kDlgWidth, layout.height};
+    AdjustWindowRectEx(&rc, kDlgStyle, FALSE, kDlgExStyle);
+    const int width = rc.right - rc.left;
+    const int height = rc.bottom - rc.top;
+    RECT parentRect{};
+    GetWindowRect(parent, &parentRect);
+    int x = parentRect.left + ((parentRect.right - parentRect.left) - width) / 2;
+    int y = parentRect.top + ((parentRect.bottom - parentRect.top) - height) / 2;
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    if (GetMonitorInfoW(MonitorFromWindow(parent, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        if (x < monitor.rcWork.left) x = monitor.rcWork.left;
+        if (y < monitor.rcWork.top) y = monitor.rcWork.top;
+        if (x + width > monitor.rcWork.right) x = monitor.rcWork.right - width;
+        if (y + height > monitor.rcWork.bottom) y = monitor.rcWork.bottom - height;
+    }
+    HWND dlg = OpenAuthWindow(&state, x, y);
+    if (!dlg) return false;
+    EnableWindow(parent, FALSE);
+    ShowWindow(dlg, SW_SHOW);
+    SetFocus(GetDlgItem(dlg, IDD_USER));
+    g_authDlg = &state;
+
+    // 模态循环：界面可能在登录 / 注册之间切换，所以每轮都重新取"当前窗口"。
+    // 回车 = 主按钮，Esc = 断开（这个窗口不是真正的对话框，系统不会自动找默认按钮）。
+    MSG msg;
+    while (!state.done && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        HWND current = state.dlg;
+        const bool mine = current && (msg.hwnd == current || IsChild(current, msg.hwnd));
+        if (mine && (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN)) {
+            if (msg.wParam == VK_RETURN) {
+                SendMessageW(current, WM_COMMAND, MAKEWPARAM(IDD_OK, BN_CLICKED), 0);
+                continue;
+            }
+            if (msg.wParam == VK_ESCAPE) {
+                SendMessageW(current, WM_COMMAND, MAKEWPARAM(IDD_CANCEL, BN_CLICKED), 0);
+                continue;
+            }
+        }
+        if (!current || !IsDialogMessageW(current, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    g_authDlg = nullptr;
+    EnableWindow(parent, TRUE);
+    SetForegroundWindow(parent);
+    return state.accepted;
+}
+
 // ---------------- 界面行为 ----------------
 void DoConnect(HWND hwnd) {
     if (IsConnected()) return;
     ConnectDialogState state;
-    // 只记住上次连的服务器（地址 + 端口）；用户名和密码每次都留空，
-    // 免得打开窗口就看到 "user" 这种无意义的占位内容
+    // 只记住上次连的服务器（地址 + 端口）；账号在连上之后的第二步才填
     state.host = g_host;
     state.port = g_port;
     if (!PromptConnect(hwnd, state)) return;
@@ -2182,19 +2617,23 @@ void DoConnect(HWND hwnd) {
     }
     g_host = state.host;
     g_port = state.port;
-    g_nick = state.user;  // 用户名即昵称，用于识别自己发的消息
-    g_authPending = true;
-    const std::string auth = dchat::BuildLine(state.isRegister ? "REGISTER" : "LOGIN",
-                                             state.user + " " + state.password);
-    if (!SendRawLine(auth)) {
-        ViewAddItem(ItemKind::Error, "发送登录请求失败", dchat::NowTimeString());
-        g_authPending = false;
-        DisconnectFromServer(false);
+    g_authed = false;   // 已经连上，但还没登录
+    UpdateStatus();
+
+    // 第二步：连上以后再登录 / 注册（两个独立界面，可以来回切换）
+    AuthDialogState auth;
+    auth.host = state.host;
+    auth.port = state.port;
+    if (PromptAuth(hwnd, auth)) {
+        if (g_nick.empty()) g_nick = auth.user;
+        ViewAddItem(ItemKind::Notice, "已登录：" + g_nick, dchat::NowTimeString());
+        UpdateStatus();
         return;
     }
-    ViewAddItem(ItemKind::Notice, state.isRegister ? "正在注册并登录…" : "正在登录…",
-                dchat::NowTimeString());
-    UpdateStatus();
+    // 用户在账号窗口里点了「断开」/ 关掉了窗口：这次连接就不要了
+    if (IsConnected()) SendRawLine(dchat::BuildLine("QUIT"));
+    DisconnectFromServer(false);
+    ViewAddItem(ItemKind::Notice, "已取消登录，连接已断开", dchat::NowTimeString());
 }
 
 void DoDisconnect(HWND hwnd) {
@@ -2277,7 +2716,8 @@ LRESULT CALLBACK InputProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == VK_TAB) {
             // 类似 Minecraft：Tab 在候选里循环（候选显示在输入框上方的浮层里）
             const std::string current = WideToUtf8(CurrentInputText());
-            const dchat::CompletionResult done = g_tabComplete.Next(current, g_onlineNicks);
+            const dchat::CompletionResult done =
+                g_tabComplete.Next(current, g_onlineNicks, g_knownNicks);
             if (done.text != current) SetInputText(Utf8ToWide(done.text));
             g_suggest = done;
             g_suggestPicked = done.picked;
@@ -2428,7 +2868,7 @@ void RefreshSuggestions() {
     if (g_suggestSuppress) return;  // 程序自己改的输入框内容，保持当前候选和选中项
     const std::string text = WideToUtf8(CurrentInputText());
     const int keep = g_suggestPicked;
-    g_suggest = dchat::Suggest(text, g_onlineNicks);
+    g_suggest = dchat::Suggest(text, g_onlineNicks, g_knownNicks);
     g_suggestPicked = (keep >= 0 && keep < static_cast<int>(g_suggest.matches.size())) ? keep : -1;
     g_suggestHover = -1;
     const bool show = !g_suggest.matches.empty();
@@ -2748,6 +3188,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 }
                 // 维护在线名单（Tab 补昵称参数要用）
+                if (raw.command == "RULES") {
+                    // 服务器把当前规则发过来了：客户端据此调整本地的"单文件上限"
+                    std::vector<std::string> fields = raw.Words();
+                    if (!fields.empty() && dchat::LooksLikeTime(fields[0])) fields.erase(fields.begin());
+                    if (!fields.empty()) {
+                        const int mb = std::atoi(fields[0].c_str());
+                        if (mb >= 1 && mb <= 4096) g_maxFileMb = mb;
+                    }
+                    delete payload;
+                    return 0;  // 这是给客户端用的控制行，不显示在聊天记录里
+                }
                 if (raw.command == "PONG" && g_heartbeatPending) {
                     g_heartbeatPending = false;  // 心跳的回应，安安静静地吞掉
                     delete payload;
@@ -2755,6 +3206,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 if (raw.command == "NAMES") {
                     SetOnlineNicks(StripTimePrefix(raw.rest));
+                } else if (raw.command == "KNOWN") {
+                    // 已注册账号名单（给 Tab 补 /ban /op /unban /ip 用），不进聊天记录
+                    SetKnownNicks(StripTimePrefix(raw.rest));
+                    delete payload;
+                    return 0;
                 } else if (raw.command == "JOINED" || raw.command == "LEFT") {
                     std::vector<std::string> who = raw.Words();
                     if (!who.empty() && dchat::LooksLikeTime(who[0])) who.erase(who.begin());
@@ -2769,17 +3225,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 const dchat::NoticeInfo notice = dchat::ParseNotice(*payload);
                 const bool mention = dchat::MentionsMe(*payload, g_nick);
                 if (g_authPending && raw.command == "ERROR") {
-                    // 登录 / 注册被服务器拒绝：先把原因显示出来，再断开连接让用户改完重连
-                    ViewAddItem(ItemKind::Error, notice.text, notice.time);
                     g_authPending = false;
-                    DisconnectFromServer(false);
-                    ViewAddItem(ItemKind::Notice, "登录 / 注册未成功，请检查用户名与密码后重试",
-                                dchat::NowTimeString());
+                    if (g_authDlg) {
+                        // 账号窗口还开着：把原因写在窗口里，连接不动，用户可以改完再试
+                        AuthDialogOnResult(false, Utf8ToWide(notice.text));
+                    } else {
+                        // 窗口已经关了（例如用户中途取消）：按老办法处理
+                        ViewAddItem(ItemKind::Error, notice.text, notice.time);
+                        DisconnectFromServer(false);
+                        ViewAddItem(ItemKind::Notice, "登录 / 注册未成功，请检查用户名与密码后重试",
+                                    dchat::NowTimeString());
+                    }
                 } else if (g_authPending && raw.command == "LOGGEDIN") {
                     // 服务器明确确认认证通过（不是靠"收到任何提示"来判断，避免被 WELCOME 干扰）
                     g_authPending = false;
                     if (!notice.text.empty()) g_nick = notice.text;
-                    ViewAddItem(ItemKind::Notice, "已登录：" + g_nick, notice.time);
+                    g_authed = true;
+                    if (g_authDlg) {
+                        AuthDialogOnResult(true, std::wstring());
+                    } else {
+                        ViewAddItem(ItemKind::Notice, "已登录：" + g_nick, notice.time);
+                    }
                     UpdateStatus();
                 } else {
                     dchat::SayInfo say;
@@ -2883,6 +3349,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return TRUE;
         }
         case WM_APP_CLOSED: {
+            if (g_authDlg) {
+                // 登录 / 注册还没完成就掉线了：让账号窗口把原因显示出来
+                AuthDialogOnResult(false, L"与服务器的连接已断开");
+            }
             if (g_sock != INVALID_SOCKET) {
                 DisconnectFromServer(false);
                 ViewAddItem(ItemKind::Notice, "与服务器的连接已断开", dchat::NowTimeString());

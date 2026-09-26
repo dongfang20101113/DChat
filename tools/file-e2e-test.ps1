@@ -376,11 +376,18 @@ try {
     $edits = Get-ChildEdits $dlg
     [void][UI.Api]::SendText($edits[0], 0x000C, [IntPtr]::Zero, '127.0.0.1')
     [void][UI.Api]::SendText($edits[1], 0x000C, [IntPtr]::Zero, "$Port")
-    [void][UI.Api]::SendText($edits[2], 0x000C, [IntPtr]::Zero, 'carol')
-    [void][UI.Api]::SendText($edits[3], 0x000C, [IntPtr]::Zero, 'carolpass123')
-    [void][UI.Api]::SendText($edits[4], 0x000C, [IntPtr]::Zero, 'carolpass123')
     Start-Sleep -Milliseconds 200
     [void][UI.Api]::PostCmd($dlg, 0x0111, [IntPtr]1, [IntPtr]::Zero)
+    # 连上服务器之后才弹账号窗口：切到「注册」界面填账号（IDD_SWITCH = 106）
+    $login = Wait-Window { Find-ProcessWindow $client.Id 'DchatLoginDlg' }
+    [void][UI.Api]::PostCmd($login, 0x0111, [IntPtr]106, [IntPtr]::Zero)
+    $reg = Wait-Window { Find-ProcessWindow $client.Id 'DchatRegisterDlg' }
+    $authEdits = Get-ChildEdits $reg
+    [void][UI.Api]::SendText($authEdits[0], 0x000C, [IntPtr]::Zero, 'carol')
+    [void][UI.Api]::SendText($authEdits[1], 0x000C, [IntPtr]::Zero, 'carolpass123')
+    [void][UI.Api]::SendText($authEdits[2], 0x000C, [IntPtr]::Zero, 'carolpass123')
+    Start-Sleep -Milliseconds 200
+    [void][UI.Api]::PostCmd($reg, 0x0111, [IntPtr]1, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 1500
     Check ((Wait-For $bob 'JOINED .*carol' 4000).ok) '界面客户端 carol 连上来了'
 

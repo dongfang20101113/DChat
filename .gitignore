@@ -1,5 +1,9 @@
 ﻿# 构建产物
 build/
+#
+# 注意：build\dchat_server.exe 和 build\dchat_client.exe 是**故意提交**进仓库的（下载即用、不用编译）。
+# 已经跟踪的文件不受下面规则影响；重新编译之后要更新它们，用：
+#   git add -f build/dchat_server.exe build/dchat_client.exe
 *.exe
 *.obj
 *.a
@@ -16,6 +20,7 @@ CMakeFiles/
 
 # 运行期数据（账号文件里有密码哈希，绝不能发布！）
 dchat-users.txt
+dchat-rules.txt
 users.txt
 received/
 downloads/

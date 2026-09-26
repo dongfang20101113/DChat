@@ -138,6 +138,9 @@ try {
     Check ((Wait-For $alice 'LOGGEDIN .*alice').ok) '服务器明确回了 LOGGEDIN（认证通过的标志）'
     $afterJoinA = Wait-For $alice 'NAMES'
     Check ($afterJoinA.ok -and (($afterJoinA.lines -join '|') -match 'alice')) 'A 注册后进入房间并收到在线名单'
+    # 登录后服务器会把当前规则发过来（客户端据此调整单文件上限等本地检查）
+    $rules = Wait-For $alice 'RULES \d+ \d+ [01]'
+    Check $rules.ok '登录后收到服务器规则（RULES 行）'
 
     # ---------------------------------------------------------------- 改密码
     # 在聊天框里改自己的密码：自助操作，不需要管理员权限
@@ -151,6 +154,18 @@ try {
     Check ((Wait-For $alice 'ERROR .*密码至少').ok) '改密码时太短的密码被拒绝'
     # 日志里不能出现密码（服务器回的内容里也不该有）
     $AlicePassword = 'alicepass456'
+
+    # ---- /cp 是 /changepassword 的简写，行为完全一样 ----
+    Send-Line $alice 'MSG /cp alicepass789'
+    Check ((Wait-For $alice 'SYS .*密码已修改').ok) '/cp 等价于 /changepassword（聊天框里改密码成功）'
+    $cpOld = New-DchatClient 'alice-after-cp'
+    $extra += $cpOld
+    [void](Wait-For $cpOld 'WELCOME')
+    Send-Line $cpOld 'LOGIN alice alicepass456'
+    Check ((Wait-For $cpOld 'ERROR .*密码错误').ok) '用 /cp 改完之后，上一个密码也失效了'
+    Send-Line $cpOld 'QUIT'
+    $AlicePassword = 'alicepass789'
+
     $oldLogin = New-DchatClient 'alice-old-password'
     $extra += $oldLogin
     [void](Wait-For $oldLogin 'WELCOME')

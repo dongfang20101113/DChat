@@ -10,6 +10,9 @@
 //   /ops                 查看管理员名单
 //   /changepassword <新密码>            改自己的密码（聊天框 / 控制台都能用）
 //   /changepassword <昵称> <新密码>      改别人的密码（**只能**在服务器控制台用）
+//   /cp <新密码>                        和 /changepassword 完全一样（简写）
+//   /ip <昵称>                          查在线客户端的 IP 和端口（**只能**在服务器控制台用）
+//   /chatrule [规则] [set|add|remove] [值]  查看/修改服务器规则（**只能**在服务器控制台用）
 //   /help                帮助
 //
 // 判定规则（和 Minecraft 一样）：聊天内容只要**以 '/' 开头**就当作命令尝试——
@@ -24,12 +27,17 @@ namespace dchat {
 
 struct ServerCommand {
     enum class Kind {
-        Unknown, Help, Ban, Kick, Unban, Op, Deop, Say, ListBans, ListOps, ChangePassword
+        Unknown, Help, Ban, Kick, Unban, Op, Deop, Say, ListBans, ListOps, ChangePassword, ShowIp,
+        ChatRule
     };
     Kind kind = Kind::Unknown;
     std::string name;    // 目标昵称
     std::string text;    // /say 的公告内容
     std::string password;  // /changepassword 的新密码
+    // ---- /chatrule ----
+    std::string rule;        // 规则名（原样，小写化交给 rules 模块）
+    std::string ruleAction;  // "show" / "set" / "add" / "remove"（空表示只看这条规则）
+    std::string ruleValue;   // 数值或 true/false 的原文
     int seconds = 0;     // /ban 的封禁时长（0 且 permanent=true 表示永久）
     bool permanent = false;
     bool knownCommand = false;  // 指令名是否是可识别的（用来区分"打错指令名"和"参数不对"）
@@ -59,8 +67,9 @@ std::string HistoryTextFor(const std::string& text);
 
 // ---- Tab 指令补全（类似 Minecraft）----
 // 输入以 '/' 开头、并且还在打指令名（还没有空格）时，按 Tab 依次循环补全；
-// 只输入 "/" 就从第一个指令开始循环。指令名的补全之外，还支持**第一个参数是昵称**
-// 的那几条指令（/ban /kick /unban /op /deop）按在线昵称补全。
+// 只输入 "/" 就从第一个指令开始循环。指令名之外还补参数：
+//   - /ban /kick /unban /op /deop /ip 的第一个参数按昵称补（在线成员 + 已注册玩家）
+//   - /chatrule 补规则名、set|add|remove 和 true|false
 struct CompletionResult {
     std::string text;                  // 补全后的输入框内容（Suggest 时就是原文本）
     std::string head;                  // 正在补的那个词之前的内容（含分隔符）
@@ -74,8 +83,10 @@ struct CompletionResult {
 
 class TabCompleter {
 public:
-    // 按一次 Tab：text 是输入框当前内容，nickNames 是当前在线昵称（补参数时用）
-    CompletionResult Next(const std::string& text, const std::vector<std::string>& nickNames);
+    // 按一次 Tab：text 是输入框当前内容。
+    // nickNames = 当前在线昵称；knownNames = 服务器下发的"已注册昵称"（可能离线）
+    CompletionResult Next(const std::string& text, const std::vector<std::string>& nickNames,
+                          const std::vector<std::string>& knownNames = {});
 
 private:
     std::string start_;       // 这一轮补全开始时的文本（用户改了内容就重新开始）
@@ -84,7 +95,8 @@ private:
 };
 
 // 只算候选、不循环也不改文本：界面用它实时刷新"输入框上方的候选浮层"
-CompletionResult Suggest(const std::string& text, const std::vector<std::string>& nickNames);
+CompletionResult Suggest(const std::string& text, const std::vector<std::string>& nickNames,
+                         const std::vector<std::string>& knownNames = {});
 
 // 所有指令名（不含 '/'），按分组顺序：Tab 循环和帮助都用它
 const std::vector<std::string>& AllCommandNames();

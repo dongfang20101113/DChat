@@ -1,6 +1,7 @@
 ﻿#include "server_command.h"
 
 #include "auth.h"  // 改密码时复用密码规则（长度 / 不能有空格）
+#include "server_rules.h"
 
 #include <cctype>
 #include <vector>
@@ -53,7 +54,7 @@ bool IsKnownCommand(const std::string& keyword) {
     return keyword == "ban" || keyword == "kick" || keyword == "unban" || keyword == "op" ||
            keyword == "deop" || keyword == "say" || keyword == "bans" || keyword == "banlist" ||
            keyword == "ops" || keyword == "oplist" || keyword == "changepassword" ||
-           keyword == "help";
+           keyword == "cp" || keyword == "ip" || keyword == "chatrule" || keyword == "help";
 }
 
 }  // namespace
@@ -126,7 +127,7 @@ bool LooksLikePasswordCommand(const std::string& text) {
     for (std::size_t i = 1; i < trimmed.size() && trimmed[i] != ' ' && trimmed[i] != '\t'; ++i) {
         keyword.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(trimmed[i]))));
     }
-    return keyword == "changepassword";
+    return keyword == "changepassword" || keyword == "cp";  // /cp 是它的简写
 }
 
 std::string HistoryTextFor(const std::string& text) {
@@ -152,7 +153,10 @@ const CommandSpec kCommandSpecs[] = {
     {"deop", "管理员", "<昵称>"},
     {"ops", "管理员", "查看管理员名单"},
     {"say", "管理员", "<公告内容>"},
+    {"ip", "管理员", "<昵称>（仅控制台）"},
+    {"chatrule", "管理员", "<规则> <值>（仅控制台）"},
     {"changepassword", "账号", "<新密码>"},
+    {"cp", "账号", "<新密码>（同上）"},
     {"bans", "其它", "查看黑名单"},
     {"help", "其它", "显示指令帮助"},
 };
@@ -172,22 +176,27 @@ bool StartsWithIgnoreCase(const std::string& text, const std::string& prefix) {
     return ToLowerAscii(text).compare(0, prefix.size(), ToLowerAscii(prefix)) == 0;
 }
 
-// 第一条参数是昵称的指令（Tab 会按在线名单补全）
+bool SameIgnoreCase(const std::string& a, const std::string& b) {
+    return a.size() == b.size() && ToLowerAscii(a) == ToLowerAscii(b);
+}
+
+// 第一条参数是昵称的指令（Tab 会按在线名单 + 已注册名单补全）
 bool CommandTakesNickName(const std::string& name) {
     return name == "ban" || name == "kick" || name == "unban" || name == "op" ||
-           name == "deop";
+           name == "deop" || name == "ip";
 }
 }  // namespace
 
 CompletionResult TabCompleter::Next(const std::string& text,
-                                    const std::vector<std::string>& nickNames) {
+                                    const std::vector<std::string>& nickNames,
+                                    const std::vector<std::string>& knownNames) {
     const bool newRound = (text != lastOutput_);  // 第一次按，或者用户自己改过内容
     if (newRound) {
         start_ = text;
         index_ = -1;
     }
     // 候选是按"本轮开始时的文本"算的，这样连续按 Tab 能在同一批候选里循环
-    CompletionResult result = Suggest(start_, nickNames);
+    CompletionResult result = Suggest(start_, nickNames, knownNames);
     result.text = text;
     result.firstOfRound = newRound;
     if (result.matches.empty()) {
@@ -203,7 +212,8 @@ CompletionResult TabCompleter::Next(const std::string& text,
     return result;
 }
 
-CompletionResult Suggest(const std::string& text, const std::vector<std::string>& nickNames) {
+CompletionResult Suggest(const std::string& text, const std::vector<std::string>& nickNames,
+                         const std::vector<std::string>& knownNames) {
     CompletionResult result;
     result.text = text;
 
@@ -229,16 +239,74 @@ CompletionResult Suggest(const std::string& text, const std::vector<std::string>
         }
         return result;
     }
-    // 在打参数：只给"第一个参数是昵称"的指令补，而且只补第一个参数
+
+    // 在打参数：候选按指令决定
     const std::vector<std::string> headWords = SplitWords(head);
-    if (headWords.size() != 1 || headWords[0].empty() || headWords[0][0] != '/') return result;
-    if (!CommandTakesNickName(ToLowerAscii(headWords[0].substr(1)))) return result;
-    result.isArgument = true;
-    for (const std::string& nick : nickNames) {
-        if (!StartsWithIgnoreCase(nick, word)) continue;
-        result.matches.push_back(nick);
-        result.hints.push_back("");
-        result.groups.push_back("在线成员");
+    if (headWords.empty() || headWords[0].empty() || headWords[0][0] != '/') return result;
+    const std::string keyword = ToLowerAscii(headWords[0].substr(1));
+    const std::size_t argIndex = headWords.size();  // 正在打第几个参数（1 = 第一个）
+    auto addCandidate = [&result](const std::string& match, const std::string& hint,
+                                  const std::string& group) {
+        result.matches.push_back(match);
+        result.hints.push_back(hint);
+        result.groups.push_back(group);
+    };
+
+    if (CommandTakesNickName(keyword) && argIndex == 1) {
+        result.isArgument = true;
+        for (const std::string& nick : nickNames) {  // 在线成员排前面
+            if (!StartsWithIgnoreCase(nick, word)) continue;
+            addCandidate(nick, "", "在线成员");
+        }
+        for (const std::string& nick : knownNames) {  // 再补已注册但不在线的
+            if (!StartsWithIgnoreCase(nick, word)) continue;
+            bool online = false;
+            for (const std::string& live : nickNames) {
+                if (SameIgnoreCase(live, nick)) {
+                    online = true;
+                    break;
+                }
+            }
+            if (online) continue;  // 上面已经列过了
+            addCandidate(nick, "", "已注册玩家");
+        }
+        return result;
+    }
+
+    if (keyword == "chatrule") {
+        result.isArgument = true;
+        if (argIndex == 1) {  // 规则名
+            for (const dchat::RuleInfo& info : AllRuleInfos()) {
+                if (!StartsWithIgnoreCase(info.name, word)) continue;
+                addCandidate(info.name, info.hint, "服务器规则");
+            }
+            return result;
+        }
+        if (argIndex == 2 || argIndex == 3) {
+            const std::string rule =
+                headWords.size() > 1 ? ToLowerAscii(headWords[1]) : std::string();
+            const bool boolean = dchat::IsBoolRule(rule);
+            if (argIndex == 2 && !boolean) {  // 数值规则：set / add / remove
+                if (StartsWithIgnoreCase("set", word))
+                    addCandidate("set", "<值> 设成某个值", "写法");
+                if (StartsWithIgnoreCase("add", word))
+                    addCandidate("add", "<值> 在当前值上加", "写法");
+                if (StartsWithIgnoreCase("remove", word))
+                    addCandidate("remove", "<值> 在当前值上减", "写法");
+                return result;
+            }
+            if (argIndex == 2 && boolean && StartsWithIgnoreCase("set", word)) {
+                addCandidate("set", "也可以直接写 true / false", "写法");
+            }
+            if (boolean) {  // 布尔规则的取值
+                if (StartsWithIgnoreCase("true", word))
+                    addCandidate("true", "打开", "取值");
+                if (StartsWithIgnoreCase("false", word))
+                    addCandidate("false", "关闭", "取值");
+            }
+            return result;
+        }
+        return result;
     }
     return result;
 }
@@ -256,6 +324,14 @@ std::string ServerCommandHelp() {
            "  /ops                 查看当前管理员名单\n"
            "  /changepassword <新密码>        改自己的密码（聊天框和控制台都能用）\n"
            "  /changepassword <昵称> <新密码>  改别人的密码（只能在这个控制台用）\n"
+           "  /cp <新密码>                    /changepassword 的简写，功能完全一样\n"
+           "  /ip <昵称>                      查在线客户端的 IP 和端口（只能在这个控制台用）\n"
+           "  /chatrule                     看/改服务器规则（只能在这个控制台用）：\n"
+           "      chatinterval <ms>          两条消息之间最少间隔，0 = 不限制\n"
+           "      documentsize <MB>          单个文件最大大小\n"
+           "      keepchathistory true|false 新加入的人能否看到之前的聊天记录和文件\n"
+           "      maxservertemp <MB>         服务端保存文件 + 聊天记录缓存的总上限\n"
+           "      写法：/chatrule <规则> [set|add|remove] <值>\n"
            "  /help                显示这份帮助";
 }
 
@@ -349,7 +425,8 @@ ServerCommand ParseServerCommand(const std::string& line) {
         command.kind = ServerCommand::Kind::Ban;
         return command;
     }
-    if (keyword == "changepassword") {
+    if (keyword == "changepassword" || keyword == "cp") {
+        // /cp 和 /changepassword 完全等价（简写）
         // 一个参数 = 改自己的密码（自助，聊天框里也能用）
         // 两个参数 = 改别人的密码（只能服务器控制台）
         // 先声明"不需要管理员权限"，这样参数写错时看到的是真实原因，而不是"你没有管理员权限"
@@ -378,6 +455,59 @@ ServerCommand ParseServerCommand(const std::string& line) {
             return command;
         }
         command.kind = ServerCommand::Kind::ChangePassword;
+        return command;
+    }
+    if (keyword == "chatrule") {
+        // 查看 / 修改服务器规则：只在服务器控制台用
+        command.kind = ServerCommand::Kind::ChatRule;
+        command.consoleOnly = true;
+        if (words.size() == 1) return command;  // 不带参数 = 列出全部规则
+        command.rule = words[1];
+        if (!IsKnownRule(command.rule)) {
+            command.error = "没有这条规则：" + command.rule + "（用 /chatrule 看全部规则）";
+            return command;
+        }
+        if (words.size() == 2) return command;  // /chatrule <规则> = 只看这条
+        const std::string action = ToLowerAscii(words[2]);
+        if (action == "true" || action == "false") {  // /chatrule keepchathistory true
+            command.ruleAction = "setbool";
+            command.ruleValue = action;
+            if (words.size() > 3) {
+                command.error = "参数太多了：布尔规则写成 /chatrule " + command.rule + " true|false";
+            }
+            return command;
+        }
+        if (action != "set" && action != "add" && action != "remove") {
+            command.error = "用法：/chatrule <规则> [set|add|remove] <值>，"
+                            "布尔规则写 true / false（例如 /chatrule keepchathistory true）";
+            return command;
+        }
+        command.ruleAction = action;
+        if (words.size() < 4) {
+            command.error = "用法：/chatrule " + command.rule + " " + action + " <值>（取值范围 " +
+                            RuleRangeText(command.rule) + "）";
+            return command;
+        }
+        command.ruleValue = words[3];
+        if (words.size() > 4) {
+            command.error = "参数太多了：/chatrule " + command.rule + " " + action + " <值>";
+            return command;
+        }
+        return command;
+    }
+    if (keyword == "ip") {
+        // 查在线客户端的 IP 和端口：只在服务器控制台用（聊天框里连管理员也不行）
+        command.name = nameOf(1);
+        if (command.name.empty()) {
+            command.error = "用法：/ip <昵称>（查这个人在线的 IP 和端口）";
+            return command;
+        }
+        if (words.size() > 2) {
+            command.error = "参数太多了：用法是 /ip <昵称>";
+            return command;
+        }
+        command.kind = ServerCommand::Kind::ShowIp;
+        command.consoleOnly = true;
         return command;
     }
 

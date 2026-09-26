@@ -56,8 +56,6 @@ build CMakeFiles/dchat_protocol.dir/src/protocol.cpp.obj: CXX_COMPILER__dchat_pr
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_protocol.dir\dchat_protocol.pdb
-  TARGET_PDB = libdchat_protocol.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_protocol.dir
 
 build CMakeFiles/dchat_protocol.dir/src/render.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/render.cpp || cmake_object_order_depends_target_dchat_protocol
@@ -67,8 +65,6 @@ build CMakeFiles/dchat_protocol.dir/src/render.cpp.obj: CXX_COMPILER__dchat_prot
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_protocol.dir\dchat_protocol.pdb
-  TARGET_PDB = libdchat_protocol.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_protocol.dir
 
 build CMakeFiles/dchat_protocol.dir/src/input_history.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/input_history.cpp || cmake_object_order_depends_target_dchat_protocol
@@ -78,8 +74,6 @@ build CMakeFiles/dchat_protocol.dir/src/input_history.cpp.obj: CXX_COMPILER__dch
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_protocol.dir\dchat_protocol.pdb
-  TARGET_PDB = libdchat_protocol.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_protocol.dir
 
 build CMakeFiles/dchat_protocol.dir/src/server_command.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/server_command.cpp || cmake_object_order_depends_target_dchat_protocol
@@ -89,8 +83,6 @@ build CMakeFiles/dchat_protocol.dir/src/server_command.cpp.obj: CXX_COMPILER__dc
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_protocol.dir\dchat_protocol.pdb
-  TARGET_PDB = libdchat_protocol.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_protocol.dir
 
 build CMakeFiles/dchat_protocol.dir/src/auth.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/auth.cpp || cmake_object_order_depends_target_dchat_protocol
@@ -100,8 +92,6 @@ build CMakeFiles/dchat_protocol.dir/src/auth.cpp.obj: CXX_COMPILER__dchat_protoc
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_protocol.dir\dchat_protocol.pdb
-  TARGET_PDB = libdchat_protocol.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_protocol.dir
 
 build CMakeFiles/dchat_protocol.dir/src/file_transfer.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/file_transfer.cpp || cmake_object_order_depends_target_dchat_protocol
@@ -111,8 +101,15 @@ build CMakeFiles/dchat_protocol.dir/src/file_transfer.cpp.obj: CXX_COMPILER__dch
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_protocol.dir\dchat_protocol.pdb
-  TARGET_PDB = libdchat_protocol.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\dchat_protocol.dir
+
+build CMakeFiles/dchat_protocol.dir/src/server_rules.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/server_rules.cpp || cmake_object_order_depends_target_dchat_protocol
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\dchat_protocol.dir\src\server_rules.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\dchat_protocol.dir
+  OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_protocol.dir
 
 
@@ -123,15 +120,14 @@ build CMakeFiles/dchat_protocol.dir/src/file_transfer.cpp.obj: CXX_COMPILER__dch
 #############################################
 # Link the static library libdchat_protocol.a
 
-build libdchat_protocol.a: CXX_STATIC_LIBRARY_LINKER__dchat_protocol_Release CMakeFiles/dchat_protocol.dir/src/protocol.cpp.obj CMakeFiles/dchat_protocol.dir/src/render.cpp.obj CMakeFiles/dchat_protocol.dir/src/input_history.cpp.obj CMakeFiles/dchat_protocol.dir/src/server_command.cpp.obj CMakeFiles/dchat_protocol.dir/src/auth.cpp.obj CMakeFiles/dchat_protocol.dir/src/file_transfer.cpp.obj
+build libdchat_protocol.a: CXX_STATIC_LIBRARY_LINKER__dchat_protocol_Release CMakeFiles/dchat_protocol.dir/src/protocol.cpp.obj CMakeFiles/dchat_protocol.dir/src/render.cpp.obj CMakeFiles/dchat_protocol.dir/src/input_history.cpp.obj CMakeFiles/dchat_protocol.dir/src/server_command.cpp.obj CMakeFiles/dchat_protocol.dir/src/auth.cpp.obj CMakeFiles/dchat_protocol.dir/src/file_transfer.cpp.obj CMakeFiles/dchat_protocol.dir/src/server_rules.cpp.obj
   CONFIG = Release
   LANGUAGE_COMPILE_FLAGS = -O3 -DNDEBUG
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_protocol.dir\dchat_protocol.pdb
   TARGET_FILE = libdchat_protocol.a
-  TARGET_PDB = libdchat_protocol.pdb
+  TARGET_PDB = dchat_protocol.a.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_protocol.dir
 
 # =============================================================================
@@ -150,8 +146,6 @@ build CMakeFiles/dchat_server.dir/src/server.cpp.obj: CXX_COMPILER__dchat_server
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_server.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_server.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_server.dir\
-  TARGET_PDB = dchat_server.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_server.dir
 
 
@@ -165,14 +159,14 @@ build CMakeFiles/dchat_server.dir/src/server.cpp.obj: CXX_COMPILER__dchat_server
 build dchat_server.exe: CXX_EXECUTABLE_LINKER__dchat_server_Release CMakeFiles/dchat_server.dir/src/server.cpp.obj | libdchat_protocol.a || libdchat_protocol.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
   LINK_LIBRARIES = libdchat_protocol.a  -lws2_32  -lbcrypt  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\dchat_server.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_server.dir\
   TARGET_FILE = dchat_server.exe
   TARGET_IMPLIB = libdchat_server.dll.a
-  TARGET_PDB = dchat_server.pdb
+  TARGET_PDB = dchat_server.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_server.dir
 
 # =============================================================================
@@ -191,8 +185,6 @@ build CMakeFiles/dchat_ui.dir/src/rounded.cpp.obj: CXX_COMPILER__dchat_ui_unscan
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_ui.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_ui.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_ui.dir\dchat_ui.pdb
-  TARGET_PDB = libdchat_ui.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_ui.dir
 
 build CMakeFiles/dchat_ui.dir/src/bubble.cpp.obj: CXX_COMPILER__dchat_ui_unscanned_Release D$:/codes/dchat/src/bubble.cpp || cmake_object_order_depends_target_dchat_ui
@@ -202,8 +194,6 @@ build CMakeFiles/dchat_ui.dir/src/bubble.cpp.obj: CXX_COMPILER__dchat_ui_unscann
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_ui.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_ui.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_ui.dir\dchat_ui.pdb
-  TARGET_PDB = libdchat_ui.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_ui.dir
 
 build CMakeFiles/dchat_ui.dir/src/image_preview.cpp.obj: CXX_COMPILER__dchat_ui_unscanned_Release D$:/codes/dchat/src/image_preview.cpp || cmake_object_order_depends_target_dchat_ui
@@ -213,8 +203,6 @@ build CMakeFiles/dchat_ui.dir/src/image_preview.cpp.obj: CXX_COMPILER__dchat_ui_
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_ui.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_ui.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_ui.dir\dchat_ui.pdb
-  TARGET_PDB = libdchat_ui.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_ui.dir
 
 
@@ -231,9 +219,8 @@ build libdchat_ui.a: CXX_STATIC_LIBRARY_LINKER__dchat_ui_Release CMakeFiles/dcha
   OBJECT_DIR = CMakeFiles\dchat_ui.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_ui.dir\dchat_ui.pdb
   TARGET_FILE = libdchat_ui.a
-  TARGET_PDB = libdchat_ui.pdb
+  TARGET_PDB = dchat_ui.a.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_ui.dir
 
 # =============================================================================
@@ -252,8 +239,6 @@ build CMakeFiles/dchat_client.dir/src/client.cpp.obj: CXX_COMPILER__dchat_client
   INCLUDES = -ID:/codes/dchat/resources -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_client.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_client.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_client.dir\
-  TARGET_PDB = dchat_client.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_client.dir
 
 build CMakeFiles/dchat_client.dir/app.rc.obj: RC_COMPILER__dchat_client_unscanned_Release D$:/codes/dchat/build/app.rc || cmake_object_order_depends_target_dchat_client
@@ -262,8 +247,6 @@ build CMakeFiles/dchat_client.dir/app.rc.obj: RC_COMPILER__dchat_client_unscanne
   INCLUDES = -I D:/codes/dchat/resources -I D:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_client.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_client.dir
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_client.dir\
-  TARGET_PDB = dchat_client.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_client.dir
 
 
@@ -277,15 +260,14 @@ build CMakeFiles/dchat_client.dir/app.rc.obj: RC_COMPILER__dchat_client_unscanne
 build dchat_client.exe: CXX_EXECUTABLE_LINKER__dchat_client_Release CMakeFiles/dchat_client.dir/src/client.cpp.obj CMakeFiles/dchat_client.dir/app.rc.obj | libdchat_ui.a libdchat_protocol.a || libdchat_protocol.a libdchat_ui.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG
-  LINK_FLAGS = -mwindows
+  LINK_FLAGS = -mwindows -static -static-libgcc -static-libstdc++
   LINK_LIBRARIES = libdchat_ui.a  libdchat_protocol.a  -lws2_32  -luser32  -lgdi32  -ldwmapi  -luxtheme  -lcomdlg32  -lshell32  -lgdiplus  -lole32  -lbcrypt  -luser32  -lgdi32  -lshell32  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\dchat_client.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\dchat_client.dir\
   TARGET_FILE = dchat_client.exe
   TARGET_IMPLIB = libdchat_client.dll.a
-  TARGET_PDB = dchat_client.pdb
+  TARGET_PDB = dchat_client.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_client.dir
 
 # =============================================================================
@@ -304,8 +286,6 @@ build CMakeFiles/test_protocol.dir/tests/test_protocol.cpp.obj: CXX_COMPILER__te
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\test_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\test_protocol.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\test_protocol.dir\
-  TARGET_PDB = test_protocol.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\test_protocol.dir
 
 
@@ -319,14 +299,14 @@ build CMakeFiles/test_protocol.dir/tests/test_protocol.cpp.obj: CXX_COMPILER__te
 build test_protocol.exe: CXX_EXECUTABLE_LINKER__test_protocol_Release CMakeFiles/test_protocol.dir/tests/test_protocol.cpp.obj | libdchat_protocol.a || libdchat_protocol.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
   LINK_LIBRARIES = libdchat_protocol.a  -lbcrypt  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\test_protocol.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\test_protocol.dir\
   TARGET_FILE = test_protocol.exe
   TARGET_IMPLIB = libtest_protocol.dll.a
-  TARGET_PDB = test_protocol.pdb
+  TARGET_PDB = test_protocol.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\test_protocol.dir
 
 # =============================================================================
@@ -345,8 +325,6 @@ build CMakeFiles/test_render.dir/tests/test_render.cpp.obj: CXX_COMPILER__test_r
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\test_render.dir
   OBJECT_FILE_DIR = CMakeFiles\test_render.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\test_render.dir\
-  TARGET_PDB = test_render.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\test_render.dir
 
 
@@ -360,14 +338,14 @@ build CMakeFiles/test_render.dir/tests/test_render.cpp.obj: CXX_COMPILER__test_r
 build test_render.exe: CXX_EXECUTABLE_LINKER__test_render_Release CMakeFiles/test_render.dir/tests/test_render.cpp.obj | libdchat_protocol.a || libdchat_protocol.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
   LINK_LIBRARIES = libdchat_protocol.a  -lbcrypt  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\test_render.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\test_render.dir\
   TARGET_FILE = test_render.exe
   TARGET_IMPLIB = libtest_render.dll.a
-  TARGET_PDB = test_render.pdb
+  TARGET_PDB = test_render.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\test_render.dir
 
 # =============================================================================
@@ -386,8 +364,6 @@ build CMakeFiles/test_rounded.dir/tests/test_rounded.cpp.obj: CXX_COMPILER__test
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\test_rounded.dir
   OBJECT_FILE_DIR = CMakeFiles\test_rounded.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\test_rounded.dir\
-  TARGET_PDB = test_rounded.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\test_rounded.dir
 
 
@@ -401,14 +377,14 @@ build CMakeFiles/test_rounded.dir/tests/test_rounded.cpp.obj: CXX_COMPILER__test
 build test_rounded.exe: CXX_EXECUTABLE_LINKER__test_rounded_Release CMakeFiles/test_rounded.dir/tests/test_rounded.cpp.obj | libdchat_ui.a || libdchat_ui.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
   LINK_LIBRARIES = libdchat_ui.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\test_rounded.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\test_rounded.dir\
   TARGET_FILE = test_rounded.exe
   TARGET_IMPLIB = libtest_rounded.dll.a
-  TARGET_PDB = test_rounded.pdb
+  TARGET_PDB = test_rounded.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\test_rounded.dir
 
 # =============================================================================
@@ -427,8 +403,6 @@ build CMakeFiles/test_bubble.dir/tests/test_bubble.cpp.obj: CXX_COMPILER__test_b
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\test_bubble.dir
   OBJECT_FILE_DIR = CMakeFiles\test_bubble.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\test_bubble.dir\
-  TARGET_PDB = test_bubble.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\test_bubble.dir
 
 
@@ -442,14 +416,14 @@ build CMakeFiles/test_bubble.dir/tests/test_bubble.cpp.obj: CXX_COMPILER__test_b
 build test_bubble.exe: CXX_EXECUTABLE_LINKER__test_bubble_Release CMakeFiles/test_bubble.dir/tests/test_bubble.cpp.obj | libdchat_ui.a || libdchat_ui.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
   LINK_LIBRARIES = libdchat_ui.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\test_bubble.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\test_bubble.dir\
   TARGET_FILE = test_bubble.exe
   TARGET_IMPLIB = libtest_bubble.dll.a
-  TARGET_PDB = test_bubble.pdb
+  TARGET_PDB = test_bubble.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\test_bubble.dir
 
 # =============================================================================
@@ -468,8 +442,6 @@ build CMakeFiles/test_image_preview.dir/tests/test_image_preview.cpp.obj: CXX_CO
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\test_image_preview.dir
   OBJECT_FILE_DIR = CMakeFiles\test_image_preview.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\test_image_preview.dir\
-  TARGET_PDB = test_image_preview.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\test_image_preview.dir
 
 
@@ -483,15 +455,54 @@ build CMakeFiles/test_image_preview.dir/tests/test_image_preview.cpp.obj: CXX_CO
 build test_image_preview.exe: CXX_EXECUTABLE_LINKER__test_image_preview_Release CMakeFiles/test_image_preview.dir/tests/test_image_preview.cpp.obj | libdchat_ui.a || libdchat_ui.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
   LINK_LIBRARIES = libdchat_ui.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\test_image_preview.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\test_image_preview.dir\
   TARGET_FILE = test_image_preview.exe
   TARGET_IMPLIB = libtest_image_preview.dll.a
-  TARGET_PDB = test_image_preview.pdb
+  TARGET_PDB = test_image_preview.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\test_image_preview.dir
+
+# =============================================================================
+# Object build statements for EXECUTABLE target test_server_rules
+
+
+#############################################
+# Order-only phony target for test_server_rules
+
+build cmake_object_order_depends_target_test_server_rules: phony || cmake_object_order_depends_target_dchat_protocol
+
+build CMakeFiles/test_server_rules.dir/tests/test_server_rules.cpp.obj: CXX_COMPILER__test_server_rules_unscanned_Release D$:/codes/dchat/tests/test_server_rules.cpp || cmake_object_order_depends_target_test_server_rules
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\test_server_rules.dir\tests\test_server_rules.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\test_server_rules.dir
+  OBJECT_FILE_DIR = CMakeFiles\test_server_rules.dir\tests
+  TARGET_SUPPORT_DIR = CMakeFiles\test_server_rules.dir
+
+
+# =============================================================================
+# Link build statements for EXECUTABLE target test_server_rules
+
+
+#############################################
+# Link the executable test_server_rules.exe
+
+build test_server_rules.exe: CXX_EXECUTABLE_LINKER__test_server_rules_Release CMakeFiles/test_server_rules.dir/tests/test_server_rules.cpp.obj | libdchat_protocol.a || libdchat_protocol.a
+  CONFIG = Release
+  FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
+  LINK_LIBRARIES = libdchat_protocol.a  -lbcrypt  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  OBJECT_DIR = CMakeFiles\test_server_rules.dir
+  POST_BUILD = cd .
+  PRE_LINK = cd .
+  TARGET_FILE = test_server_rules.exe
+  TARGET_IMPLIB = libtest_server_rules.dll.a
+  TARGET_PDB = test_server_rules.exe.dbg
+  TARGET_SUPPORT_DIR = CMakeFiles\test_server_rules.dir
 
 # =============================================================================
 # Object build statements for EXECUTABLE target test_history
@@ -509,8 +520,6 @@ build CMakeFiles/test_history.dir/tests/test_history.cpp.obj: CXX_COMPILER__test
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\test_history.dir
   OBJECT_FILE_DIR = CMakeFiles\test_history.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\test_history.dir\
-  TARGET_PDB = test_history.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\test_history.dir
 
 
@@ -524,14 +533,14 @@ build CMakeFiles/test_history.dir/tests/test_history.cpp.obj: CXX_COMPILER__test
 build test_history.exe: CXX_EXECUTABLE_LINKER__test_history_Release CMakeFiles/test_history.dir/tests/test_history.cpp.obj | libdchat_protocol.a || libdchat_protocol.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
   LINK_LIBRARIES = libdchat_protocol.a  -lbcrypt  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\test_history.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\test_history.dir\
   TARGET_FILE = test_history.exe
   TARGET_IMPLIB = libtest_history.dll.a
-  TARGET_PDB = test_history.pdb
+  TARGET_PDB = test_history.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\test_history.dir
 
 # =============================================================================
@@ -550,8 +559,6 @@ build CMakeFiles/test_server_command.dir/tests/test_server_command.cpp.obj: CXX_
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\test_server_command.dir
   OBJECT_FILE_DIR = CMakeFiles\test_server_command.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\test_server_command.dir\
-  TARGET_PDB = test_server_command.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\test_server_command.dir
 
 
@@ -565,14 +572,14 @@ build CMakeFiles/test_server_command.dir/tests/test_server_command.cpp.obj: CXX_
 build test_server_command.exe: CXX_EXECUTABLE_LINKER__test_server_command_Release CMakeFiles/test_server_command.dir/tests/test_server_command.cpp.obj | libdchat_protocol.a || libdchat_protocol.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
   LINK_LIBRARIES = libdchat_protocol.a  -lbcrypt  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\test_server_command.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\test_server_command.dir\
   TARGET_FILE = test_server_command.exe
   TARGET_IMPLIB = libtest_server_command.dll.a
-  TARGET_PDB = test_server_command.pdb
+  TARGET_PDB = test_server_command.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\test_server_command.dir
 
 # =============================================================================
@@ -591,8 +598,6 @@ build CMakeFiles/test_auth.dir/tests/test_auth.cpp.obj: CXX_COMPILER__test_auth_
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\test_auth.dir
   OBJECT_FILE_DIR = CMakeFiles\test_auth.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\test_auth.dir\
-  TARGET_PDB = test_auth.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\test_auth.dir
 
 
@@ -606,14 +611,14 @@ build CMakeFiles/test_auth.dir/tests/test_auth.cpp.obj: CXX_COMPILER__test_auth_
 build test_auth.exe: CXX_EXECUTABLE_LINKER__test_auth_Release CMakeFiles/test_auth.dir/tests/test_auth.cpp.obj | libdchat_protocol.a || libdchat_protocol.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
   LINK_LIBRARIES = libdchat_protocol.a  -lbcrypt  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\test_auth.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\test_auth.dir\
   TARGET_FILE = test_auth.exe
   TARGET_IMPLIB = libtest_auth.dll.a
-  TARGET_PDB = test_auth.pdb
+  TARGET_PDB = test_auth.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\test_auth.dir
 
 # =============================================================================
@@ -632,8 +637,6 @@ build CMakeFiles/test_file_transfer.dir/tests/test_file_transfer.cpp.obj: CXX_CO
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\test_file_transfer.dir
   OBJECT_FILE_DIR = CMakeFiles\test_file_transfer.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\test_file_transfer.dir\
-  TARGET_PDB = test_file_transfer.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\test_file_transfer.dir
 
 
@@ -647,14 +650,14 @@ build CMakeFiles/test_file_transfer.dir/tests/test_file_transfer.cpp.obj: CXX_CO
 build test_file_transfer.exe: CXX_EXECUTABLE_LINKER__test_file_transfer_Release CMakeFiles/test_file_transfer.dir/tests/test_file_transfer.cpp.obj | libdchat_protocol.a || libdchat_protocol.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
   LINK_LIBRARIES = libdchat_protocol.a  -lbcrypt  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\test_file_transfer.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\test_file_transfer.dir\
   TARGET_FILE = test_file_transfer.exe
   TARGET_IMPLIB = libtest_file_transfer.dll.a
-  TARGET_PDB = test_file_transfer.pdb
+  TARGET_PDB = test_file_transfer.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\test_file_transfer.dir
 
 
@@ -721,6 +724,8 @@ build test_rounded: phony test_rounded.exe
 
 build test_server_command: phony test_server_command.exe
 
+build test_server_rules: phony test_server_rules.exe
+
 # =============================================================================
 # Folder targets.
 
@@ -729,7 +734,7 @@ build test_server_command: phony test_server_command.exe
 #############################################
 # Folder: D:/codes/dchat/build
 
-build all: phony libdchat_protocol.a dchat_server.exe libdchat_ui.a dchat_client.exe test_protocol.exe test_render.exe test_rounded.exe test_bubble.exe test_image_preview.exe test_history.exe test_server_command.exe test_auth.exe test_file_transfer.exe
+build all: phony libdchat_protocol.a dchat_server.exe libdchat_ui.a dchat_client.exe test_protocol.exe test_render.exe test_rounded.exe test_bubble.exe test_image_preview.exe test_server_rules.exe test_history.exe test_server_command.exe test_auth.exe test_file_transfer.exe
 
 # =============================================================================
 # Built-in targets
@@ -738,14 +743,14 @@ build all: phony libdchat_protocol.a dchat_server.exe libdchat_ui.a dchat_client
 #############################################
 # Re-run CMake if any of its inputs changed.
 
-build build.ninja D$:/codes/dchat/build/cmake_install.cmake D$:/codes/dchat/build/CTestTestfile.cmake: RERUN_CMAKE | C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeCXXCompiler.cmake.in C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeCXXCompilerABI.cpp C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeCXXInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeCommonLanguageInclude.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeCompilerIdDetection.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeDetermineCXXCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeDetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeDetermineCompilerABI.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeDetermineCompilerId.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeDetermineCompilerSupport.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeDetermineRCCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeDetermineSystem.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeFindBinUtils.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeGenericSystem.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeInitializeConfigs.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeLanguageInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeNinjaFindMake.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeParseImplicitIncludeInfo.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeParseImplicitLinkInfo.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeParseLibraryArchitecture.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeRCCompiler.cmake.in C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeRCInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeSystem.cmake.in C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeSystemSpecificInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeSystemSpecificInitialize.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeTestCXXCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeTestCompilerCommon.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeTestRCCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CheckCXXSourceCompiles.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CheckIncludeFileCXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CheckLibraryExists.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/ADSP-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/ARMCC-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/ARMClang-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/AppleClang-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Borland-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Clang-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Clang-DetermineCompilerInternal.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Compaq-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Cray-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/CrayClang-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Diab-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Embarcadero-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Fujitsu-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/FujitsuClang-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GHS-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GNU-CXX-CXXImportStd.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GNU-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GNU-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GNU-FindBinUtils.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/HP-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/IAR-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/IBMCPP-CXX-DetermineVersionInternal.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/IBMClang-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Intel-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/IntelLLVM-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/LCC-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/MSVC-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/NVHPC-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/NVIDIA-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/OpenWatcom-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/OrangeC-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/PGI-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/PathScale-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/PellesC-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Renesas-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/SCO-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/SunPro-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/TI-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/TIClang-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Tasking-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/VisualAge-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Watcom-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/XL-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/XLClang-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/zOS-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/FindPackageHandleStandardArgs.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/FindPackageMessage.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/FindThreads.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CMakeCXXLinkerInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CMakeCommonLinkerInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CMakeDetermineLinkerId.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CMakeInspectCXXLinker.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CheckCommon.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CheckSourceCompiles.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/FeatureTesting.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/Windows-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/Windows-GNU-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/Windows-GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-Determine-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-GNU-CXX-ABI.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-GNU-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-Initialize.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-windres.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/WindowsPaths.cmake CMakeCache.txt CMakeFiles/4.4.1/CMakeCXXCompiler.cmake CMakeFiles/4.4.1/CMakeRCCompiler.cmake CMakeFiles/4.4.1/CMakeSystem.cmake D$:/codes/dchat/CMakeLists.txt D$:/codes/dchat/resources/app.rc.in
+build build.ninja D$:/codes/dchat/build/cmake_install.cmake D$:/codes/dchat/build/CTestTestfile.cmake: RERUN_CMAKE | C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeCXXInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeCommonLanguageInclude.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeGenericSystem.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeInitializeConfigs.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeLanguageInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeRCInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeSystemSpecificInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeSystemSpecificInitialize.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CheckCXXSourceCompiles.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CheckIncludeFileCXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CheckLibraryExists.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GNU-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/FindPackageHandleStandardArgs.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/FindPackageMessage.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/FindThreads.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CMakeCXXLinkerInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CMakeCommonLinkerInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CheckCommon.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CheckSourceCompiles.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/Windows-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/Windows-GNU-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/Windows-GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-GNU-CXX-ABI.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-GNU-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-Initialize.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-windres.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/WindowsPaths.cmake CMakeCache.txt CMakeFiles/4.4.1/CMakeCXXCompiler.cmake CMakeFiles/4.4.1/CMakeRCCompiler.cmake CMakeFiles/4.4.1/CMakeSystem.cmake D$:/codes/dchat/CMakeLists.txt D$:/codes/dchat/resources/app.rc.in
   pool = console
 
 
 #############################################
 # A missing CMake input file is not an error.
 
-build C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeCXXCompiler.cmake.in C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeCXXCompilerABI.cpp C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeCXXInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeCommonLanguageInclude.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeCompilerIdDetection.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeDetermineCXXCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeDetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeDetermineCompilerABI.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeDetermineCompilerId.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeDetermineCompilerSupport.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeDetermineRCCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeDetermineSystem.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeFindBinUtils.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeGenericSystem.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeInitializeConfigs.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeLanguageInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeNinjaFindMake.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeParseImplicitIncludeInfo.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeParseImplicitLinkInfo.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeParseLibraryArchitecture.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeRCCompiler.cmake.in C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeRCInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeSystem.cmake.in C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeSystemSpecificInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeSystemSpecificInitialize.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeTestCXXCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeTestCompilerCommon.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeTestRCCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CheckCXXSourceCompiles.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CheckIncludeFileCXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CheckLibraryExists.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/ADSP-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/ARMCC-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/ARMClang-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/AppleClang-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Borland-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Clang-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Clang-DetermineCompilerInternal.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Compaq-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Cray-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/CrayClang-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Diab-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Embarcadero-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Fujitsu-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/FujitsuClang-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GHS-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GNU-CXX-CXXImportStd.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GNU-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GNU-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GNU-FindBinUtils.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/HP-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/IAR-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/IBMCPP-CXX-DetermineVersionInternal.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/IBMClang-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Intel-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/IntelLLVM-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/LCC-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/MSVC-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/NVHPC-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/NVIDIA-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/OpenWatcom-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/OrangeC-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/PGI-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/PathScale-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/PellesC-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Renesas-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/SCO-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/SunPro-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/TI-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/TIClang-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Tasking-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/VisualAge-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/Watcom-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/XL-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/XLClang-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/zOS-CXX-DetermineCompiler.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/FindPackageHandleStandardArgs.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/FindPackageMessage.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/FindThreads.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CMakeCXXLinkerInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CMakeCommonLinkerInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CMakeDetermineLinkerId.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CMakeInspectCXXLinker.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CheckCommon.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CheckSourceCompiles.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/FeatureTesting.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/Windows-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/Windows-GNU-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/Windows-GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-Determine-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-GNU-CXX-ABI.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-GNU-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-Initialize.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-windres.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/WindowsPaths.cmake CMakeCache.txt CMakeFiles/4.4.1/CMakeCXXCompiler.cmake CMakeFiles/4.4.1/CMakeRCCompiler.cmake CMakeFiles/4.4.1/CMakeSystem.cmake D$:/codes/dchat/CMakeLists.txt D$:/codes/dchat/resources/app.rc.in: phony
+build C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeCXXInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeCommonLanguageInclude.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeGenericSystem.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeInitializeConfigs.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeLanguageInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeRCInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeSystemSpecificInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CMakeSystemSpecificInitialize.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CheckCXXSourceCompiles.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CheckIncludeFileCXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/CheckLibraryExists.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GNU-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Compiler/GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/FindPackageHandleStandardArgs.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/FindPackageMessage.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/FindThreads.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CMakeCXXLinkerInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CMakeCommonLinkerInformation.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CheckCommon.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Internal/CheckSourceCompiles.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/Windows-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/Windows-GNU-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Linker/Windows-GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-GNU-CXX-ABI.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-GNU-CXX.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-GNU.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-Initialize.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows-windres.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/Windows.cmake C$:/Users/NINGMEI/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/share/cmake-4.4/Modules/Platform/WindowsPaths.cmake CMakeCache.txt CMakeFiles/4.4.1/CMakeCXXCompiler.cmake CMakeFiles/4.4.1/CMakeRCCompiler.cmake CMakeFiles/4.4.1/CMakeSystem.cmake D$:/codes/dchat/CMakeLists.txt D$:/codes/dchat/resources/app.rc.in: phony
 
 
 #############################################

@@ -1,1 +1,0 @@
-﻿# dchat-server accounts (v1): name salt pbkdf2-hash iterations

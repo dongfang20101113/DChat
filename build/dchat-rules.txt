@@ -1,0 +1,6 @@
+# dchat server rules (v1): name value
+# 改这里要重启服务器才生效；也可以在控制台用 /chatrule 改（改完自动写回这个文件）
+chatinterval 0      # 两条消息之间最少间隔（毫秒），0 = 不限制
+documentsize 64        # 单个文件最大大小（MB）
+keepchathistory false  # 新加入的客户端能否看到之前的聊天记录和文件
+maxservertemp 1048      # 服务端保存文件 + 聊天记录缓存的总上限（MB）

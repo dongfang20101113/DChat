@@ -4,6 +4,7 @@
 #include <string>
 
 #include "server_command.h"
+#include "server_rules.h"  // 规则名列表（/chatrule 的 Tab 补全用）
 
 namespace {
 int g_checks = 0;
@@ -294,7 +295,10 @@ int main() {
         check(byPrefix.Next("/ki", noNicks).text == "/kick", "按前缀补全");
         check(byPrefix.Next("/kick", noNicks).text == "/kick", "只有一个候选时保持不动");
         dchat::TabCompleter upper;
-        check(upper.Next("/CH", noNicks).text == "/changepassword", "前缀大小写不敏感");
+        const std::string chFirst = upper.Next("/CH", noNicks).text;
+        check(chFirst == "/chatrule", "/CH 按前缀补全（大小写不敏感）");
+        check(upper.Next(chFirst, noNicks).text == "/changepassword",
+              "同一前缀有多个候选时继续按 Tab 轮到下一个");
         dchat::TabCompleter help;
         check(help.Next("/he", noNicks).text == "/help", "补全 /help");
 
@@ -351,6 +355,183 @@ int main() {
         dchat::TabCompleter empty;
         check(empty.Next("/kick ", std::vector<std::string>()).text == "/kick ",
               "没有人在线时不补全");
+    }
+
+    {
+        std::printf("[11] /cp 简写与 /ip（仅控制台）\n");
+        const std::vector<std::string> noNicks;
+        const auto cpSelf = dchat::ParseServerCommand("/cp newpass123");
+        check(Is(cpSelf.kind, Kind::ChangePassword) && cpSelf.name.empty() &&
+                  cpSelf.password == "newpass123",
+              "/cp 一个参数 = 改自己的密码（和 /changepassword 行为一致）");
+        check(!cpSelf.consoleOnly && !cpSelf.opRequired,
+              "/cp 自助改密码：不需要权限、也不是控制台专用");
+        const auto cpOther = dchat::ParseServerCommand("/cp alice newpass123");
+        check(Is(cpOther.kind, Kind::ChangePassword) && cpOther.name == "alice" &&
+                  cpOther.consoleOnly,
+              "/cp <昵称> <新密码> 同样是控制台专用");
+        check(Is(dchat::ParseServerCommand("/CP newpass123").kind, Kind::ChangePassword),
+              "/CP 大小写不敏感");
+        check(!dchat::ParseServerCommand("/cp").error.empty(), "/cp 不给参数时提示用法");
+        check(!dchat::ParseServerCommand("/cp 123").error.empty(),
+              "/cp 的密码规则和 /changepassword 一样");
+        check(dchat::LooksLikePasswordCommand("/cp mypass123"),
+              "/cp 里的密码同样不进输入历史");
+        check(dchat::HistoryTextFor("/cp mypass123") == "/cp ",
+              "/cp 记进历史时只留指令名");
+
+        const auto ip = dchat::ParseServerCommand("/ip alice");
+        check(Is(ip.kind, Kind::ShowIp) && ip.name == "alice" && ip.consoleOnly,
+              "/ip <昵称> 解析正确，并标记为仅控制台可用");
+        check(!dchat::ParseServerCommand("/ip").error.empty(), "/ip 不给昵称时提示用法");
+        check(!dchat::ParseServerCommand("/ip alice extra").error.empty(),
+              "/ip 参数太多时提示用法");
+        const std::string helpText = dchat::ServerCommandHelp();
+        check(helpText.find("/cp") != std::string::npos &&
+                  helpText.find("/ip") != std::string::npos,
+              "帮助里列出了 /cp 和 /ip");
+        const auto listed = dchat::Suggest("/", noNicks);
+        bool hasCp = false, hasIp = false;
+        for (const std::string& name : listed.matches) {
+            if (name == "/cp") hasCp = true;
+            if (name == "/ip") hasIp = true;
+        }
+        check(hasCp && hasIp, "Tab 候选浮层里也有 /cp 和 /ip");
+        check(dchat::Suggest("/cp", noNicks).matches.size() == 1, "输入 /cp 能补全到 /cp");
+    }
+
+    {
+        std::printf("[12] /chatrule 解析\n");
+        const auto list = dchat::ParseServerCommand("/chatrule");
+        check(Is(list.kind, Kind::ChatRule) && list.rule.empty() && list.consoleOnly,
+              "/chatrule 不带参数 = 列出全部规则，且仅控制台可用");
+        const auto one = dchat::ParseServerCommand("/chatrule chatinterval");
+        check(Is(one.kind, Kind::ChatRule) && one.rule == "chatinterval" &&
+                  one.ruleAction.empty(),
+              "/chatrule <规则> = 只看这一条");
+        const auto set = dchat::ParseServerCommand("/chatrule chatinterval set 500");
+        check(Is(set.kind, Kind::ChatRule) && set.ruleAction == "set" && set.ruleValue == "500",
+              "set 写法解析正确");
+        const auto add = dchat::ParseServerCommand("/chatrule documentsize add 8");
+        check(add.ruleAction == "add" && add.ruleValue == "8", "add 写法解析正确");
+        const auto remove = dchat::ParseServerCommand("/chatrule maxservertemp remove 64");
+        check(remove.ruleAction == "remove" && remove.ruleValue == "64", "remove 写法解析正确");
+        const auto boolean = dchat::ParseServerCommand("/chatrule keepchathistory true");
+        check(boolean.ruleAction == "setbool" && boolean.ruleValue == "true",
+              "布尔规则直接写 true/false");
+        check(dchat::ParseServerCommand("/chatrule keepchathistory false").ruleValue == "false",
+              "false 也认");
+        check(!dchat::ParseServerCommand("/chatrule nosuchrule set 1").error.empty(),
+              "未知规则名在解析阶段就报错");
+        check(!dchat::ParseServerCommand("/chatrule chatinterval set").error.empty(),
+              "set 后面没跟值会提示取值范围");
+        check(!dchat::ParseServerCommand("/chatrule chatinterval 500").error.empty(),
+              "缺少 set/add/remove 时提示用法");
+        check(!dchat::ParseServerCommand("/chatrule chatinterval set 5 5").error.empty(),
+              "参数太多会报错");
+        check(!dchat::ParseServerCommand("/chatrule keepchathistory true false").error.empty(),
+              "布尔规则多写一个参数会报错");
+        check(dchat::ServerCommandHelp().find("/chatrule") != std::string::npos,
+              "帮助里列出了 /chatrule");
+    }
+
+    {
+        std::printf("[13] Tab 参数补全（/chatrule 的规则名与取值）\n");
+        const std::vector<std::string> noNicks;
+
+        const dchat::CompletionResult rules = dchat::Suggest("/chatrule ", noNicks);
+        check(rules.isArgument && rules.matches.size() == dchat::AllRuleNames().size(),
+              "打 /chatrule + 空格 会列出全部规则名");
+        check(rules.matches.size() == 4 && rules.matches[0] == "chatinterval" &&
+                  rules.groups[0] == "服务器规则",
+              "规则名按顺序给出，并分到「服务器规则」组");
+        bool hintsOk = rules.hints.size() == rules.matches.size();
+        for (const std::string& hint : rules.hints) {
+            if (hint.empty()) hintsOk = false;  // 每个规则名后面都带灰色说明
+        }
+        check(hintsOk, "每个规则名都带灰色用法说明");
+
+        const dchat::CompletionResult one = dchat::Suggest("/chatrule ch", noNicks);
+        check(one.matches.size() == 1 && one.matches[0] == "chatinterval", "按前缀过滤规则名");
+        check(dchat::Suggest("/chatrule keep", noNicks).matches[0] == "keepchathistory",
+              "keep 前缀能补到 keepchathistory");
+
+        dchat::TabCompleter ruleTab;
+        check(ruleTab.Next("/chatrule ch", noNicks).text == "/chatrule chatinterval",
+              "Tab 把规则名补进输入框");
+        dchat::TabCompleter ruleCycle;
+        check(ruleCycle.Next("/chatrule ", noNicks).text == "/chatrule chatinterval",
+              "规则名也能按 Tab 循环");
+        check(ruleCycle.Next("/chatrule chatinterval", noNicks).text == "/chatrule documentsize",
+              "再按 Tab 轮到下一条规则");
+
+        const dchat::CompletionResult actions = dchat::Suggest("/chatrule chatinterval ", noNicks);
+        check(actions.matches.size() == 3 && actions.matches[0] == "set" &&
+                  actions.matches[2] == "remove",
+              "数值规则的第 2 个参数补 set / add / remove");
+        check(dchat::Suggest("/chatrule chatinterval se", noNicks).matches.size() == 1 &&
+                  dchat::Suggest("/chatrule chatinterval se", noNicks).matches[0] == "set",
+              "set 也能按前缀过滤");
+
+        const dchat::CompletionResult boolArg = dchat::Suggest("/chatrule keepchathistory ", noNicks);
+        bool hasSet = false, hasTrue = false, hasFalse = false;
+        for (const std::string& match : boolArg.matches) {
+            if (match == "set") hasSet = true;
+            if (match == "true") hasTrue = true;
+            if (match == "false") hasFalse = true;
+        }
+        check(hasTrue && hasFalse, "布尔规则第 2 个参数直接给 true / false");
+        check(hasSet, "布尔规则也接受先写 set");
+        check(dchat::Suggest("/chatrule keepchathistory set ", noNicks).matches.size() == 2,
+              "set 之后只剩 true / false 两个候选");
+        check(dchat::Suggest("/chatrule keepchathistory t", noNicks).matches[0] == "true",
+              "true 按前缀补全");
+
+        dchat::TabCompleter boolTab;
+        check(boolTab.Next("/chatrule keepchathistory t", noNicks).text ==
+                  "/chatrule keepchathistory true",
+              "Tab 补布尔值");
+        check(dchat::Suggest("/chatrule chatinterval set ", noNicks).matches.empty(),
+              "数值规则的值没有候选（自己填数字）");
+        check(dchat::Suggest("/chatrule nosuchrule t", noNicks).matches.empty(),
+              "不认识的规则名不会冒出 true/false");
+        check(dchat::Suggest("/chatrule chatinterval set 5 ", noNicks).matches.empty(),
+              "第 4 个参数没有候选");
+    }
+
+    {
+        std::printf("[14] Tab 参数补全（/ip 与已注册名单）\n");
+        const std::vector<std::string> online = {"alice", "bob"};
+        const std::vector<std::string> known = {"alice", "bob", "carol", "dave"};
+
+        const dchat::CompletionResult ip = dchat::Suggest("/ip ", online, known);
+        check(ip.isArgument && ip.matches.size() == 4, "/ip 补在线 + 已注册的人");
+        check(ip.matches[0] == "alice" && ip.matches[1] == "bob" && ip.matches[2] == "carol",
+              "在线成员排在前面，然后是已注册但不在线的");
+        check(ip.groups[0] == "在线成员" && ip.groups[2] == "已注册玩家",
+              "候选按「在线成员 / 已注册玩家」分组");
+        check(dchat::Suggest("/ip ca", online, known).matches.size() == 1 &&
+                  dchat::Suggest("/ip ca", online, known).matches[0] == "carol",
+              "/ip 能补到不在线的人");
+
+        dchat::TabCompleter ipTab;
+        check(ipTab.Next("/ip ca", online, known).text == "/ip carol", "Tab 补 /ip 的昵称");
+        dchat::TabCompleter banTab;
+        check(banTab.Next("/ban ca", online, known).text == "/ban carol",
+              "/ban 也能补不在线的人");
+        dchat::TabCompleter opTab;
+        check(opTab.Next("/op d", online, known).text == "/op dave", "/op 也能补");
+
+        const dchat::CompletionResult dedup = dchat::Suggest("/ban ", online, known);
+        int aliceCount = 0;
+        for (const std::string& match : dedup.matches) {
+            if (match == "alice") ++aliceCount;
+        }
+        check(aliceCount == 1, "在线的人不会在候选里出现两次");
+        const dchat::CompletionResult onlyOnline = dchat::Suggest("/kick ", online);
+        check(onlyOnline.matches.size() == 2 && onlyOnline.groups[0] == "在线成员",
+              "没给已注册名单时只补在线成员（老行为不变）");
+        check(dchat::Suggest("/say ", online, known).matches.empty(), "/say 仍然不补昵称");
     }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

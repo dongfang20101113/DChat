@@ -7,7 +7,8 @@
 param(
     [string]$ServerExe = (Join-Path (Split-Path -Parent $PSScriptRoot) 'build\dchat_server.exe'),
     [int]$Port = 5620,
-    [string]$UsersFile = (Join-Path $env:TEMP ('dchat-admin-users-{0}.txt' -f $PID))
+    [string]$UsersFile = (Join-Path $env:TEMP ('dchat-admin-users-{0}.txt' -f $PID)),
+    [string]$RulesFile = (Join-Path $env:TEMP ('dchat-admin-rules-{0}.txt' -f $PID))
 )
 
 $ErrorActionPreference = 'Stop'
@@ -107,11 +108,13 @@ if (-not (Test-Path -LiteralPath $ServerExe)) { Write-Host "找不到 dchat_serv
 
 # 用独立的账号文件，避免污染真实账号
 if (Test-Path -LiteralPath $UsersFile) { Remove-Item -LiteralPath $UsersFile -Force }
+# 规则也要用独立的文件（顺便验证规则会落盘）
+if (Test-Path -LiteralPath $RulesFile) { Remove-Item -LiteralPath $RulesFile -Force }
 
 $log = [hashtable]::Synchronized(@{ lines = New-Object System.Collections.ArrayList })
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $ServerExe
-$psi.Arguments = "--port $Port --users `"$UsersFile`""
+$psi.Arguments = "--port $Port --users `"$UsersFile`" --rules `"$RulesFile`""
 $psi.UseShellExecute = $false
 $psi.RedirectStandardInput = $true
 $psi.RedirectStandardOutput = $true
@@ -284,13 +287,83 @@ try {
     Send-Line $daveOld ('LOGIN dave ' + $TestPassword)
     Check ((Wait-For $daveOld 'ERROR .*密码错误').ok) '旧密码已经不能用了'
 
+    # ---- 11) /ip：查在线客户端的 IP 和端口（只能服务器控制台用）----
+    Send-Command '/ip carol'
+    Check (Wait-Log 'ip of carol: 127\.0\.0\.1:\d+') '控制台 /ip 能查到在线客户端的 IP 和端口'
+    Send-Command '/ip nobodyhere'
+    Check (Wait-Log 'ip lookup: nobodyhere 不在线') '查不在线的人会提示不在线'
+    Send-Line $carol 'MSG /ip alice'
+    Check ((Wait-For $carol 'ERROR .*只能在服务器控制台').ok) '聊天框里 /ip 被拒绝（仅控制台可用）'
+
+    # ---- 12) /cp 简写：控制台改别人的密码 ----
+    Send-Command '/cp dave davepass888'
+    Check (Wait-Log 'password changed for account: dave') '控制台 /cp 也能给别的账号改密码（与 /changepassword 等价）'
+
+    # ---- 13) /chatrule：服务器规则（仅控制台）----
+    Send-Command '/chatrule'
+    Check (Wait-Log 'chatinterval = 0 ms') '/chatrule 列出全部规则（chatinterval 默认 0）'
+    Check (Wait-Log 'maxservertemp = 1048 MB') '默认 maxservertemp = 1048 MB'
+    Send-Command '/chatrule chatinterval set 400'
+    Check (Wait-Log 'chatrule: chatinterval = 400 ms') 'set 生效（间隔 400ms）'
+    # 规则改动要落盘：dchat-rules.txt 里应该能看到新值
+    $rulesText = if (Test-Path -LiteralPath $RulesFile) {
+        [System.IO.File]::ReadAllText($RulesFile, [System.Text.Encoding]::UTF8)
+    } else { '' }
+    Check ($rulesText -match 'chatinterval 400') '规则改动写进了 dchat-rules.txt（重启后仍生效）'
+    Check ($rulesText -match 'keepchathistory (true|false)') '规则文件里四类规则都写全了'
+    Send-Line $bob 'MSG 间隔内的第一条'
+    Check ((Wait-For $alice 'SAY .*bob 间隔内的第一条').ok) '间隔内的第一条正常广播'
+    Send-Line $bob 'MSG 紧接着的第二条'
+    Check ((Wait-For $bob 'ERROR .*发言太快').ok) '紧接着的第二条被 chatinterval 拦下'
+    $leaked = Wait-For $alice 'SAY .*bob 紧接着的第二条' 700
+    Check (-not $leaked.ok) '被拦下的消息不会广播给别人'
+    Send-Command '/chatrule chatinterval set 0'
+    Check (Wait-Log 'chatrule: chatinterval = 0 ms') '改回 0 = 不限制'
+    Send-Line $bob 'MSG 恢复后的消息'
+    Check ((Wait-For $alice 'SAY .*bob 恢复后的消息').ok) '恢复后又能正常发言'
+
+    # keepchathistory：新加入的人能看到之前的聊天记录
+    Send-Command '/chatrule keepchathistory true'
+    Check (Wait-Log 'chatrule: keepchathistory = true') '打开聊天记录保留'
+    $later = New-Peer 'erin'
+    Send-Line $later ("REGISTER erin " + $TestPassword)
+    Check ((Wait-For $later 'NAMES').ok) 'erin 注册并加入'
+    # 登录后服务器会下发"已注册名单"（KNOWN）：客户端拿它补 /ban /op /unban /ip 的参数
+    $knownLine = Wait-For $later 'KNOWN' 2000
+    $knownText = $knownLine.lines -join '|'
+    Check ($knownLine.ok -and ($knownText -match 'alice') -and ($knownText -match 'bob')) `
+          '登录后收到已注册名单（不在线的人也能被 Tab 补出来）'
+    Check ((Wait-For $later 'SAY .*恢复后的消息').ok) '新加入的 erin 能看到之前的聊天记录'
+    Send-Command '/chatrule keepchathistory false'
+    Check (Wait-Log 'chatrule: keepchathistory = false') '关闭聊天记录保留'
+
+    # documentsize / maxservertemp 与它们之间的约束
+    Send-Command '/chatrule documentsize set 1'
+    Check (Wait-Log 'chatrule: documentsize = 1 MB') 'documentsize 改成 1 MB'
+    $bigName = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes('big.bin'))
+    Send-Line $bob ("FILE_SEND big1 " + $bigName + " 2097152")
+    Check ((Wait-For $bob 'ERROR .*文件太大了').ok) '超过 documentsize 的文件被拒绝'
+    Send-Command '/chatrule maxservertemp set 4'
+    Check (Wait-Log 'maxservertemp = 16 MB') '低于最小值会被夹到 16 MB'
+    Send-Command '/chatrule documentsize set 2000'
+    Check (Wait-Log '不能超过 maxservertemp') 'documentsize 不能超过 maxservertemp'
+    Send-Command '/chatrule maxservertemp set 512'
+    Check (Wait-Log 'chatrule: maxservertemp = 512 MB') 'maxservertemp 可以调大'
+    Send-Command '/chatrule documentsize set 64'
+    Check (Wait-Log 'chatrule: documentsize = 64 MB') 'documentsize 可以调回 64 MB'
+    Send-Command '/chatrule maxservertemp set 32'
+    Check (Wait-Log '不能小于当前的 documentsize') 'maxservertemp 不能小于 documentsize'
+    Send-Line $bob 'MSG /chatrule chatinterval set 100'
+    Check ((Wait-For $bob 'ERROR .*只能在服务器控制台').ok) '聊天框里 /chatrule 被拒绝（仅控制台）'
+
     Write-Host ("共 {0} 项检查，失败 {1} 项。" -f $script:checks, $script:failures)
 } finally {
-    foreach ($peer in @($alice, $bob, $carol, $dave, $daveOld)) { Close-Peer $peer }
+    foreach ($peer in @($alice, $bob, $carol, $dave, $daveOld, $later)) { Close-Peer $peer }
     try { $stdin.Close() } catch { }
     if (-not $server.HasExited) { Stop-Process -Id $server.Id -Force }
     Unregister-Event -SubscriptionId $subscription.Id -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $UsersFile) { Remove-Item -LiteralPath $UsersFile -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $RulesFile) { Remove-Item -LiteralPath $RulesFile -Force -ErrorAction SilentlyContinue }
     Write-Host '已关闭测试用的服务器进程'
 }
 

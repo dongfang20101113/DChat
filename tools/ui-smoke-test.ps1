@@ -8,8 +8,11 @@ param(
     [string]$ServerExe = (Join-Path (Split-Path -Parent $PSScriptRoot) 'build\dchat_server.exe'),
     [string]$ClientExe = (Join-Path (Split-Path -Parent $PSScriptRoot) 'build\dchat_client.exe'),
     [int]$Port = 5601,
-    [string]$Shot = (Join-Path $env:TEMP 'dchat-ui-smoke.png'),
-    [string]$DialogShot = (Join-Path $env:TEMP 'dchat-ui-connect-dialog.png'),
+[string]$Shot = (Join-Path $env:TEMP 'dchat-ui-smoke.png'),
+[string]$DialogShot = (Join-Path $env:TEMP 'dchat-ui-connect-dialog.png'),
+[string]$RulesShot = (Join-Path $env:TEMP 'dchat-ui-rules-suggest.png'),
+[string]$AuthShot = (Join-Path $env:TEMP 'dchat-ui-register.png'),
+[string]$LoginShot = (Join-Path $env:TEMP 'dchat-ui-login.png'),
     [string]$UsersFile = (Join-Path $env:TEMP ('dchat-ui-users-{0}.txt' -f $PID)),
     [int]$BulkMessages = 12
 )
@@ -187,57 +190,99 @@ try {
     $main = Wait-Window { Find-ProcessWindow $client.Id 'DchatClientWnd' } 6000
     Check ($main -ne [IntPtr]::Zero) '客户端窗口已创建'
 
-    # 点「连接」（IDC_CONNECT = 1001），弹出连接对话框。
+    # 点「连接」（IDC_CONNECT = 1001），弹出第一步的连接对话框。
     # 注意要用 PostMessage：对话框是模态循环，SendMessage 会一直卡在这里不返回。
     [void][UI.Api]::PostCmd($main, 0x0111, [IntPtr]1001, [IntPtr]::Zero)
     $clientPid = $client.Id
     $dialog = Wait-Window { Find-ProcessWindow $clientPid 'DchatConnectDlg' } 4000
     Check ($dialog -ne [IntPtr]::Zero) '连接对话框已弹出'
+    $connectEdits = Get-ChildEdits $dialog
+    Check ($connectEdits.Count -eq 2) `
+          ("连接对话框只有 2 个输入框：地址 + 端口（实际 {0}）" -f $connectEdits.Count)
+    Save-WindowShot $dialog $DialogShot
+    Check (Test-Path -LiteralPath $DialogShot) ("连接对话框截图已保存：{0}" -f $DialogShot)
 
-    # ---- 先故意用一个不存在的账号登录一次：客户端应当提示失败并断开，而不是卡住 ----
-    $probe = Get-ChildEdits $dialog
-    if ($probe.Count -ge 5) {
-        [void][UI.Api]::SendText($probe[0], 0x000C, [IntPtr]::Zero, '127.0.0.1')
-        [void][UI.Api]::SendText($probe[1], 0x000C, [IntPtr]::Zero, "$Port")
-        [void][UI.Api]::SendText($probe[2], 0x000C, [IntPtr]::Zero, 'nobody')
-        [void][UI.Api]::SendText($probe[3], 0x000C, [IntPtr]::Zero, 'nobodypass123')
+    # ---- 第一步：填地址连上去（这一步没有账号输入框）----
+    if ($connectEdits.Count -ge 2) {
+        [void][UI.Api]::SendText($connectEdits[0], 0x000C, [IntPtr]::Zero, '127.0.0.1')
+        [void][UI.Api]::SendText($connectEdits[1], 0x000C, [IntPtr]::Zero, "$Port")
     }
     Start-Sleep -Milliseconds 150
     [void][UI.Api]::PostCmd($dialog, 0x0111, [IntPtr]1, [IntPtr]::Zero)
-    # 状态栏回到"未连接" = 客户端没有卡在"已连接"状态（服务器拒绝后会主动断开）
-    $backToIdle = Wait-Text $main '未连接' 8000
-    Check ($null -ne $backToIdle) '用不存在的账号登录后客户端回到"未连接"（没有卡在已连接状态）'
+    $login = Wait-Window { Find-ProcessWindow $clientPid 'DchatLoginDlg' } 6000
+    Check ($login -ne [IntPtr]::Zero) '连上服务器之后才弹出「登录」界面'
+    Check ($null -ne (Wait-Text $main '已连接 .*未登录')) '连上但还没登录时，状态栏显示"未登录"'
 
-    # ---- 再来一次：注册新账号 alice ----
+    # ---- 先故意用一个不存在的账号登录一次：原因显示在窗口里，连接不断 ----
+    $loginEdits = Get-ChildEdits $login
+    Check ($loginEdits.Count -eq 3) `
+          ("登录界面有 3 个输入框：用户名 / 密码 /（隐藏的）确认密码，实际 {0}" -f $loginEdits.Count)
+    if ($loginEdits.Count -ge 2) {
+        [void][UI.Api]::SendText($loginEdits[0], 0x000C, [IntPtr]::Zero, 'nobody')
+        [void][UI.Api]::SendText($loginEdits[1], 0x000C, [IntPtr]::Zero, 'nobodypass123')
+    }
+    Start-Sleep -Milliseconds 150
+    [void][UI.Api]::PostCmd($login, 0x0111, [IntPtr]1, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 1200
+    Check ([UI.Api]::IsWindowVisible($login)) '登录被拒绝后窗口还开着（可以直接改，不用重连）'
+    Check ($null -ne (Find-ChildText $main '已连接 .*未登录')) '登录失败后连接还在（状态栏仍是"未登录"，没有断开）'
+    Save-WindowShot $login (Join-Path $env:TEMP 'dchat-ui-login-error.png')
+
+    # ---- 点「断开」：结束这次连接，回到未连接状态 ----
+    [void][UI.Api]::PostCmd($login, 0x0111, [IntPtr]2, [IntPtr]::Zero)  # IDD_CANCEL
+    $backToIdle = Wait-Text $main '未连接' 8000
+    Check ($null -ne $backToIdle) '账号窗口点「断开」后回到"未连接"（没有卡在已连接状态）'
+
+    # ---- 再来一次：这次走到注册界面，注册 alice ----
     [void][UI.Api]::PostCmd($main, 0x0111, [IntPtr]1001, [IntPtr]::Zero)
     $dialog = Wait-Window { Find-ProcessWindow $clientPid 'DchatConnectDlg' } 4000
-    Check ($dialog -ne [IntPtr]::Zero) '登录失败后能重新打开连接对话框（说明已经断开、可以重连）'
+    Check ($dialog -ne [IntPtr]::Zero) '断开后能重新打开连接对话框（可以重连）'
+    [void][UI.Api]::PostCmd($dialog, 0x0111, [IntPtr]1, [IntPtr]::Zero)
+    $login = Wait-Window { Find-ProcessWindow $clientPid 'DchatLoginDlg' } 6000
+    Check ($login -ne [IntPtr]::Zero) '再次连上后又弹出「登录」界面'
 
-    # 填地址 / 端口 / 用户名 / 密码 / 确认密码，然后点「登录 / 注册」（IDD_OK = 1）
-    $edits = Get-ChildEdits $dialog
-    Check ($edits.Count -ge 5) ("对话框里有 5 个输入框：地址/端口/用户名/密码/确认密码（实际 {0}）" -f $edits.Count)
-    if ($edits.Count -ge 5) {
-        [void][UI.Api]::SendText($edits[0], 0x000C, [IntPtr]::Zero, '127.0.0.1')
-        [void][UI.Api]::SendText($edits[1], 0x000C, [IntPtr]::Zero, "$Port")
-        [void][UI.Api]::SendText($edits[2], 0x000C, [IntPtr]::Zero, 'alice')
-        [void][UI.Api]::SendText($edits[3], 0x000C, [IntPtr]::Zero, 'alicepass123')
-        [void][UI.Api]::SendText($edits[4], 0x000C, [IntPtr]::Zero, 'alicepass123')
-    }
-    # 密码框应当带 ES_PASSWORD 样式（输入内容显示成圆点而不是明文）
-    if ($edits.Count -ge 5) {
-        $masked = (([UI.Api]::GetWindowLong($edits[3], -16) -band 0x20) -ne 0) -and
-                  (([UI.Api]::GetWindowLong($edits[4], -16) -band 0x20) -ne 0)
-        Check $masked '密码 / 确认密码输入框带密码样式（显示为圆点）'
-    }
-    if ($edits.Count -ge 5) {
-        Save-WindowShot $dialog $DialogShot
-        Check (Test-Path -LiteralPath $DialogShot) ("连接对话框截图已保存：{0}" -f $DialogShot)
+    # 「登录」和「注册」是两个不同的窗口：先填登录界面，再点左下角按钮换界面
+    $loginEdits2 = Get-ChildEdits $login
+    if ($loginEdits2.Count -ge 2) {
+        [void][UI.Api]::SendText($loginEdits2[0], 0x000C, [IntPtr]::Zero, 'alice')
+        [void][UI.Api]::SendText($loginEdits2[1], 0x000C, [IntPtr]::Zero, 'alicepass123')
+        Save-WindowShot $login $LoginShot
+        Check (Test-Path -LiteralPath $LoginShot) ("登录界面截图已保存：{0}" -f $LoginShot)
     }
     Start-Sleep -Milliseconds 200
-    [void][UI.Api]::PostCmd($dialog, 0x0111, [IntPtr]1, [IntPtr]::Zero)
+    [void][UI.Api]::PostCmd($login, 0x0111, [IntPtr]106, [IntPtr]::Zero)  # IDD_SWITCH
+    $reg = Wait-Window { Find-ProcessWindow $clientPid 'DchatRegisterDlg' } 4000
+    Check ($reg -ne [IntPtr]::Zero) '点「没有账号？注册新账号」换到了「注册」界面（另一个窗口）'
+    Check ((Find-ProcessWindow $clientPid 'DchatLoginDlg') -eq [IntPtr]::Zero) `
+          '切换之后「登录」窗口已经关掉（不会两个窗口叠在一起）'
+
+    $regEdits = Get-ChildEdits $reg
+    Check ($regEdits.Count -eq 3) `
+          ("注册界面有 3 个输入框：用户名 / 密码 / 确认密码（实际 {0}）" -f $regEdits.Count)
+    if ($regEdits.Count -ge 3) {
+        Check ((Get-WindowText $regEdits[0]) -eq 'alice') '切到注册界面后，刚才填的用户名跟着带过来了'
+        [void][UI.Api]::SendText($regEdits[0], 0x000C, [IntPtr]::Zero, 'alice')
+        [void][UI.Api]::SendText($regEdits[1], 0x000C, [IntPtr]::Zero, 'alicepass123')
+        [void][UI.Api]::SendText($regEdits[2], 0x000C, [IntPtr]::Zero, 'alicepass123')
+        # 从登录界面切过来时，刚才填的用户名会带过来（这里被上面的 alice 覆盖了）
+        $masked = (([UI.Api]::GetWindowLong($regEdits[1], -16) -band 0x20) -ne 0) -and
+                  (([UI.Api]::GetWindowLong($regEdits[2], -16) -band 0x20) -ne 0)
+        Check $masked '密码 / 确认密码输入框带密码样式（显示为圆点）'
+        Save-WindowShot $reg $AuthShot
+        Check (Test-Path -LiteralPath $AuthShot) ("注册界面截图已保存：{0}" -f $AuthShot)
+        # 「显示密码」勾选框：勾上后密码框的遮挡字符（●）被清成 0 = 明文
+        $maskBefore = [UI.Api]::SendCmd($regEdits[1], 0x00D2, [IntPtr]::Zero, [IntPtr]::Zero)
+        [void][UI.Api]::PostCmd($reg, 0x0111, [IntPtr]105, [IntPtr]::Zero)  # IDD_SHOW
+        Start-Sleep -Milliseconds 300
+        $maskAfter = [UI.Api]::SendCmd($regEdits[1], 0x00D2, [IntPtr]::Zero, [IntPtr]::Zero)
+        Check (($maskBefore.ToInt64() -ne 0) -and ($maskAfter.ToInt64() -eq 0)) `
+              '勾上「显示密码」后密码框改成明文（遮挡字符被清掉）'
+    }
+    Start-Sleep -Milliseconds 200
+    [void][UI.Api]::PostCmd($reg, 0x0111, [IntPtr]1, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 1200
     $status = Wait-Text $main '已连接 .*用户：alice'
-    Check ($null -ne $status) '登录/注册成功后状态栏显示"已连接 … 用户：alice"'
+    Check ($null -ne $status) '注册成功后状态栏显示"已连接 … 用户：alice"'
 
     # 模拟另一个用户 bob，发一批消息把记录区填满（这样才能看到滚动条）
     $tcp = New-Object System.Net.Sockets.TcpClient
@@ -311,6 +356,41 @@ try {
     Send-Key $input 0x09
     Start-Sleep -Milliseconds 250
     Check ((Get-WindowText $input) -eq '/kick alice') 'Tab 补全昵称参数（/kick -> /kick alice）'
+    [void][UI.Api]::SendText($input, 0x000C, [IntPtr]::Zero, '')
+    Start-Sleep -Milliseconds 150
+    # /ip 的昵称补全（和 /ban /op 一样按在线 + 已注册名单补）
+    [void][UI.Api]::SendText($input, 0x000C, [IntPtr]::Zero, '/ip a')
+    Start-Sleep -Milliseconds 150
+    Send-Key $input 0x09
+    Start-Sleep -Milliseconds 250
+    Check ((Get-WindowText $input) -eq '/ip alice') 'Tab 补全 /ip 的昵称（/ip a -> /ip alice）'
+    [void][UI.Api]::SendText($input, 0x000C, [IntPtr]::Zero, '')
+    Start-Sleep -Milliseconds 150
+    # /chatrule 的规则名补全
+    [void][UI.Api]::SendText($input, 0x000C, [IntPtr]::Zero, '/chatrule ch')
+    Start-Sleep -Milliseconds 200
+    $suggest2 = Find-ChildWindow $main 'DchatSuggestWnd'
+    Check (($suggest2 -ne [IntPtr]::Zero) -and [UI.Api]::IsWindowVisible($suggest2)) `
+          '打 /chatrule 规则名时出现候选浮层'
+    Send-Key $input 0x09
+    Start-Sleep -Milliseconds 250
+    Check ((Get-WindowText $input) -eq '/chatrule chatinterval') `
+          'Tab 补全 /chatrule 的规则名（/chatrule ch -> /chatrule chatinterval）'
+    # 顺手留一张"规则候选"的截图，方便肉眼确认灰色说明和分组
+    [void][UI.Api]::SendText($input, 0x000C, [IntPtr]::Zero, '/chatrule ')
+    Start-Sleep -Milliseconds 300
+    Save-WindowShot $main $RulesShot
+    Check (Test-Path -LiteralPath $RulesShot) ("规则候选浮层截图已保存：{0}" -f $RulesShot)
+    [void][UI.Api]::SendText($input, 0x000C, [IntPtr]::Zero, '/chatrule keepchathistory ')
+    Start-Sleep -Milliseconds 250
+    Send-Key $input 0x09
+    Start-Sleep -Milliseconds 250
+    Check ((Get-WindowText $input) -eq '/chatrule keepchathistory set') `
+          '布尔规则第 2 个参数先补 set'
+    Send-Key $input 0x09
+    Start-Sleep -Milliseconds 250
+    Check ((Get-WindowText $input) -eq '/chatrule keepchathistory true') `
+          '继续按 Tab 轮到 true'
     [void][UI.Api]::SendText($input, 0x000C, [IntPtr]::Zero, '')
     Start-Sleep -Milliseconds 150
     # 候选浮层：输入 '/' 时应该在输入框上方冒出来，清空后收起

@@ -10,8 +10,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Threads REQUIRED)
 
+# 静态链接 MinGW 运行时（libgcc / libstdc++ / winpthread）：这样发布出去的 exe
+# 不依赖 libstdc++-6.dll / libgcc_s_seh-1.dll / libwinpthread-1.dll，
+# 别人下载下来直接双击就能运行，不用先装编译器
+if(MINGW)
+    add_link_options(-static -static-libgcc -static-libstdc++)
+endif()
+
 # 协议层、显示规则、输入历史、服务端指令解析：与网络、界面都无关，可单独做单元测试
-add_library(dchat_protocol STATIC src/protocol.cpp src/render.cpp src/input_history.cpp src/server_command.cpp src/auth.cpp src/file_transfer.cpp)
+add_library(dchat_protocol STATIC src/protocol.cpp src/render.cpp src/input_history.cpp src/server_command.cpp src/auth.cpp src/file_transfer.cpp src/server_rules.cpp)
 target_include_directories(dchat_protocol PUBLIC src)
 # 密码哈希用 Windows 自带的加密库
 target_link_libraries(dchat_protocol PUBLIC bcrypt)
@@ -59,6 +66,10 @@ target_link_libraries(test_bubble PRIVATE dchat_ui)
 add_executable(test_image_preview tests/test_image_preview.cpp)
 target_link_libraries(test_image_preview PRIVATE dchat_ui)
 
+# 服务器规则（/chatrule）单元测试
+add_executable(test_server_rules tests/test_server_rules.cpp)
+target_link_libraries(test_server_rules PRIVATE dchat_protocol)
+
 # 输入框历史记录测试（上键翻历史）
 add_executable(test_history tests/test_history.cpp)
 target_link_libraries(test_history PRIVATE dchat_protocol)
@@ -85,6 +96,7 @@ if(MSVC)
     target_compile_options(test_rounded PRIVATE /W4)
     target_compile_options(test_bubble PRIVATE /W4)
     target_compile_options(test_image_preview PRIVATE /W4)
+    target_compile_options(test_server_rules PRIVATE /W4)
     target_compile_options(test_history PRIVATE /W4)
     target_compile_options(test_server_command PRIVATE /W4)
     target_compile_options(test_auth PRIVATE /W4)
@@ -99,6 +111,7 @@ else()
     target_compile_options(test_rounded PRIVATE -Wall -Wextra)
     target_compile_options(test_bubble PRIVATE -Wall -Wextra)
     target_compile_options(test_image_preview PRIVATE -Wall -Wextra)
+    target_compile_options(test_server_rules PRIVATE -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8)
     target_compile_options(test_history PRIVATE -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8)
     target_compile_options(test_server_command PRIVATE -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8)
     target_compile_options(test_auth PRIVATE -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8)
@@ -111,6 +124,7 @@ add_test(NAME render_tests COMMAND test_render)
 add_test(NAME rounded_tests COMMAND test_rounded)
 add_test(NAME bubble_tests COMMAND test_bubble)
 add_test(NAME image_preview_tests COMMAND test_image_preview)
+add_test(NAME server_rules_tests COMMAND test_server_rules)
 add_test(NAME history_tests COMMAND test_history)
 add_test(NAME server_command_tests COMMAND test_server_command)
 add_test(NAME auth_tests COMMAND test_auth)
