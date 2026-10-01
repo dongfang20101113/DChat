@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色模式下的启动背景，避免深色系统上冷启动闪白屏 -->
+    <style name="Theme.Dchat" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF101418</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

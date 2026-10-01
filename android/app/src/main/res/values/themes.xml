@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      界面颜色全部由 Compose 的 Material3 主题控制，这里只管"窗口还没画出来之前"那一瞬间的背景，
+      避免冷启动时闪一下白屏（深色模式下尤其刺眼）。
+    -->
+    <style name="Theme.Dchat" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>
