@@ -36,3 +36,16 @@ desktop.ini
 # 临时文件
 *.tmp
 *.log
+
+# ---- Android 工程（android/ 子目录）----
+android/.gradle/
+android/local.properties
+android/build/
+android/app/build/
+android/.idea/
+android/*.iml
+android/captures/
+*.apk
+*.aab
+*.keystore
+!android/gradle/wrapper/gradle-wrapper.jar
