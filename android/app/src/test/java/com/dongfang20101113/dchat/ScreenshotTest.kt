@@ -160,4 +160,58 @@ class ScreenshotTest {
             )
         }
     }
+
+    // ------------------------------------------------------------------
+    // 应用图标
+    // ------------------------------------------------------------------
+
+    /**
+     * 把图标渲染出来看。
+     *
+     * **必须出两种**：
+     *  - 未裁切的方形（看整体造型）
+     *  - **圆形遮罩**（启动器普遍用圆形裁切，用来验证图案有没有超出安全区被切掉）
+     */
+    @Test
+    @Config(qualifiers = "zh-rCN-w393dp-h851dp-xxhdpi")
+    fun `渲染应用图标_方形与圆形遮罩`() {
+        val ctx = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val size = 432   // 相当于 108dp @ 4x，够看清细节
+
+        val foreground = androidx.core.content.ContextCompat.getDrawable(ctx, R.drawable.ic_launcher_foreground)!!
+        val background = androidx.core.content.ContextCompat.getDrawable(ctx, R.drawable.ic_launcher_monochrome)!!
+
+        // --- 自适应图标合成：底色 + 前景 ---
+        val icon = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(icon)
+        canvas.drawColor(0xFF0078D7.toInt())
+        foreground.setBounds(0, 0, size, size)
+        foreground.draw(canvas)
+        File(outDir, "icon-square.png").outputStream().use { icon.compress(Bitmap.CompressFormat.PNG, 100, it) }
+
+        // --- 圆形遮罩：模拟启动器的裁切 ---
+        val mask = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        android.graphics.Canvas(mask).drawCircle(
+            size / 2f, size / 2f, size / 2f,
+            android.graphics.Paint().apply { color = android.graphics.Color.BLACK },
+        )
+        val round = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val rc = android.graphics.Canvas(round)
+        rc.drawBitmap(icon, 0f, 0f, null)
+        rc.drawBitmap(
+            mask, 0f, 0f,
+            android.graphics.Paint().apply {
+                xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN)
+            },
+        )
+        File(outDir, "icon-round.png").outputStream().use { round.compress(Bitmap.CompressFormat.PNG, 100, it) }
+
+        // --- 单色层（Android 13+ 主题化图标会拿它上色）---
+        val mono = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val mc = android.graphics.Canvas(mono)
+        mc.drawColor(0xFF202020.toInt())
+        background.setBounds(0, 0, size, size)
+        background.draw(mc)
+        File(outDir, "icon-monochrome.png").outputStream().use { mono.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
 }

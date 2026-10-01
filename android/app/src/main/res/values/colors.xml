@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 图标底色：桌面端的强调色 -->
+    <color name="ic_launcher_background">#0078D7</color>
+</resources>

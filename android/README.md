@@ -8,6 +8,63 @@
 
 ---
 
+## 实机验证后修掉的两个问题
+
+这两个都是**装到真机上才暴露出来的**，离屏渲染和单测都发现不了。
+
+### 问题一：打开文件上传后几秒自动掉线
+
+**症状**：点「📎」打开系统文件选择器，几秒后连接断开、界面弹回连接页。
+
+**根因**（架构缺陷，不是偶发 bug）：连接原本挂在 `AndroidViewModel` 的
+`viewModelScope` 上——
+
+```
+点「📎」→ 系统文件选择器（DocumentsUI）切到前台 → MainActivity 被 stop
+        → 系统内存紧张时销毁 Activity → ViewModel 被清除
+        → viewModelScope 取消 → socket 被连带关闭 → 界面弹回连接页
+```
+
+旋转屏幕、切深色模式、开发者选项里的「不保留活动」都会触发同一问题。
+
+**修法**：把连接**和聊天状态**一起搬到进程级单例 [`net/DchatSession.kt`](app/src/main/java/com/dongfang20101113/dchat/net/DchatSession.kt)，
+由 `Application.onCreate` 初始化。Activity 重建后重新订阅一下就有完整状态
+（聊天记录、在线名单、未读数都在），不再丢。
+
+**回归测试**：`ServerInteropTest.没人收集消息的那段时间服务端发来的消息不会丢` ——
+故意 2 秒不收集（模拟 Activity 被销毁那几秒），然后恢复收集，断言服务端在连接瞬间
+发出的 `WELCOME` 仍在、连接仍是活的、还能正常收发消息。
+
+> ⚠️ **局限（要说清楚）**：这只保住了 **Activity** 的生命周期，**保不住进程**。
+> 如果系统把整个 App 进程回收了（低内存、厂商省电策略），连接还是会断。
+> 要连进程一起保住得上前台服务（会常驻一条通知），目前**没做**。
+
+### 问题二：选大文件会闪退（顺手查出来的）
+
+**根因**：`resolveFile` 里，当 provider 不返回文件大小（`OpenableColumns.SIZE` 为 -1，
+网盘、部分相册、下载管理器都这样）时会走 `stream.readBytes()`
+——**把整个文件读进内存**，选个大视频就是一次 OutOfMemoryError。
+
+**修法**：新出纯函数 [`copyWithLimit`](app/src/main/java/com/dongfang20101113/dchat/protocol/FileTransfer.kt)，
+先流式复制到缓存文件、边读边计数、超限立刻中止，堆占用恒为一个 64 KB 缓冲区。
+
+**回归测试**：`BoundedCopyTest`（10 项），其中一条直接拿一个 **4 GB 的流**去跑，
+断言它到上限就停——4 GB 远超测试堆，实现只要敢读进内存这条必然 OOM。
+
+### 问题三：应用图标
+
+清单里**根本没写 `android:icon`**，所以系统一直用默认的绿色机器人。
+
+**修法**：新增自适应图标（`mipmap-anydpi-v26/`，minSdk 26 所以不需要再放 PNG），
+蓝色底 `#0078D7`（与桌面端一致）+ 白色气泡 + 三个点；
+另附 Android 13+ 的主题化单色层。
+
+**验证**：`ScreenshotTest.渲染应用图标_方形与圆形遮罩` 会额外输出
+`icon-square.png` / `icon-round.png` / `icon-monochrome.png`，
+其中**圆形遮罩版专门用来验证图案没超出安全区被启动器裁掉**（已验证，四周留白充足）。
+
+---
+
 ## 快速开始
 
 ### 构建
@@ -133,7 +190,7 @@ app/src/main/java/com/dongfang20101113/dchat/
 .\gradlew.bat test
 ```
 
-**152 项，覆盖 9 个测试类：**
+**166 项，覆盖 10 个测试类：**
 
 | 测试类 | 项数 | 覆盖什么 |
 | --- | --- | --- |
@@ -144,22 +201,28 @@ app/src/main/java/com/dongfang20101113/dchat/
 | `DchatProtocolTest` | 18 | 行协议：命令名允许下划线、协议注入防护、昵称按码点计数、超长行不切坏字符 |
 | `ServerLineTest` | 15 | 全部服务器命令解析，**含 6 个未写进 README 的** |
 | `LineBufferTest` | 10 | 半包/粘包/CRLF/超长行/逐字节喂入 |
-| `ScreenshotTest` | 9 | 多尺寸离屏渲染出 PNG |
-| `ServerInteropTest` | 1 | **连真实的 C++ 服务端**跑通注册→登录→发消息→收 echo |
+| `BoundedCopyTest` | 10 | **有上限的流式复制**：4 GB 的流不撑爆内存、超限立刻停、边界值 |
+| `ScreenshotTest` | 10 | 多尺寸离屏渲染出 PNG（9 张界面 + 应用图标 3 张） |
+| `ServerInteropTest` | 4 | **连真实的 C++ 服务端**：基础互通、切出去回来不丢消息、主动断开、服务端消失 |
 
-### 最有价值的一条：`ServerInteropTest`
+### 最有价值的两组
 
-其余测试都是"自己跟自己对"，只有它证明**手机端发的字节 C++ 服务端听得懂、服务端回的字节手机端解析得对**：
+**`ServerInteropTest`** —— 其余测试都是"自己跟自己对"，只有它证明
+**手机端发的字节 C++ 服务端听得懂、服务端回的字节手机端解析得对**：
 
 ```
-连接 → 注册（手机用户/test123456）→ 登录（收到 LOGGEDIN）
-     → 收到 NAMES / KNOWN / RULES
-     → 发消息 → 收到自己的 SAY 回显（nick/text/own/time 全对）
-     → /help → QUIT
+连接 → 注册 → 登录（LOGGEDIN）→ 收 NAMES / KNOWN / RULES
+     → 发消息 → 收到自己的 SAY 回显 → /help → QUIT
 ```
 
-它会自动启动 `D:\codes\dchat\build\dchat_server.exe`（临时账号文件 + 系统分配的随机端口），
-跑完清理。找不到 exe 时自动跳过，别人 clone 下来构建不会失败。
+它还会自动启动 `D:\codes\dchat\build\dchat_server.exe`（临时账号文件 + 系统分配的随机端口），
+跑完清理；找不到 exe 时自动跳过，别人 clone 下来构建不会失败。
+
+另外三条专门盯**真机上暴露过的事故**：切出去再回来消息不能丢、用户主动断开不能被当成掉线、
+服务端没了必须变成带原因的 `Lost` 而不是静默变 `Disconnected`。
+
+**`BoundedCopyTest`** —— 直接拿一个 4 GB 的流跑，4 GB 远超测试堆，
+实现只要敢把数据读进内存，测试必然 OOM 失败。
 
 ---
 

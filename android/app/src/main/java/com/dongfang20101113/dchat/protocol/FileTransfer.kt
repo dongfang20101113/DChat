@@ -154,3 +154,40 @@ fun worstCaseFileDataLineBytes(transferIdLength: Int, chunkBytes: Int = FILE_CHU
     // "FILE_DATA" (9) + 空格 + id + 空格 + base64
     return 9 + 1 + transferIdLength + 1 + base64Length
 }
+
+/** 流式复制用的缓冲区大小。**堆占用与文件大小无关**，永远是这一个缓冲区。 */
+const val COPY_BUFFER_BYTES: Int = 64 * 1024
+
+/**
+ * 把 [input] 流式复制到 [output]，**内存占用是常数**，与数据量无关。
+ *
+ * 返回实际复制的字节数；一旦超过 [limit] 就**立刻中止并返回 -1**
+ * （已经写出去的部分由调用方负责清理）。
+ *
+ * 这个函数是为了修一个具体的事故：
+ * 用户点「📎」选文件时，如果 provider 不返回文件大小（`OpenableColumns.SIZE` 为 -1，
+ * 不少网盘/相册 provider 都这样），旧实现会 `stream.readBytes()` 把**整个文件读进内存**——
+ * 选一个大视频就直接 OutOfMemoryError 闪退。现在先流式落到缓存文件并边读边计数，
+ * 超限立刻停，堆上始终只有一个 64 KB 的缓冲区。
+ */
+fun copyWithLimit(
+    input: java.io.InputStream,
+    output: java.io.OutputStream,
+    limit: Long,
+    bufferBytes: Int = COPY_BUFFER_BYTES,
+): Long {
+    require(bufferBytes > 0) { "bufferBytes 必须为正数" }
+    if (limit < 0) return -1L
+
+    var total = 0L
+    val buffer = ByteArray(bufferBytes)
+    while (true) {
+        val read = input.read(buffer)
+        if (read < 0) break
+        if (read == 0) continue          // 防御：不前进的流会导致死循环
+        total += read
+        if (total > limit) return -1L    // 超限：立刻停，不要把剩下的读进来
+        output.write(buffer, 0, read)
+    }
+    return total
+}

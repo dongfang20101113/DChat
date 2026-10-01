@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标的前景层（108×108 视口）。
+
+  重要：自适应图标会被启动器裁成各种形状（圆形、方形、水滴…），
+  只有中心直径 72 的圆是**保证可见**的安全区。所以气泡整体控制在
+  以 (54,54) 为圆心、半径 36 以内——四角和尾巴尖都验算过，不会被裁掉。
+
+  造型与桌面端一致：圆角气泡 + 左下小尾巴 + 三个点。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 气泡主体 + 左下尾巴 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M35,36 h38 a9,9 0 0 1 9,9 v20 a9,9 0 0 1 -9,9 h-28 l-10,10 v-10 a9,9 0 0 1 -9,-9 v-20 a9,9 0 0 1 9,-9 z" />
+
+    <!-- 三个点：填成背景蓝，看起来像镂空 -->
+    <path
+        android:fillColor="#FF0078D7"
+        android:pathData="M43,55 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0" />
+    <path
+        android:fillColor="#FF0078D7"
+        android:pathData="M54,55 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0" />
+    <path
+        android:fillColor="#FF0078D7"
+        android:pathData="M65,55 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0" />
+</vector>

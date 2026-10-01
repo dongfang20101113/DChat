@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 13+ 的「主题化图标」单色层。
+
+  系统会拿这一层做取色和着色，所以**必须只有一个颜色**（这里用白色，
+  实际显示的颜色由系统按壁纸/主题决定）。三个点故意不做镂空——
+  单色层在极小尺寸下，镂空反而会让图标糊成一团。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 气泡外轮廓（实心，含尾巴） -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M35,36 h38 a9,9 0 0 1 9,9 v20 a9,9 0 0 1 -9,9 h-28 l-10,10 v-10 a9,9 0 0 1 -9,-9 v-20 a9,9 0 0 1 9,-9 z" />
+
+    <!-- 三个点用 evenOdd 挖成真正的镂空，保证单色层也能看出"聊天"语义 -->
+    <path
+        android:fillColor="#00000000"
+        android:fillType="evenOdd"
+        android:pathData="M43,55 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0 M54,55 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0 M65,55 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0" />
+</vector>
