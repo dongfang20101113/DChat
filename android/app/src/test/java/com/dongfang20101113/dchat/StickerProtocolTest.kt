@@ -164,4 +164,77 @@ class StickerProtocolTest {
         val offer = withThumb as ServerLine.FileOffer
         assertTrue("两个标记都为 1 时都要认出来", offer.hasThumbnail && offer.isSticker)
     }
+
+    // ------------------------------------------------------------------
+    // ★ 自动下载的边界
+    // ------------------------------------------------------------------
+    //
+    // 这条边界关系到**用户的流量账单**，不是"功能好不好用"的问题：
+    // 自动下一个几百 MB 的视频，用户可能根本不知道，流量就没了。
+    // 所以三种种类 × 各种状态的行为必须逐个钉死。
+
+    private fun fileItem(
+        kind: com.dongfang20101113.dchat.protocol.AttachmentKind,
+        state: com.dongfang20101113.dchat.ui.FileState,
+    ) = com.dongfang20101113.dchat.ui.ChatItem.FileItem(
+        key = 1L,
+        fileId = "F1",
+        fromNick = "小明",
+        fileName = "a.bin",
+        size = 1024,
+        hasThumbnail = false,
+        state = state,
+        kind = kind,
+    )
+
+    @Test
+    fun `★ 普通文件永远不自动下载`() {
+        for (state in com.dongfang20101113.dchat.ui.FileState.entries) {
+            val item = fileItem(com.dongfang20101113.dchat.protocol.AttachmentKind.FILE, state)
+            assertFalse(
+                "普通文件在 $state 状态下不该自动下载——它可能是几百 MB 的视频",
+                item.shouldAutoDownload,
+            )
+        }
+    }
+
+    @Test
+    fun `★ 贴纸和语音在刚收到时自动下载`() {
+        for (kind in listOf(
+            com.dongfang20101113.dchat.protocol.AttachmentKind.STICKER,
+            com.dongfang20101113.dchat.protocol.AttachmentKind.VOICE,
+        )) {
+            val fresh = fileItem(kind, com.dongfang20101113.dchat.ui.FileState.OFFERED)
+            assertTrue("$kind 刚收到时应当自动下载（都很小、且意义在于立刻看到/听到）", fresh.shouldAutoDownload)
+        }
+    }
+
+    @Test
+    fun `已经下过或正在下的不会重复触发`() {
+        for (kind in listOf(
+            com.dongfang20101113.dchat.protocol.AttachmentKind.STICKER,
+            com.dongfang20101113.dchat.protocol.AttachmentKind.VOICE,
+        )) {
+            for (state in listOf(
+                com.dongfang20101113.dchat.ui.FileState.DOWNLOADING,
+                com.dongfang20101113.dchat.ui.FileState.DONE,
+            )) {
+                assertFalse(
+                    "$kind 在 $state 状态下不该再次触发下载",
+                    fileItem(kind, state).shouldAutoDownload,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `失败后不自动重试`() {
+        // 自动重试会在服务器出问题时变成雪崩；失败要交给用户点「重试」
+        for (kind in com.dongfang20101113.dchat.protocol.AttachmentKind.entries) {
+            assertFalse(
+                "$kind 失败后不该自动重试",
+                fileItem(kind, com.dongfang20101113.dchat.ui.FileState.FAILED).shouldAutoDownload,
+            )
+        }
+    }
 }
