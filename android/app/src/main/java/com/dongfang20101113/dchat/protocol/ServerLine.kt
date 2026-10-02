@@ -73,6 +73,12 @@ sealed interface ServerLine {
         val fileName: String,
         val size: Long,
         val hasThumbnail: Boolean,
+        /**
+         * 这是不是一张**贴纸**（聊天里内联画成大图，而不是文件卡片）。
+         *
+         * 默认 `false`：老服务器不会发这个标记，那时按普通文件处理才是对的。
+         */
+        val isSticker: Boolean = false,
     ) : ServerLine
 
     /** `FILE_BEGIN <文件ID> <文件名B64> <字节数>` —— 下载开始。 */
@@ -205,6 +211,9 @@ sealed interface ServerLine {
                 fileName = base64DecodeToString(words[2]) ?: words[2],
                 size = size,
                 hasThumbnail = words.size >= 5 && words[4] == "1",
+                // 贴纸标记是**第 6 个字段**（这里的 words 已经剥掉时间前缀了，
+                // 所以下标比整行少 1）。缺字段就是老服务器，按普通文件处理。
+                isSticker = StickerProtocol.isStickerFlag(words.getOrNull(5)),
             )
         }
 
