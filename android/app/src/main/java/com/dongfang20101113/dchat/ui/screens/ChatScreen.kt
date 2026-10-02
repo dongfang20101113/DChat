@@ -1,4 +1,4 @@
-package com.dongfang20101113.dchat.ui.screens
+﻿package com.dongfang20101113.dchat.ui.screens
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -83,6 +83,8 @@ fun ChatScreen(
     onDisconnect: () -> Unit,
     /** 输入框的初始内容。**只为截图测试而存在**，正常运行时是空的。 */
     initialDraft: String = "",
+    /** 用户核对后接受服务器的新指纹（TOFU 警告条上的按钮）。 */
+    onAcceptFingerprint: () -> Unit = {},
 ) {
     val colors = LocalDchatColors.current
 
@@ -117,6 +119,7 @@ fun ChatScreen(
                     onPickFile = { filePicker.launch(arrayOf("*/*")) },
                     onDisconnect = onDisconnect,
                     initialDraft = initialDraft,
+                    onAcceptFingerprint = onAcceptFingerprint,
                 )
                 MemberPane(
                     modifier = Modifier.width(metrics.memberPaneWidthDp!!.dp).fillMaxHeight(),
@@ -132,6 +135,7 @@ fun ChatScreen(
                     onPickFile = { filePicker.launch(arrayOf("*/*")) },
                     onDisconnect = onDisconnect,
                     initialDraft = initialDraft,
+                    onAcceptFingerprint = onAcceptFingerprint,
                 )
             }
         }
@@ -149,6 +153,7 @@ private fun ChatPane(
     onPickFile: () -> Unit,
     onDisconnect: () -> Unit,
     initialDraft: String = "",
+    onAcceptFingerprint: () -> Unit = {},
 ) {
     val colors = LocalDchatColors.current
     var draft by remember { mutableStateOf(initialDraft) }

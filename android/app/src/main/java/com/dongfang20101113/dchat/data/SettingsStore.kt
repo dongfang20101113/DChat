@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.dongfang20101113.dchat.protocol.DEFAULT_PORT
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "dchat-settings")
@@ -37,6 +38,36 @@ class SettingsStore(private val context: Context) {
             prefs[KEY_PORT] = port
         }
     }
+
+    // ------------------------------------------------------------------
+    // TOFU：记下服务器指纹
+    // ------------------------------------------------------------------
+
+    /**
+     * 取某个服务器上次记下的公钥指纹（没记过返回 null）。
+     *
+     * 键是 `主机:端口`——同一台机器的不同端口算不同的服务器，
+     * 因为它们完全可能是两个不同的服务端进程、两把不同的密钥。
+     */
+    suspend fun trustedFingerprint(host: String, port: Int): String? =
+        context.dataStore.data.map { it[fingerprintKey(host, port)] }.first()
+
+    /** 记下（或更新）某个服务器的指纹。 */
+    suspend fun saveTrustedFingerprint(host: String, port: Int, fingerprint: String) {
+        context.dataStore.edit { prefs ->
+            prefs[fingerprintKey(host, port)] = fingerprint
+        }
+    }
+
+    /** 忘掉某个服务器的指纹（用户核对后确认换过密钥时用）。 */
+    suspend fun forgetTrustedFingerprint(host: String, port: Int) {
+        context.dataStore.edit { prefs ->
+            prefs.remove(fingerprintKey(host, port))
+        }
+    }
+
+    private fun fingerprintKey(host: String, port: Int) =
+        stringPreferencesKey("fingerprint:$host:$port")
 
     private companion object {
         val KEY_HOST = stringPreferencesKey("host")

@@ -3,6 +3,7 @@ package com.dongfang20101113.dchat.ui
 import com.dongfang20101113.dchat.protocol.NoticeInfo
 import com.dongfang20101113.dchat.protocol.SayInfo
 import com.dongfang20101113.dchat.protocol.ServerLine
+import com.dongfang20101113.dchat.protocol.TrustDecision
 import com.dongfang20101113.dchat.protocol.countTextLines
 import com.dongfang20101113.dchat.protocol.formatBytes
 import com.dongfang20101113.dchat.protocol.unescapeText
@@ -65,6 +66,16 @@ data class ChatState(
     val connected: Boolean = false,
     val connecting: Boolean = false,
     val connectionError: String? = null,
+
+    /**
+     * 服务器身份的可信状态（TOFU）。
+     *
+     * 默认是 [TrustDecision.NotEncrypted]：还没连上、或者连上了但没加密。
+     * 握手成功后会被替换成 首次连接 / 一致 / **变了**。
+     * 界面必须把 [TrustDecision.Changed] 显眼地展示出来——悄悄接受新指纹
+     * 等于 TOFU 完全没做。
+     */
+    val trust: TrustDecision = TrustDecision.NotEncrypted,
 
     // ---- 登录 ----
     val selfNick: String = "",

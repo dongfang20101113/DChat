@@ -9,7 +9,9 @@ import com.dongfang20101113.dchat.protocol.FILE_CHUNK_BYTES
 import com.dongfang20101113.dchat.protocol.ServerLine
 import com.dongfang20101113.dchat.protocol.base64Encode
 import com.dongfang20101113.dchat.protocol.copyWithLimit
+import com.dongfang20101113.dchat.protocol.decideTrust
 import com.dongfang20101113.dchat.protocol.escapeText
+import com.dongfang20101113.dchat.protocol.TrustDecision
 import com.dongfang20101113.dchat.protocol.makeFileChunk
 import com.dongfang20101113.dchat.protocol.makeFileEnd
 import com.dongfang20101113.dchat.protocol.makeFileGet
@@ -146,10 +148,49 @@ object DchatSession {
     fun connect() {
         val s = _state.value
         // 重连前清掉上次的错误提示，否则会一直挂在界面上
-        _state.value = s.copy(connectionError = null)
+        _state.value = s.copy(connectionError = null, trust = TrustDecision.NotEncrypted)
         scope.launch {
             settings.saveConnection(s.host, s.port)
-            connection.connect(s.host, s.port)
+            if (!connection.connect(s.host, s.port)) return@launch
+
+            // ---- TOFU：比对服务器指纹 ----
+            // 加密本身不保证"对面是那台服务器"，只保证"这条通道没被偷听"。
+            // 记住首次见到的指纹、以后每次比对，才能发现中间人。
+            val current = connection.serverFingerprint
+            val known = settings.trustedFingerprint(s.host, s.port)
+            val decision = decideTrust(known, current)
+            _state.value = _state.value.copy(trust = decision)
+
+            // 首次见到就记下来。**指纹变了不自动覆盖**——
+            // 那等于把警告变成了静默接受，TOFU 就白做了。
+            // 必须由用户核对后调用 acceptNewFingerprint() 才更新。
+            if (decision is TrustDecision.FirstUse) {
+                settings.saveTrustedFingerprint(s.host, s.port, decision.fingerprint)
+            }
+        }
+    }
+
+    /**
+     * 用户核对过之后，接受服务器换的新指纹。
+     *
+     * 只有 [TrustDecision.Changed] 状态下才有意义——这时界面应当已经把
+     * 新旧指纹都显示出来了，用户确认"确实是我们自己换的密钥"。
+     */
+    fun acceptNewFingerprint() {
+        val s = _state.value
+        val changed = s.trust as? TrustDecision.Changed ?: return
+        scope.launch {
+            settings.saveTrustedFingerprint(s.host, s.port, changed.current)
+            _state.value = _state.value.copy(trust = TrustDecision.FirstUse(changed.current))
+        }
+    }
+
+    /** 忘掉这台服务器的指纹，下次连接按"首次"处理（用于用户确认服务器换过密钥）。 */
+    fun forgetFingerprint() {
+        val s = _state.value
+        scope.launch {
+            settings.forgetTrustedFingerprint(s.host, s.port)
+            _state.value = _state.value.copy(trust = TrustDecision.NotEncrypted)
         }
     }
 
