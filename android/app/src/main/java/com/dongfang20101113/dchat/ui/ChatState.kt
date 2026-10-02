@@ -3,7 +3,10 @@ package com.dongfang20101113.dchat.ui
 import com.dongfang20101113.dchat.protocol.NoticeInfo
 import com.dongfang20101113.dchat.protocol.SayInfo
 import com.dongfang20101113.dchat.protocol.ServerLine
+import com.dongfang20101113.dchat.protocol.countTextLines
 import com.dongfang20101113.dchat.protocol.formatBytes
+import com.dongfang20101113.dchat.protocol.unescapeText
+import com.dongfang20101113.dchat.protocol.utf8CharCount
 
 /** 聊天记录里的一条。 */
 sealed interface ChatItem {
@@ -75,11 +78,52 @@ data class ChatState(
     val unread: Int = 0,
     val maxFileMb: Int = 64,
 
+    // ---- 服务器下发的限制（全部 0 = 不限制）----
+    // 老服务器只发前 3 个 RULES 字段，这 4 个会保持 0 也就是"不限制"，行为完全不变。
+    /** uploadrate：本机上传限速 KB/s（真正的限速在服务端做，这里只用于界面提示）。 */
+    val uploadRateKbps: Int = 0,
+    /** downloadrate：本机下载限速 KB/s。 */
+    val downloadRateKbps: Int = 0,
+    /** maxtextlen：单条消息最大字符数（Unicode 码点）。 */
+    val maxTextLength: Int = 0,
+    /** maxtextlines：单条消息最大行数。 */
+    val maxTextLines: Int = 0,
+
     /** 每条提示/消息产生时的本地时间（`hh:mm`），与桌面端"时间在产生那一刻固定"的做法一致。 */
     val nextKey: Long = 1L,
 ) {
     /** 聊天记录上限：和桌面端的 `kMaxItems = 400` 一致。 */
     val isFull: Boolean get() = items.size >= MAX_ITEMS
+
+    /**
+     * 这条输入能不能发出去？返回 `null` 表示可以，否则是**给用户看的原因**。
+     *
+     * 放在这里而不是散进界面代码有两个好处：
+     * ① 界面直接用它决定「发送」按钮灰不灰、提示写什么；
+     * ② 它是纯函数，能脱离界面单测。服务端也会做同样的检查，
+     *    但本地先拦一道能省一次往返，体验更好。
+     *
+     * @param escaped 已经过 `escapeText` 的文本（发送时用的就是它）
+     */
+    fun whyCannotSend(escaped: String): String? {
+        if (escaped.isEmpty()) return "说点什么再发吧"
+
+        if (maxTextLength > 0) {
+            // 字符数按**还原后**的文本算，而且按 Unicode 码点算
+            // —— 一个 emoji 可能是两个 UTF-16 char，直接用 String.length 会算多。
+            val chars = utf8CharCount(unescapeText(escaped))
+            if (chars > maxTextLength) {
+                return "太长了：服务器限制 $maxTextLength 字符，你这条有 $chars 字符"
+            }
+        }
+        if (maxTextLines > 0) {
+            val lines = countTextLines(escaped)
+            if (lines > maxTextLines) {
+                return "行数太多：服务器限制 $maxTextLines 行，你这条有 $lines 行"
+            }
+        }
+        return null
+    }
 
     companion object {
         const val MAX_ITEMS: Int = 400
@@ -136,7 +180,13 @@ fun ChatState.reduce(line: ServerLine, nowTime: String): ChatState = when (line)
     is ServerLine.Pong -> this
 
     // RULES 是控制行：只更新本地限制，不显示
-    is ServerLine.Rules -> copy(maxFileMb = line.documentSizeMb)
+    is ServerLine.Rules -> copy(
+        maxFileMb = line.documentSizeMb,
+        uploadRateKbps = line.uploadRateKbps,
+        downloadRateKbps = line.downloadRateKbps,
+        maxTextLength = line.maxTextLength,
+        maxTextLines = line.maxTextLines,
+    )
 
     is ServerLine.FileOffer -> if (items.any { it is ChatItem.FileItem && it.fileId == line.fileId }) {
         this

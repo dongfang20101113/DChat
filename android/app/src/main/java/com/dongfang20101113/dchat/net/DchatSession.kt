@@ -9,6 +9,7 @@ import com.dongfang20101113.dchat.protocol.FILE_CHUNK_BYTES
 import com.dongfang20101113.dchat.protocol.ServerLine
 import com.dongfang20101113.dchat.protocol.base64Encode
 import com.dongfang20101113.dchat.protocol.copyWithLimit
+import com.dongfang20101113.dchat.protocol.escapeText
 import com.dongfang20101113.dchat.protocol.makeFileChunk
 import com.dongfang20101113.dchat.protocol.makeFileEnd
 import com.dongfang20101113.dchat.protocol.makeFileGet
@@ -191,8 +192,11 @@ object DchatSession {
     fun sendMessage(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
+        // 换行必须先转义才能过行式协议（否则会被 buildLine 丢掉），
+        // 服务端的 maxtextlen / maxtextlines 也是按转义后的形态统计的。
+        val escaped = escapeText(trimmed)
         scope.launch {
-            if (!connection.send(makeMessage(trimmed))) {
+            if (!connection.send(makeMessage(escaped))) {
                 _state.value = _state.value.reduce(
                     ServerLine.Error("", "消息发送失败，连接可能已断开"), nowTime(),
                 )

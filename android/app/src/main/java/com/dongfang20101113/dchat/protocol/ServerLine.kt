@@ -53,6 +53,16 @@ sealed interface ServerLine {
         val documentSizeMb: Int,
         val chatIntervalMs: Int,
         val keepChatHistory: Boolean,
+        // ---- 2026-10 新增：公网接入需要的限速与文本限制 ----
+        // 都给了默认值 0（= 不限制），所以**老服务器不发病这 4 个字段时也能正常工作**。
+        /** uploadrate：单客户端上传限速 KB/s，0 = 不限制。 */
+        val uploadRateKbps: Int = 0,
+        /** downloadrate：单客户端下载限速 KB/s，0 = 不限制。 */
+        val downloadRateKbps: Int = 0,
+        /** maxtextlen：单条消息最大字符数（Unicode 码点），0 = 不限制。 */
+        val maxTextLength: Int = 0,
+        /** maxtextlines：单条消息最大行数，0 = 不限制。 */
+        val maxTextLines: Int = 0,
     ) : ServerLine
 
     /** `FILE_OFFER <时间> <昵称> <文件ID> <文件名B64> <字节数> [1]` —— 第 5 个字段为 `1` 表示带缩略图。 */
@@ -166,7 +176,21 @@ sealed interface ServerLine {
             val mb = words[0].toIntOrNull() ?: return Unknown("RULES $rest")
             val interval = words[1].toIntOrNull() ?: return Unknown("RULES $rest")
             val keep = words[2] == "1" || words[2].equals("true", ignoreCase = true)
-            return Rules(mb, interval, keep)
+
+            // 新增的 4 个字段一律**按位置读、缺了就按 0（不限制）**：
+            // 老服务器只发 3 个字段，这样也不会解析失败。
+            // 服务端只追加不重排，所以前 3 个字段的位置永远不变。
+            fun optional(index: Int): Int = words.getOrNull(index)?.toIntOrNull() ?: 0
+
+            return Rules(
+                documentSizeMb = mb,
+                chatIntervalMs = interval,
+                keepChatHistory = keep,
+                uploadRateKbps = optional(3),
+                downloadRateKbps = optional(4),
+                maxTextLength = optional(5),
+                maxTextLines = optional(6),
+            )
         }
 
         private fun parseFileOffer(rest: String): ServerLine {

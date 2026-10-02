@@ -45,7 +45,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.dongfang20101113.dchat.protocol.countTextLines
+import com.dongfang20101113.dchat.protocol.escapeText
 import com.dongfang20101113.dchat.protocol.nickColorIndex
+import com.dongfang20101113.dchat.protocol.unescapeText
+import com.dongfang20101113.dchat.protocol.utf8CharCount
 import com.dongfang20101113.dchat.ui.ChatItem
 import com.dongfang20101113.dchat.ui.ChatState
 import com.dongfang20101113.dchat.ui.components.FileCardRow
@@ -77,6 +81,8 @@ fun ChatScreen(
     onSendFile: (android.net.Uri) -> Unit,
     onMarkRead: () -> Unit,
     onDisconnect: () -> Unit,
+    /** 输入框的初始内容。**只为截图测试而存在**，正常运行时是空的。 */
+    initialDraft: String = "",
 ) {
     val colors = LocalDchatColors.current
 
@@ -110,6 +116,7 @@ fun ChatScreen(
                     onSend = onSend, onDownload = onDownload,
                     onPickFile = { filePicker.launch(arrayOf("*/*")) },
                     onDisconnect = onDisconnect,
+                    initialDraft = initialDraft,
                 )
                 MemberPane(
                     modifier = Modifier.width(metrics.memberPaneWidthDp!!.dp).fillMaxHeight(),
@@ -124,6 +131,7 @@ fun ChatScreen(
                     onSend = onSend, onDownload = onDownload,
                     onPickFile = { filePicker.launch(arrayOf("*/*")) },
                     onDisconnect = onDisconnect,
+                    initialDraft = initialDraft,
                 )
             }
         }
@@ -140,9 +148,10 @@ private fun ChatPane(
     onDownload: (String) -> Unit,
     onPickFile: () -> Unit,
     onDisconnect: () -> Unit,
+    initialDraft: String = "",
 ) {
     val colors = LocalDchatColors.current
-    var draft by remember { mutableStateOf("") }
+    var draft by remember { mutableStateOf(initialDraft) }
     var showMembers by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
@@ -216,6 +225,45 @@ private fun ChatPane(
             }
         }
 
+        // ---- 限制提示条（服务器设了 maxtextlen / maxtextlines 才显示）----
+        // 放在输入框**上方**，这样打字时余光就能看到还差多少，不用等发出去被拒才知道
+        if (state.maxTextLength > 0 || state.maxTextLines > 0) {
+            val escapedDraft = remember(draft) { escapeText(draft) }
+            val blocked = state.whyCannotSend(escapedDraft)
+            val usedChars = utf8CharCount(unescapeText(escapedDraft))
+            val usedLines = countTextLines(escapedDraft)
+            val overLimit = blocked != null && draft.isNotEmpty()
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(if (overLimit) colors.error.copy(alpha = 0.15f) else colors.neutral)
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = if (overLimit) blocked!! else "还可以输入…",
+                    color = if (overLimit) colors.error else colors.system,
+                    fontSize = metrics.noticeFontSp.sp,
+                    modifier = Modifier.weight(1f),
+                )
+                if (state.maxTextLength > 0) {
+                    Text(
+                        text = "$usedChars/${state.maxTextLength} 字符",
+                        color = if (usedChars > state.maxTextLength) colors.error else colors.system,
+                        fontSize = metrics.noticeFontSp.sp,
+                    )
+                }
+                if (state.maxTextLines > 0) {
+                    Text(
+                        text = "  $usedLines/${state.maxTextLines} 行",
+                        color = if (usedLines > state.maxTextLines) colors.error else colors.system,
+                        fontSize = metrics.noticeFontSp.sp,
+                    )
+                }
+            }
+        }
+
         // ---- 输入栏 ----
         Row(
             modifier = Modifier
@@ -232,23 +280,25 @@ private fun ChatPane(
             OutlinedTextField(
                 value = draft,
                 onValueChange = { draft = it },
-                placeholder = { Text("说点什么…", fontSize = metrics.messageFontSp.sp) },
-                maxLines = 4,
+                // 支持多行：换行会被转义后发出去，服务端和对方都能正确还原
+                placeholder = { Text("说点什么…（可以换行）", fontSize = metrics.messageFontSp.sp) },
+                maxLines = 6,
                 modifier = Modifier.weight(1f).widthIn(min = 120.dp),
             )
             IconButton(
                 onClick = {
-                    if (draft.isNotBlank()) {
+                    // 本地先按服务器的限制拦一道，省一次"发出去被拒"的往返
+                    if (state.whyCannotSend(escapeText(draft)) == null) {
                         onSend(draft)
                         draft = ""
                     }
                 },
-                enabled = draft.isNotBlank(),
+                enabled = state.whyCannotSend(escapeText(draft)) == null,
             ) {
                 Icon(
                     Icons.Filled.Send,
                     contentDescription = "发送",
-                    tint = if (draft.isNotBlank()) colors.accent else colors.system,
+                    tint = if (state.whyCannotSend(escapeText(draft)) == null) colors.accent else colors.system,
                 )
             }
         }

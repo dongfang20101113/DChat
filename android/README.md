@@ -190,7 +190,7 @@ app/src/main/java/com/dongfang20101113/dchat/
 .\gradlew.bat test
 ```
 
-**166 项，覆盖 10 个测试类：**
+**189 项，覆盖 11 个测试类：**
 
 | 测试类 | 项数 | 覆盖什么 |
 | --- | --- | --- |
@@ -198,12 +198,13 @@ app/src/main/java/com/dongfang20101113/dchat/
 | `DisplayTest` | 25 | @提及边界（`@alicex` 不命中 `@alice`、中文标点、邮箱写法）、昵称配色稳定性、公告识别 |
 | `FileTransferTest` | 25 | Base64 往返与严格性、**文件名清理（路径穿越/非法字符/结尾点/超长）**、分块、最坏行长度 |
 | `ChatStateReducerTest` | 23 | 状态机：哪些消息进记录哪些不进、名单维护、文件卡片状态流转、400 条上限 |
+| `TextLimitsTest` | 20 | **多行文本转义**（与 C++ 端同一批测试向量）、行数统计、8 字段 RULES 解析与向后兼容、发送前本地校验 |
 | `DchatProtocolTest` | 18 | 行协议：命令名允许下划线、协议注入防护、昵称按码点计数、超长行不切坏字符 |
 | `ServerLineTest` | 15 | 全部服务器命令解析，**含 6 个未写进 README 的** |
+| `ScreenshotTest` | 12 | 多尺寸离屏渲染出 PNG（界面 + 输入限制提示条 + 应用图标） |
 | `LineBufferTest` | 10 | 半包/粘包/CRLF/超长行/逐字节喂入 |
 | `BoundedCopyTest` | 10 | **有上限的流式复制**：4 GB 的流不撑爆内存、超限立刻停、边界值 |
-| `ScreenshotTest` | 10 | 多尺寸离屏渲染出 PNG（9 张界面 + 应用图标 3 张） |
-| `ServerInteropTest` | 4 | **连真实的 C++ 服务端**：基础互通、切出去回来不丢消息、主动断开、服务端消失 |
+| `ServerInteropTest` | 5 | **连真实的 C++ 服务端**：基础互通、切出去回来不丢消息、主动断开、服务端消失、**跨语言行数统计一致性** |
 
 ### 最有价值的两组
 
@@ -287,6 +288,28 @@ cd android
 > 顺带一个坑：Gradle Kotlin DSL 脚本里 `java` 会被解析成项目的 Java 扩展访问器，
 > 所以必须 `import java.util.Properties` 才能用 `Properties()`，
 > 直接写 `java.util.Properties()` 会报 `Unresolved reference 'util'`。
+
+---
+
+## 服务器限制（RULES）在客户端的表现
+
+服务端通过 `RULES` 行下发限速和文本限制（规则细节见[桌面端 README](../README.md)）。
+安卓端会：
+
+| 下发的规则 | 安卓端行为 |
+| --- | --- |
+| `maxtextlen` / `maxtextlines` | 输入框上方出现一条**限制提示条**：左边写还能输入多少（超限时变红并说明原因），右边实时显示 `已用/上限 字符` 和 `行`。**超限时发送按钮变灰**，本地就拦住，不用等服务端回 ERROR |
+| `documentsize` | 沿用原有的单文件上限检查 |
+| `uploadrate` / `downloadrate` | 只是显示服务器策略；**真正的限速在服务端做**（阻塞形成背压，客户端不需要配合） |
+| `chatinterval` | 发太快时服务端会回 `ERROR 发言太快了`，照原样显示 |
+
+**多行消息**：输入框支持换行（最多显示 6 行），换行在发送前会**转义**成 `\n` 两个字符
+（协议是行式的，不转义会被丢掉），对方收到后还原成真换行。转义规则和 C++ 端
+**逐字节一致**，并且有跨语言测试盯着——见 `ServerInteropTest` 里的
+「安卓端发的多行消息_真实 C++ 服务端能正确统计行数」。
+
+**向后兼容**：老服务器只发 3 个字段的 RULES 行，这 4 个限制会保持 0（不限制），
+**行为完全不变**，不会因为解析失败而连不上。
 
 ---
 

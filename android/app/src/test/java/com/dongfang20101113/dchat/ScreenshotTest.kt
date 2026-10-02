@@ -162,6 +162,41 @@ class ScreenshotTest {
     }
 
     // ------------------------------------------------------------------
+    // 阶段 1 新增：服务器文本限制
+    // ------------------------------------------------------------------
+
+    private fun limitedState(maxChars: Int, maxLines: Int): ChatState =
+        sampleState().copy(maxTextLength = maxChars, maxTextLines = maxLines)
+
+    @Test
+    @Config(qualifiers = "zh-rCN-w393dp-h851dp-xxhdpi")
+    fun `输入未超限_显示还能输多少`() {
+        val state = limitedState(maxChars = 200, maxLines = 8)
+        shoot("limits-under.png", true, 393, 851) {
+            ChatScreen(
+                state = state,
+                onSend = {}, onDownload = {}, onSendFile = {}, onMarkRead = {}, onDisconnect = {},
+                // 3 行，远没到 200 字符
+                initialDraft = "第一行\n第二行\n第三行",
+            )
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "zh-rCN-w393dp-h851dp-xxhdpi")
+    fun `输入超限_变红并说明原因`() {
+        val state = limitedState(maxChars = 20, maxLines = 2)
+        shoot("limits-over.png", true, 393, 851) {
+            ChatScreen(
+                state = state,
+                onSend = {}, onDownload = {}, onSendFile = {}, onMarkRead = {}, onDisconnect = {},
+                // 3 行 > 2 行，字符数也超了
+                initialDraft = "第一行内容比较长\n第二行内容也比较长\n第三行",
+            )
+        }
+    }
+
+    // ------------------------------------------------------------------
     // 应用图标
     // ------------------------------------------------------------------
 

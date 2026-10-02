@@ -250,3 +250,86 @@ fun makeFileGet(fileId: String): String = buildLine("FILE_GET", fileId)
 fun makeFileThumb(transferId: String, dataBase64: String): String =
     buildLine("FILE_THUMB", "$transferId $dataBase64")
 fun makeFileThumbGet(fileId: String): String = buildLine("FILE_THUMB_GET", fileId)
+
+// ---------------------------------------------------------------------------
+// 多行文本的转义
+//
+// 协议是**行式**的：buildLine 会把 \r 和 \n 丢掉，所以聊天内容里不可能带真换行。
+// 要支持多行消息（以及服务端的 maxtextlines 规则），发送前必须先转义。
+//
+// 只有两条规则，扫一遍即可：
+//     反斜杠 -> 两个反斜杠
+//     换行   -> 反斜杠 + n      （\r\n 和单独的 \r 也归一成换行）
+//
+// 反转义遇到不认识的转义**原样保留**，免得把旧客户端发来的真实反斜杠吃掉。
+// ⚠️ 这三个函数必须和 C++ 端的 EscapeText / UnescapeText / CountTextLines
+//    **逐字节一致**，否则两端的行数统计会对不上。改一边就要改另一边。
+// ---------------------------------------------------------------------------
+
+/** 换行在线上被表示成这两个字符。 */
+const val ESCAPED_NEWLINE: String = "\\n"
+
+fun escapeText(text: String): String {
+    // 绝大多数消息不含特殊字符，先扫一遍避免无谓的 StringBuilder 分配
+    if (text.none { it == '\\' || it == '\n' || it == '\r' }) return text
+
+    val out = StringBuilder(text.length + 8)
+    var i = 0
+    while (i < text.length) {
+        when (text[i]) {
+            '\\' -> out.append("\\\\")
+            '\n' -> out.append(ESCAPED_NEWLINE)
+            '\r' -> {
+                // \r\n 归一成一个换行；单独的 \r 也当换行（从别处粘贴来的文本常见）
+                if (i + 1 < text.length && text[i + 1] == '\n') i++
+                out.append(ESCAPED_NEWLINE)
+            }
+            else -> out.append(text[i])
+        }
+        i++
+    }
+    return out.toString()
+}
+
+fun unescapeText(escaped: String): String {
+    if (!escaped.contains('\\')) return escaped
+
+    val out = StringBuilder(escaped.length)
+    var i = 0
+    while (i < escaped.length) {
+        val c = escaped[i]
+        if (c != '\\' || i + 1 >= escaped.length) {
+            out.append(c)
+            i++
+            continue
+        }
+        when (escaped[i + 1]) {
+            '\\' -> { out.append('\\'); i += 2 }
+            'n' -> { out.append('\n'); i += 2 }
+            // 不认识的转义原样保留，别吃掉字符
+            else -> { out.append(c); i++ }
+        }
+    }
+    return out.toString()
+}
+
+/**
+ * 转义后的文本有几行（没有任何换行时是 1；空串算 0 行）。
+ *
+ * 用来在本地就拦住超过 `maxtextlines` 的消息，不必等服务端回 ERROR。
+ */
+fun countTextLines(escaped: String): Int {
+    if (escaped.isEmpty()) return 0
+    var lines = 1
+    var i = 0
+    while (i < escaped.length) {
+        if (escaped[i] != '\\') { i++; continue }
+        if (i + 1 >= escaped.length) break
+        when (escaped[i + 1]) {
+            '\\' -> i += 2          // \\ 是字面反斜杠，不算换行
+            'n' -> { lines++; i += 2 }
+            else -> i++
+        }
+    }
+    return lines
+}

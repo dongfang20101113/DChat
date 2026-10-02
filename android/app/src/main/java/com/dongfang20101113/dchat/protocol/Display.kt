@@ -127,8 +127,12 @@ fun parseSay(rawLine: String, selfNick: String): SayInfo? {
     if (nick.isEmpty()) return null
 
     val own = selfNick.isNotEmpty() && nick == selfNick
-    val mention = !own && (mentionsNick(text, selfNick) || mentionsAll(text))
-    return SayInfo(time = time, nick = nick, text = text, own = own, mention = mention)
+    // 线上的换行是**转义**过的（协议是行式的，真换行会被 buildLine 丢掉）。
+    // 这里还原成真换行；提及判断要用还原后的文本，这样跨行写的 "@某人" 也能命中。
+    // Compose 的 Text 本来就认 '\n'，所以气泡渲染这边不用额外处理。
+    val plain = unescapeText(text)
+    val mention = !own && (mentionsNick(plain, selfNick) || mentionsAll(plain))
+    return SayInfo(time = time, nick = nick, text = plain, own = own, mention = mention)
 }
 
 /** 这一行对我而言算不算"有人叫我"（@我 或 @all，自己发的不算）。 */

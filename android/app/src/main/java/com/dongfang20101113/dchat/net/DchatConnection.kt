@@ -199,7 +199,7 @@ class DchatConnection(private val scope: CoroutineScope) {
             // 只有"不是用户主动断开"时才报掉线——否则用户点断开后还会看到一条错误提示
             if (!userRequestedDisconnect) {
                 cleanup()
-                _state.value = ConnectionState.Lost(host, port, reason ?: "连接已断开")
+                reportUnexpectedLoss(reason ?: "连接已断开")
             }
         }
     }
@@ -212,7 +212,7 @@ class DchatConnection(private val scope: CoroutineScope) {
                 // 界面会一直显示"已连接"而实际早断了（僵尸状态），用户完全察觉不到。
                 if (!userRequestedDisconnect) {
                     cleanup()
-                    _state.value = ConnectionState.Lost(host, port, "心跳发送失败，连接已中断")
+                    reportUnexpectedLoss("心跳发送失败，连接已中断")
                 }
                 return
             }
@@ -231,6 +231,24 @@ class DchatConnection(private val scope: CoroutineScope) {
         is java.net.UnknownHostException -> "找不到这个地址：$host"
         is java.net.ConnectException -> "对方拒绝连接（服务器没开？端口不对？）"
         else -> e.message ?: e::class.simpleName ?: "未知错误"
+    }
+
+    /**
+     * 报告"意外掉线"，但**绝不覆盖用户主动断开**。
+     *
+     * 这里有个真实踩到的竞态：用户点断开时我们会先发 `QUIT`，服务端收到后立刻关连接，
+     * 接收循环于是读到 -1 并准备报 `Lost`；与此同时 `disconnect()` 已经把状态设成了
+     * `Disconnected`。接收循环随后直接赋值的话，就会把 `Disconnected` **覆盖**成 `Lost`，
+     * 界面上表现为「用户明明是自己点的断开，却弹出一条错误」。
+     *
+     * 用 `compareAndSet` 解决：只有当状态**仍然是**连接中/已连接时才改；
+     * 中途被 `disconnect()` 改过的话 CAS 会失败，我们就不改。
+     */
+    private fun reportUnexpectedLoss(reason: String) {
+        if (userRequestedDisconnect) return
+        val current = _state.value
+        if (current !is ConnectionState.Connected && current !is ConnectionState.Connecting) return
+        _state.compareAndSet(current, ConnectionState.Lost(host, port, reason))
     }
 
     companion object {

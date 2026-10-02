@@ -4,6 +4,7 @@ import com.dongfang20101113.dchat.net.ConnectionState
 import com.dongfang20101113.dchat.net.DchatConnection
 import com.dongfang20101113.dchat.protocol.Message
 import com.dongfang20101113.dchat.protocol.ServerLine
+import com.dongfang20101113.dchat.protocol.escapeText
 import com.dongfang20101113.dchat.protocol.makeLogin
 import com.dongfang20101113.dchat.protocol.makeMessage
 import com.dongfang20101113.dchat.protocol.makeQuit
@@ -58,14 +59,18 @@ class ServerInteropTest {
 
     private class Server(val process: Process, val port: Int, val dir: File)
 
-    private fun startServer(): Server {
+    private fun startServer(rulesText: String? = null): Server {
         val port = ServerSocket(0).use { it.localPort }
         val tmp = kotlin.io.path.createTempDirectory("dchat-interop").toFile()
+        val rulesFile = File(tmp, "rules.txt")
+        // 传了规则就先写进去：服务端启动时读这个文件
+        if (rulesText != null) rulesFile.writeText(rulesText, Charsets.UTF_8)
+
         val process = ProcessBuilder(
             serverExe.absolutePath,
             "--port", port.toString(),
             "--users", File(tmp, "users.txt").absolutePath,
-            "--rules", File(tmp, "rules.txt").absolutePath,
+            "--rules", rulesFile.absolutePath,
         )
             .directory(tmp)
             .redirectErrorStream(true)
@@ -81,13 +86,14 @@ class ServerInteropTest {
         server.dir.deleteRecursively()
     }
 
-    /** 起服务器 + 连接 + 收集，跑完清理。 */
+    /** 起服务器 + 连接 + 收集，跑完清理。[rulesText] 非空时先写进规则文件。 */
     private fun withServerAndConnection(
         collectImmediately: Boolean = true,
+        rulesText: String? = null,
         body: suspend (DchatConnection, Server, Job?) -> Unit,
     ) = runBlocking {
         assumeTrue("没找到 dchat_server.exe，跳过互操作测试", serverExe.isFile)
-        val server = startServer()
+        val server = startServer(rulesText)
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val conn = DchatConnection(scope)
         var collector: Job? = null
@@ -251,6 +257,74 @@ class ServerInteropTest {
         }
         Unit
     }
+
+    // ------------------------------------------------------------------
+    // 5. 跨语言一致性：Kotlin 的转义实现 vs 真实 C++ 服务端的统计
+    // ------------------------------------------------------------------
+
+    /**
+     * **这是转义规则两端一致性的真正证明**。
+     *
+     * 前面的 `TextLimitsTest` 只能证明"Kotlin 实现符合 Kotlin 测试的期望"，
+     * C++ 那边同理——两边各自的测试都过，不代表它们对同一个输入给出同样的结果。
+     *
+     * 这条测试让**安卓端的 Kotlin 代码**把多行文本转义后发给**真正的 C++ 服务端**，
+     * 由服务端用它的 `CountTextLines` 去统计行数：
+     *  - 3 行（正好卡在上限）必须放行，且往返后换行信息一字不差
+     *  - 4 行必须被服务端拒绝
+     *  - 超过字符上限必须被服务端拒绝
+     *
+     * 只要两端的转义规则有任何一点不一致，这里就会红。
+     */
+    @Test
+    fun `安卓端发的多行消息_真实 C++ 服务端能正确统计行数`() =
+        withServerAndConnection(rulesText = "maxtextlen 30\nmaxtextlines 3\n") { conn, _, _ ->
+            assertNotNull(awaitRaw(5_000) { it.command == "WELCOME" })
+
+            conn.send(makeRegister("多行测试", "test123456"))
+            assertNotNull(awaitRaw(5_000) { it.command == "SYS" || it.command == "ERROR" })
+            conn.send(makeLogin("多行测试", "test123456"))
+            assertNotNull("登录失败", awaitRaw(5_000) { it.command == "LOGGEDIN" })
+
+            // 写进规则文件的两条必须真的生效
+            val rulesRaw = awaitRaw(5_000) { it.command == "RULES" }
+            assertNotNull("没收到 RULES", rulesRaw)
+            val rules = ServerLine.parse(rulesRaw!!, "多行测试")
+            assertTrue("RULES 应解析成 Rules，实际 $rules", rules is ServerLine.Rules)
+            rules as ServerLine.Rules
+            assertEquals("maxtextlen 没生效", 30, rules.maxTextLength)
+            assertEquals("maxtextlines 没生效", 3, rules.maxTextLines)
+
+            // ---- 正好 3 行：必须放行，且换行一个都不能少 ----
+            val threeLines = "第一行\n第二行\n第三行"
+            conn.send(makeMessage(escapeText(threeLines)))
+            val echo = awaitRaw(5_000) { it.command == "SAY" }
+            assertNotNull(
+                "3 行的消息被服务端拒了 —— 说明两端的行数统计不一致",
+                echo,
+            )
+            val say = ServerLine.parse(echo!!, "多行测试") as ServerLine.Say
+            assertEquals("换行信息在往返中丢了", threeLines, say.info.text)
+
+            // ---- 4 行：服务端必须拒绝 ----
+            conn.send(makeMessage(escapeText("a\nb\nc\nd")))
+            assertNotNull(
+                "4 行的消息服务端没拦，maxtextlines 没生效",
+                awaitRaw(5_000) { it.command == "ERROR" && it.rest.contains("maxtextlines") },
+            )
+
+            // ---- 31 字符：服务端必须拒绝 ----
+            conn.send(makeMessage(escapeText("x".repeat(31))))
+            assertNotNull(
+                "超长消息服务端没拦，maxtextlen 没生效",
+                awaitRaw(5_000) { it.command == "ERROR" && it.rest.contains("maxtextlen") },
+            )
+
+            // ---- 30 字符（边界）：必须放行 ----
+            conn.send(makeMessage(escapeText("y".repeat(30))))
+            val ok = awaitRaw(5_000) { it.command == "SAY" && it.rest.contains("yyy") }
+            assertNotNull("边界值 30 字符被误拦了", ok)
+        }
 
     // ------------------------------------------------------------------
 
