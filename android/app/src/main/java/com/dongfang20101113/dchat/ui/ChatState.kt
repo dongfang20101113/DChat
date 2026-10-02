@@ -57,6 +57,16 @@ sealed interface ChatItem {
         val sizeText: String get() = formatBytes(size)
 
         /**
+         * 这条附件是不是**自己刚发出去的**（界面据此决定靠右还是靠左）。
+         *
+         * 判断依据是"上传成功那一刻的本地回显"：发出文件时服务端登记的昵称
+         * 就是发送者昵称，所以收到的 `FILE_OFFER` 里昵称等于自己即为自己发的。
+         * 这条规则必须和 [SayItem] 用同一套（见 `ChatStateReducerTest`），
+         * 否则会出现"消息靠右、自己发的语音靠左"这种自相矛盾的界面。
+         */
+        fun isOwn(selfNick: String): Boolean = selfNick.isNotEmpty() && fromNick == selfNick
+
+        /**
          * 该不该自动开始下载？
          *
          * **贴纸和语音才自动下。普通文件（可能是几百 MB 的视频）绝不能自动下**——
@@ -125,6 +135,37 @@ data class ChatState(
 
     /** 每条提示/消息产生时的本地时间（`hh:mm`），与桌面端"时间在产生那一刻固定"的做法一致。 */
     val nextKey: Long = 1L,
+
+    // ---- 语音消息（阶段 5）----
+    /**
+     * 正在录音吗？
+     *
+     * 录音状态放在**进程级状态**里而不是界面里：录音是「按住说话」触发的，
+     * 松手之前 Activity 可能已经被重建（转屏），状态丢了就会录出一个没人收尾的文件。
+     */
+    val recording: Boolean = false,
+
+    /** 这次录音已经录了多久（秒）。仅用于界面上的计时。 */
+    val recordingSeconds: Int = 0,
+
+    /**
+     * 正在播放的语音（`fileId`）；null 表示没有在播。
+     *
+     * **同一时刻只有一条语音在播**（和微信一致）：点第二条会把第一条停掉，
+     * 否则两条声音叠在一起谁也听不清。
+     */
+    val playingVoiceId: String? = null,
+
+    /** 正在播放的这条已经播到第几秒，用于气泡上的进度。 */
+    val playingSeconds: Int = 0,
+
+    /**
+     * 正在播放的这条**总共**多少秒（播放器读出来的真实时长）。
+     *
+     * 协议里 `FILE_OFFER` 没有时长字段，所以没播过的语音显示 `0:00`——
+     * 宁可先显示 0:00，也不拿字节数按码率估一个数出来骗人。
+     */
+    val playingDurationSeconds: Int = 0,
 ) {
     /** 聊天记录上限：和桌面端的 `kMaxItems = 400` 一致。 */
     val isFull: Boolean get() = items.size >= MAX_ITEMS

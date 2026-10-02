@@ -1,5 +1,7 @@
 package com.dongfang20101113.dchat.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -31,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -44,10 +47,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.changedToDown
+import androidx.compose.ui.input.pointer.changedToUp
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import com.dongfang20101113.dchat.protocol.AttachmentKind
 import com.dongfang20101113.dchat.protocol.EmojiPalette
+import com.dongfang20101113.dchat.protocol.VoiceMessage
 import com.dongfang20101113.dchat.protocol.countTextLines
 import com.dongfang20101113.dchat.protocol.escapeText
 import com.dongfang20101113.dchat.protocol.nickColorIndex
@@ -55,14 +67,18 @@ import com.dongfang20101113.dchat.protocol.unescapeText
 import com.dongfang20101113.dchat.protocol.utf8CharCount
 import com.dongfang20101113.dchat.ui.ChatItem
 import com.dongfang20101113.dchat.ui.ChatState
+import com.dongfang20101113.dchat.ui.FileState
 import com.dongfang20101113.dchat.ui.components.FileCardRow
 import com.dongfang20101113.dchat.ui.components.StickerRow
 import com.dongfang20101113.dchat.ui.components.NoticeRow
 import com.dongfang20101113.dchat.ui.components.SayRow
+import com.dongfang20101113.dchat.ui.components.VoiceBubbleRow
 import com.dongfang20101113.dchat.ui.layout.ChatMetrics
 import com.dongfang20101113.dchat.ui.layout.chatMetrics
 import com.dongfang20101113.dchat.ui.layout.windowSizeClassOf
 import com.dongfang20101113.dchat.ui.theme.LocalDchatColors
+import com.dongfang20101113.dchat.voice.VoiceRecord
+import com.dongfang20101113.dchat.voice.bubbleDurationSeconds
 
 /**
  * 主聊天界面。
@@ -85,8 +101,18 @@ fun ChatScreen(
     onSendFile: (android.net.Uri) -> Unit,
     onMarkRead: () -> Unit,
     onDisconnect: () -> Unit,
+    /** 点一条语音气泡：播 / 暂停 / 接着播（取舍在会话层）。 */
+    onVoiceToggle: (String, String?) -> Unit = { _, _ -> },
+    /** 「按住说话」按下。 */
+    onStartVoice: () -> Unit = {},
+    /** 「按住说话」松手：太短丢掉，够长发出去。 */
+    onStopVoice: () -> Unit = {},
+    /** 录音中按「取消」：删掉文件、不发。 */
+    onCancelVoice: () -> Unit = {},
     /** 输入框的初始内容。**只为截图测试而存在**，正常运行时是空的。 */
     initialDraft: String = "",
+    /** 假装"正在录音 N 秒"。同样**只为截图与手势测试而存在**。 */
+    initialRecordingSeconds: Int? = null,
     /** 用户核对后接受服务器的新指纹（TOFU 警告条上的按钮）。 */
     onAcceptFingerprint: () -> Unit = {},
 ) {
@@ -95,6 +121,16 @@ fun ChatScreen(
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri -> uri?.let(onSendFile) }
+
+    // 录音权限：**只在用户第一次按麦克风时申请**，不在启动时弹——
+    // 一进 App 就要麦克风权限，用户十有八九直接拒绝。
+    val context = LocalContext.current
+    val micPermission = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        // 授权后**接着开始录**：用户已经按住了按钮，还要他再按一次很奇怪
+        if (granted) onStartVoice()
+    }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -114,6 +150,18 @@ fun ChatScreen(
         // 进入聊天即清未读
         LaunchedEffect(Unit) { onMarkRead() }
 
+        val voice = VoiceUi(
+            onToggle = onVoiceToggle,
+            onPressMic = {
+                val granted = ContextCompat.checkSelfPermission(
+                    context, Manifest.permission.RECORD_AUDIO,
+                ) == PackageManager.PERMISSION_GRANTED
+                if (granted) onStartVoice() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+            },
+            onReleaseMic = onStopVoice,
+            onCancelMic = onCancelVoice,
+        )
+
         if (metrics.useTwoPane) {
             Row(Modifier.fillMaxSize()) {
                 ChatPane(
@@ -123,6 +171,8 @@ fun ChatScreen(
                     onPickFile = { filePicker.launch(arrayOf("*/*")) },
                     onDisconnect = onDisconnect,
                     initialDraft = initialDraft,
+                    initialRecordingSeconds = initialRecordingSeconds,
+                    voice = voice,
                     onAcceptFingerprint = onAcceptFingerprint,
                 )
                 MemberPane(
@@ -139,12 +189,22 @@ fun ChatScreen(
                     onPickFile = { filePicker.launch(arrayOf("*/*")) },
                     onDisconnect = onDisconnect,
                     initialDraft = initialDraft,
+                    initialRecordingSeconds = initialRecordingSeconds,
+                    voice = voice,
                     onAcceptFingerprint = onAcceptFingerprint,
                 )
             }
         }
     }
 }
+
+/** 语音相关的回调打包在一起，免得 [ChatPane] 的参数列表越拉越长。 */
+private data class VoiceUi(
+    val onToggle: (String, String?) -> Unit,
+    val onPressMic: () -> Unit,
+    val onReleaseMic: () -> Unit,
+    val onCancelMic: () -> Unit,
+)
 
 /** 聊天区：顶栏 + 消息列表 + 输入栏。 */
 @Composable
@@ -156,7 +216,9 @@ private fun ChatPane(
     onDownload: (String) -> Unit,
     onPickFile: () -> Unit,
     onDisconnect: () -> Unit,
+    voice: VoiceUi,
     initialDraft: String = "",
+    initialRecordingSeconds: Int? = null,
     onAcceptFingerprint: () -> Unit = {},
 ) {
     val colors = LocalDchatColors.current
@@ -230,12 +292,30 @@ private fun ChatPane(
                     is ChatItem.SayItem -> SayRow(item, metrics)
                     is ChatItem.NoticeItem -> NoticeRow(item, metrics)
                     is ChatItem.FileItem ->
-                        // 贴纸内联画成大图；普通文件仍是"点一下才下载"的卡片。
-                        // 两者走的是同一个传输通道，区别只在这里。
-                        if (item.isSticker) {
-                            StickerRow(item, metrics) { onDownload(item.fileId) }
-                        } else {
-                            FileCardRow(item, metrics) { onDownload(item.fileId) }
+                        // 三种附件走**同一个传输通道**，区别只在这里：
+                        // 语音是能点响的气泡、贴纸是内联大图、普通文件是"点一下才下载"的卡片。
+                        when {
+                            item.kind == AttachmentKind.VOICE -> {
+                                val mine = item.isOwn(state.selfNick)
+                                val playingHere = state.playingVoiceId == item.fileId
+                                VoiceBubbleRow(
+                                    item = item,
+                                    metrics = metrics,
+                                    own = mine,
+                                    playing = playingHere,
+                                    playedSeconds = if (playingHere) state.playingSeconds else 0,
+                                    durationSeconds = state.playingDurationSeconds,
+                                    // 没在播时只显示已知的时长（0:00 表示还不知道）
+                                    durationText = bubbleDurationSeconds(
+                                        if (playingHere) state.playingSeconds else 0,
+                                        if (playingHere) state.playingDurationSeconds else 0,
+                                    ),
+                                    onToggle = { voice.onToggle(item.fileId, item.savedPath) },
+                                )
+                            }
+
+                            item.isSticker -> StickerRow(item, metrics) { onDownload(item.fileId) }
+                            else -> FileCardRow(item, metrics) { onDownload(item.fileId) }
                         }
                 }
             }
@@ -314,49 +394,156 @@ private fun ChatPane(
             }
         }
 
-        // ---- 输入栏 ----
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(colors.neutral)
-                .navigationBarsPadding()
-                .padding(horizontal = 8.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            IconButton(onClick = { showEmoji = !showEmoji }) {
-                Icon(
-                    Icons.Filled.EmojiEmotions,
-                    contentDescription = if (showEmoji) "收起表情" else "表情",
-                    tint = if (showEmoji) colors.accent else colors.system,
-                )
-            }
-            IconButton(onClick = onPickFile) {
-                Icon(Icons.Filled.AttachFile, contentDescription = "发送文件", tint = colors.accent)
-            }
-            OutlinedTextField(
-                value = draft,
-                onValueChange = { draft = it },
-                // 支持多行：换行会被转义后发出去，服务端和对方都能正确还原
-                placeholder = { Text("说点什么…（可以换行）", fontSize = metrics.messageFontSp.sp) },
-                maxLines = 6,
-                modifier = Modifier.weight(1f).widthIn(min = 120.dp),
-            )
-            IconButton(
-                onClick = {
-                    // 本地先按服务器的限制拦一道，省一次"发出去被拒"的往返
-                    if (state.whyCannotSend(escapeText(draft)) == null) {
-                        onSend(draft)
-                        draft = ""
-                    }
-                },
-                enabled = state.whyCannotSend(escapeText(draft)) == null,
+        // ---- 录音中：把整条输入栏换成"松开发送 / 取消" ----
+        //
+        // 换成整条而不是在输入框旁边加个小提示，是因为**松手这个动作必须有个明确的地方接**：
+        // 用户按住麦克风之后，视线和手指都在底部这一条上。
+        // 录音中：`state.recording` 是会话给的真状态，[initialRecordingSeconds]
+        // 只在截图/手势测试里用来把这一屏造出来（正常运行时它是 null）。
+        val recording = state.recording || initialRecordingSeconds != null
+        val recordingSeconds = if (state.recording) state.recordingSeconds else initialRecordingSeconds
+
+        if (recording) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(colors.neutral)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                    .pointerInput(Unit) {
+                        // 松手就发。用 awaitPointerEventScope 而不是 detectTapGestures：
+                        // 这里要的是"这个区域里任何一次抬手"，不是在某个组件上点一下。
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                if (event.changes.any { it.changedToUp() }) {
+                                    voice.onReleaseMic()
+                                    return@awaitPointerEventScope
+                                }
+                            }
+                        }
+                    },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Icon(
-                    Icons.Filled.Send,
-                    contentDescription = "发送",
-                    tint = if (state.whyCannotSend(escapeText(draft)) == null) colors.accent else colors.system,
+                // 红点 + 计时：一眼看出"正在录"
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .background(colors.error, RoundedCornerShape(5.dp)),
                 )
+                Text(
+                    text = "录音中 ${VoiceRecord.displaySeconds(recordingSeconds ?: 0)}",
+                    color = colors.text,
+                    fontSize = metrics.messageFontSp.sp,
+                )
+                Text(
+                    text = "最长 ${VoiceRecord.displaySeconds(VoiceMessage.MAX_DURATION_SECONDS)}",
+                    color = colors.system,
+                    fontSize = metrics.noticeFontSp.sp,
+                )
+                Box(Modifier.weight(1f))
+                Box(
+                    modifier = Modifier
+                        .background(colors.neutralBorder, RoundedCornerShape(8.dp))
+                        .clickable { voice.onCancelMic() }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                ) {
+                    Text("取消", color = colors.text, fontSize = metrics.messageFontSp.sp)
+                }
+                Box(
+                    modifier = Modifier
+                        .background(colors.accent, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                ) {
+                    Text(
+                        "松开发送",
+                        color = colors.accentText,
+                        fontSize = metrics.messageFontSp.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+            }
+        } else {
+            // ---- 输入栏 ----
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(colors.neutral)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                IconButton(onClick = { showEmoji = !showEmoji }) {
+                    Icon(
+                        Icons.Filled.EmojiEmotions,
+                        contentDescription = if (showEmoji) "收起表情" else "表情",
+                        tint = if (showEmoji) colors.accent else colors.system,
+                    )
+                }
+                IconButton(onClick = onPickFile) {
+                    Icon(Icons.Filled.AttachFile, contentDescription = "发送文件", tint = colors.accent)
+                }
+                // 麦克风：按住就录、松手就发。
+                //
+                // 刻意**不用 `clickable`**：这里要的是"按下"和"抬手"两个时刻，
+                // 一次点击表达不了"按住 3 秒"。也不能只用 `awaitRelease()` 之类的
+                // 组合手势——它们在"手指移出按钮范围"时就不再算数了，而按住说话
+                // 恰恰经常一边说一边把手指挪开一点。所以自己看指针事件。
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)                    // 不小于 48dp 的触控目标
+                        .semantics { contentDescription = "按住说话" }
+                        .pointerInput(state.recording) {
+                            if (state.recording) return@pointerInput
+                            awaitPointerEventScope {
+                                // ① 等按下
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    if (event.changes.any { it.changedToDown() }) break
+                                }
+                                voice.onPressMic()
+                                // ② 等抬手（中途手指移出按钮范围也算抬手，这正是我们要的）
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    if (event.changes.any { it.changedToUp() }) break
+                                }
+                                voice.onReleaseMic()
+                            }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Mic,
+                        contentDescription = null,      // 语义已经挂在外层 Box 上，这里不重复朗读
+                        tint = colors.accent,
+                    )
+                }
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    // 支持多行：换行会被转义后发出去，服务端和对方都能正确还原
+                    placeholder = { Text("说点什么…（可以换行）", fontSize = metrics.messageFontSp.sp) },
+                    maxLines = 6,
+                    modifier = Modifier.weight(1f).widthIn(min = 120.dp),
+                )
+                IconButton(
+                    onClick = {
+                        // 本地先按服务器的限制拦一道，省一次"发出去被拒"的往返
+                        if (state.whyCannotSend(escapeText(draft)) == null) {
+                            onSend(draft)
+                            draft = ""
+                        }
+                    },
+                    enabled = state.whyCannotSend(escapeText(draft)) == null,
+                ) {
+                    Icon(
+                        Icons.Filled.Send,
+                        contentDescription = "发送",
+                        tint = if (state.whyCannotSend(escapeText(draft)) == null) colors.accent else colors.system,
+                    )
+                }
             }
         }
     }

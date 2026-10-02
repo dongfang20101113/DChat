@@ -86,7 +86,7 @@
 | `LOGIN <用户名> <密码>` | 用已有账号登录；成功后进入房间 |
 | `MSG <内容>` | 发言，广播给所有人（包括自己，便于回显） |
 | `LIST` | 查询在线成员 |
-| `FILE_SEND <传输ID> <文件名(Base64)> <字节数>` | 开始上传一个文件（服务器会暂存，别人点了才下载） |
+| `FILE_SEND <传输ID> <文件名(Base64)> <字节数> [种类]` | 开始上传一个文件（服务器会暂存，别人点了才下载）。种类见下表，省略即普通文件 |
 | `FILE_CHUNK <传输ID> <Base64数据>` | 一块文件数据（每块 2048 字节原始数据） |
 | `FILE_END <传输ID>` | 上传完了（服务器校验大小后暂存，并给房间里的其他人发卡片通知） |
 | `FILE_CANCEL <传输ID>` | 取消这次上传 |
@@ -481,7 +481,7 @@ Client → server:
 | `LOGIN <username> <password>` | Log in with an existing account; on success you enter the room |
 | `MSG <text>` | Say something; broadcast to everyone (including yourself, for echo) |
 | `LIST` | Ask for the online members |
-| `FILE_SEND <transfer-id> <filename(Base64)> <bytes>` | Start uploading a file (the server stages it; others download only when they click) |
+| `FILE_SEND <transfer-id> <filename(Base64)> <bytes> [kind]` | Start uploading a file (the server stages it; others download only when they click). See the kind table below; omitted means a plain file |
 | `FILE_CHUNK <transfer-id> <Base64 data>` | One chunk of file data (2048 raw bytes per chunk) |
 | `FILE_END <transfer-id>` | Upload finished (the server validates the size, stages the file and notifies the rest of the room with a card) |
 | `FILE_CANCEL <transfer-id>` | Cancel this upload |

@@ -42,8 +42,8 @@ android {
         applicationId = "com.dongfang20101113.dchat"
         minSdk = 26          // Android 8.0：覆盖率高，且能用 java.time / 通知渠道等现代 API
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

@@ -284,6 +284,68 @@ class ScreenshotTest {
     }
 
     // ------------------------------------------------------------------
+    // 阶段 5：语音消息
+    // ------------------------------------------------------------------
+
+    @Test
+    @Config(qualifiers = "zh-rCN-w393dp-h851dp-xxhdpi")
+    fun `语音气泡与正在播放的样子`() {
+        // 和贴纸那张一样的道理：`savedPath` 必须指向**真实存在**的文件，
+        // 否则气泡会画成"没下载完"的灰按钮——截图看着没崩，其实什么都没验到。
+        val dir = File(System.getProperty("java.io.tmpdir"), "dchat-shot").apply { mkdirs() }
+        val voice = File(dir, "voice-1.m4a")
+        voice.writeBytes(ByteArray(48_000))          // 内容无所谓，这里只验渲染
+
+        var state = sampleState()
+        val name = base64Encode("voice-1.m4a".toByteArray(Charsets.UTF_8))
+        // 别人发的一条 + 自己发的一条：要靠左/靠右对照着看
+        state = state.reduce(ServerLine.parse("FILE_OFFER 21:06 小明 V1 $name 48000 0 voice", "我"), "21:06")
+        state = state.reduce(ServerLine.parse("FILE_OFFER 21:07 我 V2 $name 48000 0 voice", "我"), "21:07")
+
+        state = state.copy(
+            items = state.items.map { item ->
+                if (item is com.dongfang20101113.dchat.ui.ChatItem.FileItem &&
+                    item.fileId.startsWith("V")
+                ) {
+                    // 模拟"已经自动下载完了"
+                    item.copy(
+                        state = com.dongfang20101113.dchat.ui.FileState.DONE,
+                        savedPath = voice.absolutePath,
+                    )
+                } else {
+                    item
+                }
+            },
+            // 别人的那条正在播：气泡上应当出现暂停图标和进度线
+            playingVoiceId = "V1",
+            playingSeconds = 3,
+            playingDurationSeconds = 8,
+        )
+
+        shoot("voice-bubbles.png", true, 393, 851) {
+            ChatScreen(
+                state = state,
+                onSend = {}, onDownload = {}, onSendFile = {}, onMarkRead = {}, onDisconnect = {},
+            )
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "zh-rCN-w393dp-h851dp-xxhdpi")
+    fun `按住说话时的录音状态`() {
+        val state = sampleState()
+        shoot("voice-recording.png", true, 393, 851) {
+            ChatScreen(
+                state = state,
+                onSend = {}, onDownload = {}, onSendFile = {}, onMarkRead = {}, onDisconnect = {},
+                // 正常运行时这几秒来自会话状态；截图里直接给一个值，
+                // 免得为了截一张图去等三秒
+                initialRecordingSeconds = 3,
+            )
+        }
+    }
+
+    // ------------------------------------------------------------------
     // 应用图标
     // ------------------------------------------------------------------
 

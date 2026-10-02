@@ -6,6 +6,9 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Android 13+ 通知要单独申请（有人在聊天里 @我 时提醒） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 发语音消息要录音。危险权限，运行时申请（见 ChatScreen 的「按住说话」）。
+         刻意不写 uses-feature required：没有麦克风的设备照样能装、能听别人发的语音。 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:name=".DchatApp"

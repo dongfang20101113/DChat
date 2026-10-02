@@ -76,8 +76,9 @@ $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.9.10-hotspot'
 $env:ANDROID_HOME = 'D:\codes\tools\android-sdk'
 cd D:\codes\dchat\android
 
-.\gradlew.bat test            # 跑全部单测（152 项）
+.\gradlew.bat test            # 跑全部单测（309 项）
 .\gradlew.bat assembleDebug   # 产出 app\build\outputs\apk\debug\app-debug.apk
+.\gradlew.bat assembleRelease # 产出已签名的 app-release.apk（签名配置见文末）
 ```
 
 ### 安装
@@ -97,6 +98,9 @@ D:\codes\tools\android-sdk\platform-tools\adb.exe install -r app\build\outputs\a
 1. 填服务器地址和端口（默认 5555），点「连接」
 2. 登录或注册（注册成功后**不会自动登录**，要再点一次登录——与桌面端一致）
 3. 进聊天界面：发消息、看在线成员、点文件卡片下载
+4. **发语音**：按住输入框左边的麦克风说话，松手就发。第一次按会弹录音权限
+   （**只在你要用时才问**，不是一进 App 就弹）。
+   录制中底部会换成「录音中 0:03 · 最长 5:00 · 取消 / 松开发送」
 
 ---
 
@@ -167,20 +171,31 @@ app/src/main/java/com/dongfang20101113/dchat/
 │   ├── LineBuffer.kt          TCP 字节流切行：半包 / 粘包 / CRLF / 超长行
 │   ├── Display.kt             @提及判定、昵称配色(FNV-1a 按 UTF-8 字节)、SAY/提示解析、未读规则
 │   ├── ServerLine.kt          服务器→客户端全部命令的强类型模型
-│   └── FileTransfer.kt        Base64、文件名清理、分块、字节数格式化
+│   ├── FileTransfer.kt        Base64、文件名清理、分块、字节数格式化
+│   ├── StickerProtocol.kt     贴纸识别
+│   └── VoiceMessage.kt        附件的「种类」字段、语音的时长/格式/大小规则
+├── voice/                 ← 语音：决策是纯逻辑，硬件藏在接口后面
+│   ├── VoiceDecisions.kt      ★ 录音流程 / 播放取舍 / 时长格式化（零 Android 依赖，可单测）
+│   ├── VoiceIo.kt             VoiceRecorder / VoicePlayer 两个接口
+│   └── AndroidVoice.kt        MediaRecorder / MediaPlayer 的真实实现
 ├── net/
-│   └── DchatConnection.kt     TCP + 协程：接收循环、心跳(45s)、加锁发送、4 秒连接超时
+│   ├── DchatConnection.kt     TCP + 协程：接收循环、心跳(45s)、加锁发送、4 秒连接超时
+│   └── DchatSession.kt        ★ 进程级会话：状态、文件收发、录音/播放接线
 ├── data/
-│   └── SettingsStore.kt       只持久化「地址 + 端口」（刻意不存密码和用户名）
+│   └── SettingsStore.kt       只持久化「地址 + 端口 + 已信任的服务器指纹」（刻意不存密码）
 ├── ui/
 │   ├── ChatState.kt           不可变状态 + **纯函数 reducer**（收到每条消息界面怎么变）
-│   ├── ChatViewModel.kt       网络接线、文件落盘、发送
 │   ├── layout/ChatLayout.kt   ★ 屏幕适配的全部尺寸决策（纯函数）
 │   ├── theme/DchatTheme.kt    深浅两套配色（抄自桌面端）
-│   ├── components/            气泡 / 系统提示 / 公告 / 文件卡片
-│   └── screens/               连接 / 登录注册 / 聊天
+│   ├── components/            气泡 / 系统提示 / 公告 / 文件卡片 / 贴纸 / **语音气泡**
+│   └── screens/               连接 / 登录注册 / 聊天（含「按住说话」）
 └── MainActivity.kt            按阶段切换三屏
 ```
+
+> 会话为什么是**进程级单例**（`DchatSession`）而不是 ViewModel：点「📎」会打开系统文件选择器，
+> Activity 被 stop 之后系统可能回收它，ViewModel 一被清除就带着 socket 一起走了
+> ——用户看到的是"选完文件就掉线"。语音录音同理：按住说话期间转屏，
+> 状态不能跟着界面一起没。详见 `DchatSession` 的类注释。
 
 ---
 
@@ -190,23 +205,30 @@ app/src/main/java/com/dongfang20101113/dchat/
 .\gradlew.bat test
 ```
 
-**189 项，覆盖 11 个测试类：**
+**309 项，覆盖 18 个测试类：**
 
 | 测试类 | 项数 | 覆盖什么 |
 | --- | --- | --- |
 | `ChatLayoutTest` | 26 | **屏幕适配**：20+ 种真实屏幕宽度的不变量、断点、分栏、字体缩放、横竖屏、气泡摆放、键盘避让 |
+| `ChatStateReducerTest` | 26 | 状态机：哪些消息进记录哪些不进、名单维护、文件卡片状态流转、400 条上限、**语音消息的种类与自动下载** |
 | `DisplayTest` | 25 | @提及边界（`@alicex` 不命中 `@alice`、中文标点、邮箱写法）、昵称配色稳定性、公告识别 |
+| `CryptoTest` | 25 | **RFC 5869 / NIST GCM 官方向量**、跨语言 fixture、TOFU 判定 |
 | `FileTransferTest` | 25 | Base64 往返与严格性、**文件名清理（路径穿越/非法字符/结尾点/超长）**、分块、最坏行长度 |
-| `ChatStateReducerTest` | 23 | 状态机：哪些消息进记录哪些不进、名单维护、文件卡片状态流转、400 条上限 |
 | `TextLimitsTest` | 20 | **多行文本转义**（与 C++ 端同一批测试向量）、行数统计、8 字段 RULES 解析与向后兼容、发送前本地校验 |
+| `StickerProtocolTest` | 19 | 贴纸识别、**「种类」字段的向后兼容**（`1` 与 `sticker` 都认）、自动下载边界 |
 | `DchatProtocolTest` | 18 | 行协议：命令名允许下划线、协议注入防护、昵称按码点计数、超长行不切坏字符 |
-| `ServerLineTest` | 15 | 全部服务器命令解析，**含 6 个未写进 README 的** |
-| `ScreenshotTest` | 12 | 多尺寸离屏渲染出 PNG（界面 + 输入限制提示条 + 应用图标） |
-| `LineBufferTest` | 10 | 半包/粘包/CRLF/超长行/逐字节喂入 |
+| `VoiceMessageTest` | 17 | 语音的时长/格式/大小边界、`mp4` 必须被接受（安卓录音就是这个容器） |
+| `VoiceRecordingFlowTest` | 17 | **「按住说话」整条流程**：太短丢掉并删文件、超 2 MB / 超 5 分钟被拦、文件没落盘不发、重复按下不录第二条、取消不留文件 |
+| `ScreenshotTest` | 16 | 多尺寸离屏渲染出 PNG（界面、输入限制条、emoji、贴纸、语音气泡、应用图标） |
+| `ServerLineTest` | 15 | 全部服务器命令解析，**含未写进 README 的** |
+| `EmojiPaletteTest` | 13 | emoji 计数按 Unicode 码点（一个 emoji 算 1 个字符）、插入位置 |
+| `VoicePlaybackTest` | 10 | 播放取舍：同一条再点是暂停、暂停后再点是从头还是续播、切歌、时长未知时不乱猜 |
 | `BoundedCopyTest` | 10 | **有上限的流式复制**：4 GB 的流不撑爆内存、超限立刻停、边界值 |
-| `ServerInteropTest` | 5 | **连真实的 C++ 服务端**：基础互通、切出去回来不丢消息、主动断开、服务端消失、**跨语言行数统计一致性** |
+| `LineBufferTest` | 10 | 半包/粘包/CRLF/超长行/逐字节喂入 |
+| `TrustTest` | 10 | TOFU 判定：首次 / 一致 / **变了**（变了绝不自动接受）|
+| `ServerInteropTest` | 7 | **连真实的 C++ 服务端**：基础互通、切出去回来不丢消息、主动断开、服务端消失、跨语言行数统计一致性 |
 
-### 最有价值的两组
+### 最有价值的三组
 
 **`ServerInteropTest`** —— 其余测试都是"自己跟自己对"，只有它证明
 **手机端发的字节 C++ 服务端听得懂、服务端回的字节手机端解析得对**：
@@ -219,11 +241,18 @@ app/src/main/java/com/dongfang20101113/dchat/
 它还会自动启动 `D:\codes\dchat\build\dchat_server.exe`（临时账号文件 + 系统分配的随机端口），
 跑完清理；找不到 exe 时自动跳过，别人 clone 下来构建不会失败。
 
-另外三条专门盯**真机上暴露过的事故**：切出去再回来消息不能丢、用户主动断开不能被当成掉线、
+另外几条专门盯**真机上暴露过的事故**：切出去再回来消息不能丢、用户主动断开不能被当成掉线、
 服务端没了必须变成带原因的 `Lost` 而不是静默变 `Disconnected`。
 
 **`BoundedCopyTest`** —— 直接拿一个 4 GB 的流跑，4 GB 远超测试堆，
 实现只要敢把数据读进内存，测试必然 OOM 失败。
+
+**`VoiceRecordingFlowTest`** —— 录音的失败**在真机上极难复现**：麦克风被别的 App 占着、
+`MediaRecorder` 报的时长是 0、文件根本没落盘、手指点一下就松……这些在真机上都只表现为
+"语音没发出去"，看不出是哪一环断的。所以把决策抽成纯逻辑（`voice/VoiceDecisions.kt`），
+用假录音机把每种情况都摆出来：**不需要麦克风、不需要真机、不需要等 5 分钟**（时间是注入的）。
+假录音机是**真的写文件**的——如果只假装文件存在，`File.length()` 永远返回 0，
+测试就会在一条现实中不存在的路径上全绿。
 
 ---
 
@@ -252,6 +281,8 @@ app/src/main/java/com/dongfang20101113/dchat/
 | 6 | 互操作测试单独跑过、全量跑偶发失败 | **真 bug**：`MutableSharedFlow` 在没有订阅者时**直接丢弃发射**，服务端连上就发的 `WELCOME` 会永久丢。改用 `Channel(UNLIMITED)` + `receiveAsFlow()` |
 | 7 | R8 报 `Supplied proguard configuration does not exist` | `build.gradle.kts` 引用了 `proguard-rules.pro` 但文件没建 |
 | 8 | 测试类被 JUnit 拒绝：`should be void` | `fun x() = runBlocking { ... }` 的最后一个表达式返回了 `Boolean`，方法签名就不是 void 了 |
+| 9 | 想拿录音时长，`MediaRecorder.duration` 不存在 | 它**根本没有**这个属性。只能 `stop()` 之后再从文件里读（`MediaMetadataRetriever.METADATA_KEY_DURATION`），读不到就用墙钟时间兜底——直接信容器报的 0 会把一段正常录音判成"空的" |
+| 10 | Kotlin 里 `java.io.File.setLength(n)` 报 `Unresolved reference` | 变量名撞了：局部变量 `file` 和扩展接收者同名时，Kotlin 会把它解析成"对 `file` 调 `length`"。换个变量名，或用 `RandomAccessFile(file, "rw").use { it.setLength(n) }` |
 
 ---
 
@@ -358,22 +389,61 @@ cd android
 | 连过一次后再被中间人劫持 | ✅ 会被发现（指纹变了）|
 | **第一次连接就被劫持** | ❌ 挡不住——TOFU 的固有局限，不是实现缺陷 |
 
-### 阶段 3 · 表情包 🔶 进行中
+### 阶段 3 · 表情包 ✅ 客户端完成
 
 | | 状态 |
 | --- | --- |
 | emoji（40 个，分三组）| ✅ 逻辑 + 界面 + 截图 |
-| 贴纸 · 双端协议解析 | ✅ 255 项测试 |
+| 贴纸 · 双端协议解析 | ✅ 测试覆盖 |
 | 贴纸 · 服务端透传（实时）| ✅ 端到端验证过 |
+| 贴纸 · **双端内联渲染** | ✅ `sticker-inline.png` 截图复核 |
 | 贴纸 · 历史回放透传 | ⬜ **已知缺口**：`keepchathistory` 打开时，历史里的贴纸会退回成文件卡片 |
-| 贴纸 · **双端内联渲染** | ⬜ 待做 |
 
-**贴纸的传输设计**：贴纸就是小图片，**完全复用文件通道**，只多带一个标记
-（`FILE_SEND ... sticker` → `FILE_OFFER ... 0 1`）。好处是限速、大小限制、
+**贴纸的传输设计**：贴纸就是小图片，**完全复用文件通道**，只多带一个「种类」标记
+（`FILE_SEND ... sticker` → `FILE_OFFER ... 0 sticker`）。好处是限速、大小限制、
 过期清理这些已经做好且测过的机制全部复用，不用为图片再发明一套分块协议。
 
 标记**只能追加在末尾**——老客户端按位置读到第 5 个字段就停了，插到中间会让
 它们把标记当成字节数解析。
+
+### 阶段 4 · 语音消息 ✅ 客户端完成
+
+语音**和贴纸走的是同一条路**：它就是一段录音文件，走现成的文件通道，
+只把种类设成 `voice`。限速、大小限制、过期清理、加密全部原样复用。
+
+| | 状态 |
+| --- | --- |
+| 「种类」字段（`file` / `sticker` / `voice`）| ✅ 双端 + 服务端透传 |
+| 服务端不再解释种类、只透传 | ✅ `6acae53` |
+| 安卓端 · 按住说话录音 | ✅ 真机 API + 单测（`VoiceRecordingFlowTest`）|
+| 安卓端 · 语音气泡与播放 | ✅ 暂停/续播/切歌规则有单测 |
+| 安卓端 · 自动下载 | ✅ 收到即下（≤2 MB）|
+| 桌面端 · 录制与播放 | ⬜ **已知缺口**：桌面端目前只能把语音显示成文件卡片 |
+| 语音波形 | ⬜ **不做**（见下）|
+
+**为什么「种类」占同一格、不另起一格**：另起一格会出现"既是贴纸又是语音"这类
+无意义的组合，而且每加一种附件就要加长消息。取值结构上是单值的，组合不可能出现。
+
+**录音规则**（本地先拦，省一次"发出去被拒"的往返）：
+
+| 规则 | 取值 | 为什么 |
+| --- | --- | --- |
+| 最短 | 1 秒 | 手指点一下就会产生一条，全发出去对方那边全是"0 秒语音" |
+| 最长 | 5 分钟 | 到点**自动收尾并发送**，而不是继续录到超限白录 |
+| 大小 | 2 MB | 64 kbps 单声道 AAC：一分钟约 480 KB，5 分钟也在限内 |
+| 格式 | m4a/aac/mp4/ogg/opus/3gp/amr | **刻意不收 wav**：一分钟 5 MB 起，走公网纯浪费 |
+
+**播放规则**（和微信一致）：点同一条正在播 → 暂停；再点 → 从暂停处继续；
+点另一条 → 停掉旧的从头播（两条一起响是谁也听不清的噪音）。
+
+**波形是刻意不做的**：三段短条只表示"这是一条语音"。真波形要在录制时采样振幅
+并把采样结果随消息传过去（协议得多一格二进制字段）。为装饰效果动两端协议不划算，
+而画一条假波形更糟——它会随气泡宽度拉伸，看起来像"这段声音很平"，其实什么都没表达。
+
+*验证*：截图 `voice-bubbles.png`（别人的靠左、自己的靠右、正在播的那条显示暂停图标与进度线）
+和 `voice-recording.png`（录音中的底部条）。截图里的 `savedPath` 指向**真实存在的文件**——
+指向不存在的路径时气泡会画成"没下载完"的灰按钮，图看着正常却什么都没验证到
+（贴纸那一版踩过这个坑）。
 
 ---
 

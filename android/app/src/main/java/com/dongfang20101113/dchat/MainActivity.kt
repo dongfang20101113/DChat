@@ -85,6 +85,10 @@ private fun DchatRoot() {
                 onSendFile = DchatSession::sendFile,
                 onMarkRead = DchatSession::markRead,
                 onDisconnect = DchatSession::disconnect,
+                onVoiceToggle = DchatSession::toggleVoice,
+                onStartVoice = DchatSession::beginVoiceRecording,
+                onStopVoice = DchatSession::finishVoiceRecording,
+                onCancelVoice = DchatSession::cancelVoiceRecording,
             )
         }
     }

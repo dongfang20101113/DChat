@@ -1,5 +1,6 @@
 package com.dongfang20101113.dchat
 
+import com.dongfang20101113.dchat.protocol.AttachmentKind
 import com.dongfang20101113.dchat.protocol.ServerLine
 import com.dongfang20101113.dchat.protocol.base64Encode
 import com.dongfang20101113.dchat.ui.ChatItem
@@ -8,6 +9,7 @@ import com.dongfang20101113.dchat.ui.FileState
 import com.dongfang20101113.dchat.ui.Stage
 import com.dongfang20101113.dchat.ui.reduce
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -247,6 +249,51 @@ class ChatStateReducerTest {
         val cards = s.items.filterIsInstance<ChatItem.FileItem>()
         assertEquals(FileState.FAILED, cards.first { it.fileId == "F1" }.state)
         assertEquals(FileState.OFFERED, cards.first { it.fileId == "F2" }.state)
+    }
+
+    // ------------------------------------------------------------------
+    // 语音消息：从协议到界面的最后一段
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `语音消息进来时会被认成语音_并且自动下载`() {
+        // 这一条把"协议 → 状态机 → 要不要自动下载"串起来验：
+        // 前面 StickerProtocolTest 验的是 FileItem 上的规则，这里验的是
+        // **真的收到一条 voice 消息时，状态机算出来的确实满足那条规则**。
+        val b64 = base64Encode("voice-3.m4a".toByteArray())
+        val s = ChatState().feed("FILE_OFFER 21:06 小明 V1 $b64 48000 0 voice")
+
+        val card = s.items.filterIsInstance<ChatItem.FileItem>().first()
+        assertEquals(AttachmentKind.VOICE, card.kind)
+        assertFalse("语音不该被当成贴纸去画大图", card.isSticker)
+        assertTrue("语音收到就该开始下载，不然点它没反应", card.shouldAutoDownload)
+    }
+
+    @Test
+    fun `老服务器发的贴纸写法仍然按贴纸处理`() {
+        // 已经发出去的贴纸消息写的是 1。换成"种类"字段之后**不能**把它们弄丢，
+        // 否则历史消息里的贴纸会变成"要下载的文件卡片"。
+        val b64 = base64Encode("开心.png".toByteArray())
+        for (kindWord in listOf("1", "sticker")) {
+            val s = ChatState().feed("FILE_OFFER 21:06 小明 S1 $b64 4096 0 $kindWord")
+            val card = s.items.filterIsInstance<ChatItem.FileItem>().first()
+            assertEquals("写 $kindWord 必须仍然认成贴纸", AttachmentKind.STICKER, card.kind)
+            assertTrue(card.isSticker)
+        }
+    }
+
+    @Test
+    fun `自己发的语音靠右_别人发的靠左`() {
+        val b64 = base64Encode("voice-1.m4a".toByteArray())
+        var s = ChatState().copy(selfNick = "我")
+        s = s.feed("FILE_OFFER 21:06 我 V1 $b64 48000 0 voice")
+        s = s.feed("FILE_OFFER 21:06 小明 V2 $b64 48000 0 voice")
+
+        val cards = s.items.filterIsInstance<ChatItem.FileItem>()
+        assertTrue("自己发的应该判成自己的", cards.first { it.fileId == "V1" }.isOwn("我"))
+        assertFalse("别人发的不能判成自己的", cards.first { it.fileId == "V2" }.isOwn("我"))
+        // 没登录（昵称为空）时谁都不是"自己"，否则界面会把别人的语音画到自己这边
+        assertFalse(cards.first().isOwn(""))
     }
 
     // ------------------------------------------------------------------

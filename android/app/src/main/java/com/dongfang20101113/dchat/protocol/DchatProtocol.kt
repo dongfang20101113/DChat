@@ -240,8 +240,23 @@ fun makeMessage(text: String): String = buildLine("MSG", text)
 fun makeList(): String = buildLine("LIST")
 fun makePing(): String = buildLine("PING")
 fun makeQuit(): String = buildLine("QUIT")
-fun makeFileSend(transferId: String, nameBase64: String, size: Long): String =
-    buildLine("FILE_SEND", "$transferId $nameBase64 $size")
+
+/**
+ * `FILE_SEND <传输ID> <文件名(Base64)> <字节数> [种类]`
+ *
+ * 种类是**可选的最后一格**，不传就是普通文件——老服务器不认这一格也无所谓，
+ * 它只会被多余地忽略掉（服务端只按位置取前三个字段）。
+ */
+fun makeFileSend(
+    transferId: String,
+    nameBase64: String,
+    size: Long,
+    kind: String = "",
+): String {
+    val suffix = if (kind.isEmpty()) "" else " $kind"
+    return buildLine("FILE_SEND", "$transferId $nameBase64 $size$suffix")
+}
+
 fun makeFileChunk(transferId: String, dataBase64: String): String =
     buildLine("FILE_CHUNK", "$transferId $dataBase64")
 fun makeFileEnd(transferId: String): String = buildLine("FILE_END", transferId)
