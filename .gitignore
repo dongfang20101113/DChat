@@ -1,4 +1,4 @@
-# 构建产物
+﻿# 构建产物
 build/
 #
 # 注意：build\dchat_server.exe 和 build\dchat_client.exe 是**故意提交**进仓库的（下载即用、不用编译）。
@@ -19,6 +19,10 @@ CMakeCache.txt
 CMakeFiles/
 
 # 运行期数据（账号文件里有密码哈希，绝不能发布！）
+# 客户端记住的服务器指纹（TOFU）：本机专用
+dchat-known-servers.txt
+# 服务端身份密钥：拿到它就能冒充服务器
+dchat-server-key.txt
 dchat-users.txt
 dchat-rules.txt
 users.txt

@@ -1,4 +1,4 @@
-﻿// 聊天客户端：Win32 图形界面 + Winsock。
+// 聊天客户端：Win32 图形界面 + Winsock。
 // 界面特点：
 // - 微信式气泡记录区（自绘子窗口）：自己的消息靠右、别人的靠左、系统提示居中
 // - 所有按钮/开关都是 GDI+ 抗锯齿的圆角自绘控件
@@ -43,6 +43,8 @@
 #include "input_history.h"
 #include "protocol.h"
 #include "crypto.h"
+
+#include <fstream>  // TOFU：记住服务器指纹（dchat-known-servers.txt）
 #include "render.h"
 #include "resource.h"
 #include "rounded.h"
@@ -1136,6 +1138,72 @@ dchat::CryptoSession g_crypto;
 // 服务器公钥指纹（TOFU 用：应当记住它，下次变了就警告）
 std::string g_serverFingerprint;
 
+// ---------------------------------------------------------------------------
+// TOFU：记住服务器指纹
+//
+// 加密本身只保证"这条通道没被偷听"，**不保证对面是那台服务器**。
+// 攻击者若能劫持连接，可以分别和两边各做一次握手、全程转发，双方都察觉不到。
+// 记住首次见到的指纹、以后每次比对，才能发现这种情况（SSH 就是这么做的）。
+// ---------------------------------------------------------------------------
+
+const char* const kKnownServersPath = "dchat-known-servers.txt";
+
+/** 键是 `主机:端口`——同一台机器的不同端口算不同的服务器。 */
+std::string KnownServerKey() { return g_host + ":" + std::to_string(g_port); }
+
+std::string TrimTrailing(const std::string& text) {
+    std::string out = text;
+    while (!out.empty() && (out.back() == '\r' || out.back() == ' ' || out.back() == '\t')) {
+        out.pop_back();
+    }
+    return out;
+}
+
+std::string LoadTrustedFingerprint(const std::string& key) {
+    std::ifstream in(kKnownServersPath);
+    if (!in) return std::string();
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        const std::size_t space = line.find(' ');
+        if (space == std::string::npos) continue;
+        if (line.substr(0, space) == key) return TrimTrailing(line.substr(space + 1));
+    }
+    return std::string();
+}
+
+void SaveTrustedFingerprint(const std::string& key, const std::string& fingerprint) {
+    // 先把其它条目读回来，再整体重写（条目很少，不值得做增量更新）
+    std::vector<std::pair<std::string, std::string>> entries;
+    {
+        std::ifstream in(kKnownServersPath);
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            const std::size_t space = line.find(' ');
+            if (space == std::string::npos) continue;
+            const std::string existing = line.substr(0, space);
+            if (existing == key) continue;
+            entries.push_back({existing, TrimTrailing(line.substr(space + 1))});
+        }
+    }
+    entries.push_back({key, fingerprint});
+
+    std::ofstream out(kKnownServersPath);
+    if (!out) return;
+    out << "# dchat 记住的服务器指纹（TOFU）。\n"
+        << "# 指纹变了说明服务器换了密钥，或者有人在中间；核对清楚之前不要手改这里。\n";
+    for (const auto& entry : entries) out << entry.first << " " << entry.second << "\n";
+}
+
+/** 往聊天记录里塞一条系统提示（复用和服务器消息相同的显示通道）。 */
+void PostNotice(const std::string& text) {
+    auto* payload = new std::string("SYS " + dchat::NowTimeString() + " " + text);
+    if (!PostMessageW(ui.hwnd, WM_APP_LINE, 0, reinterpret_cast<LPARAM>(payload))) {
+        delete payload;
+    }
+}
+
 bool SendRawLine(const std::string& line) {
     std::lock_guard<std::mutex> lock(g_sendMutex);
     if (g_sock == INVALID_SOCKET) return false;
@@ -1237,6 +1305,24 @@ bool DoCryptoHandshake(SOCKET sock) {
             // 客户端发用 c2s、收用 s2c（服务端正好相反）
             if (!g_crypto.Start(keys.clientToServer, keys.serverToClient)) return false;
             g_serverFingerprint = dchat::PublicKeyFingerprint(serverPublic);
+
+            // ---- TOFU：和上次记下的指纹比对 ----
+            const std::string key = KnownServerKey();
+            const std::string known = LoadTrustedFingerprint(key);
+            if (known.empty()) {
+                SaveTrustedFingerprint(key, g_serverFingerprint);
+                PostNotice("首次连接这台服务器，已记下指纹 " + g_serverFingerprint +
+                           "（以后变了会警告）");
+            } else if (known != g_serverFingerprint) {
+                // ⚠️ 绝不自动接受新指纹——那等于把警告变成静默接受，TOFU 就白做了。
+                // 只提示，让用户自己去跟管理员核对；核对完再手工改
+                // dchat-known-servers.txt 里的那一行。
+                PostNotice("⚠ 服务器指纹变了！之前是 " + known + "，现在是 " +
+                           g_serverFingerprint +
+                           "。可能只是服务器换了密钥，也可能有人在中间——请先跟管理员核对。");
+            } else {
+                PostNotice("服务器身份已确认（指纹未变）");
+            }
             return true;
         }
         // 服务器不认识 HELLO：老版本，保持明文
