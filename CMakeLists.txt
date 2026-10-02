@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.20)
 project(dchat LANGUAGES CXX)
 
 if(WIN32)
@@ -18,9 +18,9 @@ if(MINGW)
 endif()
 
 # 协议层、显示规则、输入历史、服务端指令解析：与网络、界面都无关，可单独做单元测试
-add_library(dchat_protocol STATIC src/protocol.cpp src/render.cpp src/input_history.cpp src/server_command.cpp src/auth.cpp src/file_transfer.cpp src/server_rules.cpp)
+add_library(dchat_protocol STATIC src/protocol.cpp src/render.cpp src/input_history.cpp src/server_command.cpp src/auth.cpp src/file_transfer.cpp src/server_rules.cpp src/crypto.cpp)
 target_include_directories(dchat_protocol PUBLIC src)
-# 密码哈希用 Windows 自带的加密库
+# 密码哈希与传输加密都用 Windows 自带的加密库（CNG / bcrypt.dll）
 target_link_libraries(dchat_protocol PUBLIC bcrypt)
 
 # 服务器：控制台程序，支持多客户端 + 广播
@@ -86,6 +86,10 @@ target_link_libraries(test_auth PRIVATE dchat_protocol)
 add_executable(test_file_transfer tests/test_file_transfer.cpp)
 target_link_libraries(test_file_transfer PRIVATE dchat_protocol)
 
+# 传输加密测试（ECDH / HKDF / AES-GCM / 会话密钥）
+add_executable(test_crypto tests/test_crypto.cpp)
+target_link_libraries(test_crypto PRIVATE dchat_protocol)
+
 if(MSVC)
     target_compile_options(dchat_protocol PRIVATE /W4)
     target_compile_options(dchat_server PRIVATE /W4)
@@ -101,6 +105,7 @@ if(MSVC)
     target_compile_options(test_server_command PRIVATE /W4)
     target_compile_options(test_auth PRIVATE /W4)
     target_compile_options(test_file_transfer PRIVATE /W4)
+    target_compile_options(test_crypto PRIVATE /W4)
 else()
     target_compile_options(dchat_protocol PRIVATE -Wall -Wextra)
     target_compile_options(dchat_server PRIVATE -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8)
@@ -116,6 +121,7 @@ else()
     target_compile_options(test_server_command PRIVATE -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8)
     target_compile_options(test_auth PRIVATE -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8)
     target_compile_options(test_file_transfer PRIVATE -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8)
+    target_compile_options(test_crypto PRIVATE -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8)
 endif()
 
 enable_testing()
@@ -129,3 +135,4 @@ add_test(NAME history_tests COMMAND test_history)
 add_test(NAME server_command_tests COMMAND test_server_command)
 add_test(NAME auth_tests COMMAND test_auth)
 add_test(NAME file_transfer_tests COMMAND test_file_transfer)
+add_test(NAME crypto_tests COMMAND test_crypto)
