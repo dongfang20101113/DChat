@@ -145,20 +145,30 @@ D:\codes\tools\android-sdk\platform-tools\adb.exe install -r app\build\outputs\a
 ### 4. 多尺寸截图验证
 
 没有可用模拟器（本机 `HypervisorPresent = False`，跑不了 WHPX 加速），
-所以用 **Robolectric 原生图形模式离屏渲染出真实像素**，产出 9 张 PNG：
+所以用 **Robolectric 原生图形模式离屏渲染出真实像素**，产出下面这些 PNG
+（`app\build\screenshots\`，同时归档在 `docs\screenshots\`）：
 
 ```
-app\build\screenshots\
-  chat-phone-320x568-dark.png      ← 极窄屏
-  chat-phone-360x640-dark.png      ← 小屏
-  chat-phone-393x851-dark.png      ← 主流机型
-  chat-phone-393x851-light.png     ← 浅色主题
-  chat-phone-land-851x393-dark.png ← 横屏（最容易把输入框挤没）
-  chat-tablet-1024x768-dark.png    ← 平板（应分栏）
-  chat-tablet-1280x800-dark.png    ← 大屏
-  entry-connect.png                ← 连接界面
-  entry-auth-error.png             ← 登录界面（含错误提示）
+chat-phone-320x568-dark.png      ← 极窄屏
+chat-phone-360x640-dark.png      ← 小屏
+chat-phone-393x851-dark.png      ← 主流机型
+chat-phone-393x851-light.png     ← 浅色主题
+chat-phone-land-851x393-dark.png ← 横屏（最容易把输入框挤没）
+chat-tablet-1024x768-dark.png    ← 平板（应分栏）
+chat-tablet-1280x800-dark.png    ← 大屏
+entry-connect.png                ← 连接界面
+entry-auth-error.png             ← 登录界面（含错误提示）
+limits-under.png / limits-over.png  ← 文本限制提示条（未超限 / 超限变红）
+emoji-picker.png                 ← emoji 选择器展开
+sticker-inline.png               ← 贴纸内联渲染（含普通文件卡片做对照）
+voice-bubbles.png                ← 语音气泡（别人的靠左、自己的靠右、正在播的那条）
+voice-recording.png              ← 录音中的底部条（录音中 0:03 / 取消 / 松开发送）
+icon-*.png                       ← 应用图标（方形 / 圆形遮罩 / 单色层）
 ```
+
+**截图必须指着真实数据**：贴纸和语音那两张图里的 `savedPath` 都指向真的落到磁盘上的文件。
+指向不存在的路径时，`BitmapFactory` 解不出来、气泡会画成"下载中"的占位——
+**图看着正常，其实什么都没验证到**。这一点在贴纸那一版踩过一次。
 
 ---
 
