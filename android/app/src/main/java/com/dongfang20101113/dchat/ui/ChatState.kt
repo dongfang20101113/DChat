@@ -31,6 +31,15 @@ sealed interface ChatItem {
         val progress: Int = 0,
         val savedPath: String? = null,
         val note: String? = null,
+        /**
+         * 这是不是一张**贴纸**。
+         *
+         * 贴纸和普通文件的**传输完全一样**（走同一个文件通道），区别只在两处：
+         *   1. **自动下载**——普通文件要用户点「下载」，贴纸很小，
+         *      等用户点一下就失去了"一眼看到"的意义
+         *   2. 下载完**内联画成大图**，而不是显示成文件卡片
+         */
+        val isSticker: Boolean = false,
     ) : ChatItem {
         /** 卡片上的按钮文案，和桌面端一致：下载 → 下载中 N% → 打开文件夹 / 重试。 */
         val buttonLabel: String
@@ -42,6 +51,15 @@ sealed interface ChatItem {
             }
 
         val sizeText: String get() = formatBytes(size)
+
+        /**
+         * 该不该自动开始下载？
+         *
+         * 只有贴纸才自动下。普通文件（可能是几百 MB 的视频）绝不能自动下——
+         * 那会偷偷吃掉用户的流量，而且他可能根本不想要。
+         */
+        val shouldAutoDownload: Boolean
+            get() = isSticker && state == FileState.OFFERED
     }
 }
 
@@ -210,6 +228,9 @@ fun ChatState.reduce(line: ServerLine, nowTime: String): ChatState = when (line)
                 fileName = line.fileName,
                 size = line.size,
                 hasThumbnail = line.hasThumbnail,
+                // 贴纸标记由服务端透传；老服务器不发这个字段，默认 false，
+                // 那时按普通文件卡片显示才是对的（用户点一下还能下载）。
+                isSticker = line.isSticker,
             ),
         )
     }

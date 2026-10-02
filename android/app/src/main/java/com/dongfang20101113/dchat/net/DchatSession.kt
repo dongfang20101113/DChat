@@ -97,6 +97,13 @@ object DchatSession {
                 val line = ServerLine.parse(raw, _state.value.selfNick)
                 handleFileSideEffects(line)
                 _state.value = _state.value.reduce(line, nowTime())
+
+                // 贴纸**自动下载**：普通文件（可能是几百 MB 的视频）绝不能自动下，
+                // 那会偷偷吃掉用户的流量；但贴纸很小，而且"一眼看到"正是它的意义，
+                // 等用户点一下就白做了。
+                if (line is ServerLine.FileOffer && line.isSticker) {
+                    requestDownload(line.fileId)
+                }
             }
         }
 
