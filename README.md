@@ -111,11 +111,32 @@
 | `SYS <时间> <文本>` | 系统提示（改名、欢迎语等） |
 | `ERROR <时间> <文本>` | 出错提示（昵称非法、未知命令等） |
 | `PONG <时间>` | 心跳回应 |
-| `FILE_OFFER <时间> <昵称> <文件ID> <文件名(Base64)> <字节数>` | 有人上传好了：客户端显示一张可下载的文件卡片 |
+| `FILE_OFFER <时间> <昵称> <文件ID> <文件名(Base64)> <字节数> [缩略图] [种类]` | 有人上传好了：客户端按**种类**决定显示成可下载的文件卡片、内联贴纸，还是语音气泡 |
 | `FILE_BEGIN <文件ID> <文件名(Base64)> <字节数>` | 下载开始（回答 `FILE_GET`），客户端据此建文件 |
 | `FILE_DATA <文件ID> <Base64数据>` | 一块文件数据 |
 | `FILE_END <文件ID>` | 这个文件发完了 |
 | `FILE_FAIL <文件ID> <原因>` | 下载失败（文件不存在或已过期等） |
+
+**附件的「种类」字段**（`FILE_OFFER` 的最后一格，上传时写在 `FILE_SEND` 的末尾）：
+
+| 取值 | 含义 | 客户端显示成 |
+| --- | --- | --- |
+| `0` / `file` | 普通文件 | 文件卡片，**点一下才下载** |
+| `1` / `sticker` | 贴纸 | **内联大图**，且**自动下载**（≤512 KB） |
+| `voice` | 语音消息 | 语音气泡 + 时长，自动下载（≤2 MB） |
+
+两点约定：
+
+- **缺这一格一律当普通文件**。老服务器不会发它，那时按文件卡片显示才是对的
+  （用户点一下还能下载）。
+- 种类用**同一格**表达，不另起一格。否则会出现"既是贴纸又是语音"这种没有意义的组合，
+  而且每加一种附件就要往后加一格、越加越长。以后加"视频消息"之类只是多一个取值。
+
+**传输层完全一样**：贴纸和语音都走文件通道，所以限速、大小限制、过期清理、
+加密这些机制**原样复用**，区别只在客户端收到后的渲染方式，以及要不要自动下载。
+
+> ⚠️ **自动下载的边界**：只有贴纸和语音才自动下。普通文件（可能是几百 MB 的视频）
+> **绝不自动下载**——那会偷偷吃掉用户的流量。
 
 `<时间>` 是服务器发出的 `hh:mm`（24 小时制）。客户端解析时该字段可省略，所以旧格式的行也能正常显示（只是不带时间戳）。
 
@@ -485,7 +506,7 @@ Server → client:
 | `SYS <time> <text>` | System notice (renames, greetings, …) |
 | `ERROR <time> <text>` | Error notice (invalid nickname, unknown command, …) |
 | `PONG <time>` | Heartbeat answer |
-| `FILE_OFFER <time> <nickname> <file-id> <filename(Base64)> <bytes>` | Someone finished an upload: the client shows a downloadable file card |
+| `FILE_OFFER <time> <nickname> <file-id> <filename(Base64)> <bytes> [thumbnail] [kind]` | Someone finished an upload: the client shows a downloadable file card, an inline sticker, or a voice bubble depending on **kind** |
 | `FILE_BEGIN <file-id> <filename(Base64)> <bytes>` | Download starts (the answer to `FILE_GET`); the client creates the file from it |
 | `FILE_DATA <file-id> <Base64 data>` | One chunk of file data |
 | `FILE_END <file-id>` | This file is fully sent |
