@@ -64,10 +64,11 @@ struct PendingUpload {          // 正在上传的文件（每个连接最多一
     std::string data;
     std::string thumb;          // 缩略图（PNG，图片缩小图 / 视频第一帧），可能为空
     bool expectThumb = false;   // 发送方声明"会带缩略图"
-    // 发送方声明"这是一张贴纸"。贴纸和普通文件**走完全相同的传输**，
-    // 区别只在客户端收到后的渲染方式（内联画成大图 vs 文件卡片），
-    // 所以服务端要做的仅仅是把这个标记原样透传下去。
-    bool isSticker = false;
+    // 发送方声明的**附件种类**，原样透传给接收方。
+    //   0 / file = 普通文件   1 / sticker = 贴纸   voice = 语音消息
+    // 服务端不解释这个值——它只负责透传。三种附件走完全相同的传输，
+    // 区别只在客户端收到后怎么显示、以及要不要自动下载。
+    std::string kind = "0";
 };
 
 struct StoredFile {             // 已经传完、等人下载的文件
@@ -1342,10 +1343,13 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             client->upload->id = words[0];
             client->upload->nameB64 = words[1];
             client->upload->declared = bytes;
-            // 可选的第四个字：sticker。**只追加在末尾**，老客户端不发它就当普通文件。
-            client->upload->isSticker =
-                words.size() >= 4 &&
-                (words[3] == "sticker" || words[3] == "1" || words[3] == "STICKER");
+            // 可选的第四个字：附件种类。**只追加在末尾**，老客户端不发它就当普通文件。
+            // 服务端**不校验**这个值合不合理（比如"既贴纸又语音"），
+            // 因为取值是单值的、结构上就不可能出现组合；真正要在意的是
+            // 客户端收到不认识的取值时按普通文件处理。
+            if (words.size() >= 4 && !words[3].empty()) {
+                client->upload->kind = words[3];
+            }
             client->upload->thumb.clear();
             // 第 4 个字段是 1 时表示"接着会发一张缩略图"（图片缩小图 / 视频第一帧）
             client->upload->expectThumb = (words.size() == 4 && words[3] == "1");
@@ -1447,13 +1451,13 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
                                                  : "文件已上传，但房间里目前没有其他人"));
             // 通知别人"有文件可以下载了"（上传者自己不用再下自己发的文件）
             //
-            // 贴纸标记是**追加在末尾的第 7 位**，绝不能插到中间：老客户端按位置
+            // 种类标记是**追加在末尾的第 7 位**，绝不能插到中间：老客户端按位置
             // 读到第 5 个字段就停了，插进去会让它们把标记当成字节数解析。
             // 这和 RULES 行当初的扩法一样——只追加、不重排。
-            const std::string stickerFlag = upload->isSticker ? " 1" : " 0";
             Broadcast(Timed("FILE_OFFER", client->nick + " " + fileId + " " + upload->nameB64 + " " +
                                              std::to_string(upload->data.size()) + " " +
-                                             (upload->thumb.empty() ? "0" : "1") + stickerFlag),
+                                             (upload->thumb.empty() ? "0" : "1") + " " +
+                                             upload->kind),
                       client.get());
             Log("file stored: id=" + fileId + " owner=" + client->nick + " " + showName + "（" +
                 dchat::FormatBytes(upload->data.size()) + "）");
