@@ -89,8 +89,8 @@ D:\codes\tools\android-sdk\platform-tools\adb.exe install -r app\build\outputs\a
 
 或者把 `app-debug.apk` 传到手机上直接点安装（debug 包已用 Android 调试证书签名，可直接装）。
 
-> `app-release-unsigned.apk` 体积小得多（1.37 MB vs 19 MB）但**未签名，装不上**，
-> 要用自己的 keystore 签一次才能安装。见文末。
+> `app-release.apk` 体积小得多（**1.36 MB vs 19 MB**，R8 混淆 + 资源压缩）且**已签名、可直接安装**，
+> 日常用这个就行。debug 包只在需要详细日志或调试时才用。
 
 ### 使用
 
@@ -254,18 +254,39 @@ app/src/main/java/com/dongfang20101113/dchat/
 
 ---
 
-## 发布签名（release 包当前未签名）
+## 发布签名（已配置好）
+
+签名已经配好了，`assembleRelease` 直接产出**已签名、可安装**的 `app-release.apk`。
+
+| 东西 | 位置 | 是否进 git |
+| --- | --- | --- |
+| 密钥库 | `D:\codes\dchat-keys\dchat-release.jks` | **在仓库外面**，不可能被误提交 |
+| 密码与别名 | `android/keystore.properties` | 被 `.gitignore` 挡住 |
+| 证书 SHA256 | `B0:79:9D:9F:C9:6F:5C:B9:4F:EE:FD:BF:B4:AD:EB:52:3D:E1:40:C7:0B:71:BA:3B:ED:EB:A1:AD:DB:8E:3A:DD` | 可以公开 |
 
 ```powershell
-# 1. 生成 keystore（自己保管好，丢了就再也无法更新同一个应用）
-keytool -genkeypair -v -keystore dchat-release.jks -keyalg RSA -keysize 2048 `
-        -validity 10000 -alias dchat
-
-# 2. 在 app/build.gradle.kts 里加 signingConfigs 并让 release 使用它
-# 3. .\gradlew.bat assembleRelease
+cd android
+.\gradlew.bat assembleRelease
+# 产物：app\build\outputs\apk\release\app-release.apk
 ```
 
-**不要把 keystore 和密码提交进 git**（`.gitignore` 已经挡了 `*.keystore` / `*.jks`）。
+### ⚠️ 密钥库一定要备份
+
+**密钥库和密码一旦丢失，就永远无法再给同一个应用签名**——以后发的版本没法覆盖安装到
+老版本上，只能让所有人卸载重装。请把这两样备份到别处：
+
+- `D:\codes\dchat-keys\dchat-release.jks`
+- `android\keystore.properties`（密码在里面）
+
+### 换台机器怎么构建
+
+把上面两个文件按同样路径放好即可（或改 `keystore.properties` 里的 `storeFile`）。
+**两个文件都不存在时构建不会失败**——`release` 自动退化成未签名包
+（`app-release-unsigned.apk`），别人 clone 下来照样能编译。
+
+> 顺带一个坑：Gradle Kotlin DSL 脚本里 `java` 会被解析成项目的 Java 扩展访问器，
+> 所以必须 `import java.util.Properties` 才能用 `Properties()`，
+> 直接写 `java.util.Properties()` 会报 `Unresolved reference 'util'`。
 
 ---
 

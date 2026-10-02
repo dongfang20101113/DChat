@@ -1,4 +1,4 @@
-﻿# 构建产物
+# 构建产物
 build/
 #
 # 注意：build\dchat_server.exe 和 build\dchat_client.exe 是**故意提交**进仓库的（下载即用、不用编译）。
@@ -48,4 +48,7 @@ android/captures/
 *.apk
 *.aab
 *.keystore
+*.jks
+# 签名密码在这里面，绝对不能提交
+android/keystore.properties
 !android/gradle/wrapper/gradle-wrapper.jar

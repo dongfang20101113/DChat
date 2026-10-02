@@ -1,3 +1,7 @@
+// 必须显式 import：在 Gradle Kotlin DSL 脚本里，`java` 会被解析成项目的 Java 扩展访问器，
+// 所以 `java.util.Properties` 会报 "Unresolved reference 'util'"。
+import java.util.Properties
+
 plugins {
     // 注意：AGP 9.0 起 **内置了 Kotlin 支持**，不能再应用 `org.jetbrains.kotlin.android`，
     // 否则报 "The 'org.jetbrains.kotlin.android' plugin is no longer required for Kotlin support since AGP 9.0"。
@@ -5,6 +9,25 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
+
+// ---------------------------------------------------------------------------
+// release 签名配置
+//
+// 密钥库**刻意放在仓库外面**（`D:\codes\dchat-keys\dchat-release.jks`），
+// 密码写在 `android/keystore.properties`（已被 .gitignore 排除）。
+// 两个原因：① 密钥库一旦误提交就再也收不回来；② 密码不该进版本历史。
+//
+// 文件不存在时**自动跳过**，release 包退化为未签名——这样别人 clone 下来照样能构建，
+// 不会因为拿不到密钥而失败。
+// ---------------------------------------------------------------------------
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) {
+        keystorePropsFile.inputStream().use { load(it) }
+    }
+}
+val releaseStoreFile = keystoreProps.getProperty("storeFile")?.let { file(it) }
+val hasReleaseSigning = keystorePropsFile.exists() && releaseStoreFile?.exists() == true
 
 android {
     namespace = "com.dongfang20101113.dchat"
@@ -25,11 +48,29 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // 签名配置必须在 buildTypes 之前声明（Kotlin DSL 是按顺序执行的）
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = releaseStoreFile
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+                // 启用 v1 + v2 + v3 三种签名方案，兼容各版本安卓
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         debug {
             applicationIdSuffix = ".debug"
