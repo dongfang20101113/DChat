@@ -1,4 +1,4 @@
-﻿#include "file_transfer.h"
+#include "file_transfer.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -202,6 +202,27 @@ std::string FormatBytes(unsigned long long bytes) {
         std::snprintf(buffer, sizeof(buffer), "%.1f GB", value / (1024.0 * 1024.0 * 1024.0));
     }
     return buffer;
+}
+
+std::string BuildFileSendRest(const std::string& transferId, const std::string& nameBase64,
+                              unsigned long long bytes, const std::string& kind,
+                              bool hasThumbnail) {
+    std::string rest = transferId + " " + nameBase64 + " " + std::to_string(bytes);
+    if (!kind.empty()) {
+        // 带种类：第 4 格就是种类。**不能同时发缩略图标记**——
+        // 两样东西抢同一格，服务器只会把其中一个当成种类、另一个丢掉。
+        return rest + " " + kind;
+    }
+    if (hasThumbnail) return rest + " 1";
+    return rest;
+}
+
+bool IsVoiceKind(const std::string& kind) {
+    std::string lowered = kind;
+    for (char& c : lowered) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return lowered == "voice";
 }
 
 }  // namespace dchat

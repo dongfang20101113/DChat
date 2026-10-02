@@ -1,4 +1,4 @@
-﻿// 文件传输公共部分的单元测试：Base64 编解码、文件名清理、重名处理、字节数格式化，
+// 文件传输公共部分的单元测试：Base64 编解码、文件名清理、重名处理、字节数格式化，
 // 以及"最坏情况下 FILE_DATA 一行不会超过协议上限"这条硬约束。
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -183,6 +183,44 @@ int main() {
         const std::string fromLine = dchat::BuildLine(
             "FILE_FROM", "23:59 " + nick + " " + id + " " + nameEncoded + " 68719476736");
         check(fromLine.size() <= dchat::kMaxLineBytes, "FILE_FROM 也在上限内");
+    }
+
+    // ---- 附件的「种类」----
+    //
+    // 种类和"有缩略图"标记**抢同一格**（都是 FILE_SEND 的第 4 格），
+    // 这块最容易写错，而写错的表现是**服务器直接拒绝整条命令**（"用法：FILE_SEND ..."），
+    // 不是渲染不对——所以字段数必须钉死。
+    std::printf("[6] FILE_SEND 的字段（按位置解析，错了整条被拒）\n");
+    {
+        const std::string id = "f1_1";
+        const std::string name = dchat::Base64Encode("语音 1.wav");
+
+        const std::string plain = dchat::BuildFileSendRest(id, name, 48000, "", false);
+        check(plain == "f1_1 " + name + " 48000", "普通文件：3 格，没有多余字段");
+
+        const std::string withThumb = dchat::BuildFileSendRest(id, name, 48000, "", true);
+        check(withThumb == plain + " 1", "带缩略图：最后一格是 1");
+
+        const std::string voice = dchat::BuildFileSendRest(id, name, 48000, "voice", false);
+        check(voice == plain + " voice", "语音：最后一格是 voice");
+
+        // 语音同时"有缩略图"时不能变成 5 格（服务器只认 3 格或 4 格）
+        const std::string both = dchat::BuildFileSendRest(id, name, 48000, "voice", true);
+        check(both == plain + " voice", "带种类时不发缩略图标记，仍是 4 格");
+        check(both.find(" 1 voice") == std::string::npos, "不会出现 5 格的写法");
+    }
+
+    std::printf("[7] 种类的识别\n");
+    {
+        check(dchat::IsVoiceKind("voice"), "voice 是语音");
+        check(dchat::IsVoiceKind("VOICE") && dchat::IsVoiceKind("Voice"),
+              "大小写不敏感（两端自己发的字符串，宽容一点）");
+        check(!dchat::IsVoiceKind(""), "**缺这一格时不能当成语音**：老服务器不发它，"
+                                       "那时按普通文件卡片显示才是对的");
+        check(!dchat::IsVoiceKind("0") && !dchat::IsVoiceKind("file"), "普通文件不是语音");
+        check(!dchat::IsVoiceKind("1") && !dchat::IsVoiceKind("sticker"),
+              "贴纸不是语音（桌面端把它当普通文件卡片，可下载但不内联渲染）");
+        check(!dchat::IsVoiceKind("voicemail"), "不做前缀匹配，只认完整取值");
     }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

@@ -29,9 +29,11 @@ target_link_libraries(dchat_server PRIVATE dchat_protocol ws2_32 Threads::Thread
 
 # 界面绘制库：圆角控件（GDI+ 抗锯齿）+ 气泡布局，独立成库以便做像素级/几何测试
 # 预览用 Windows 自带的缩略图提供者（shell32/ole32），所以放在 dchat_ui 里
-add_library(dchat_ui STATIC src/rounded.cpp src/bubble.cpp src/image_preview.cpp)
+# 语音：录音（waveIn/winmm）、压缩（ACM/msacm32）、播放（PlaySound/winmm）。
+# 放在 dchat_ui 里是因为它和预览一样属于"系统能力"，不属于聊天协议。
+add_library(dchat_ui STATIC src/rounded.cpp src/bubble.cpp src/image_preview.cpp src/voice_notes.cpp)
 target_include_directories(dchat_ui PUBLIC src)
-target_link_libraries(dchat_ui PUBLIC gdiplus gdi32 user32 shell32 ole32)
+target_link_libraries(dchat_ui PUBLIC gdiplus gdi32 user32 shell32 ole32 winmm)
 
 # 客户端：Win32 图形界面（微信式气泡 + 圆角控件）
 add_executable(dchat_client WIN32 src/client.cpp)
@@ -65,6 +67,11 @@ target_link_libraries(test_bubble PRIVATE dchat_ui)
 # 图片/视频预览的类型判断测试
 add_executable(test_image_preview tests/test_image_preview.cpp)
 target_link_libraries(test_image_preview PRIVATE dchat_ui)
+
+# 语音消息测试（判定纯函数 + WAV 拼装 + FILE_SEND 的字段数；不碰麦克风）
+# 也要链 dchat_protocol：FILE_SEND 的字段拼装在那里（服务器按位置解析，错了整条被拒）
+add_executable(test_voice_notes tests/test_voice_notes.cpp)
+target_link_libraries(test_voice_notes PRIVATE dchat_ui dchat_protocol)
 
 # 服务器规则（/chatrule）单元测试
 add_executable(test_server_rules tests/test_server_rules.cpp)
@@ -122,6 +129,7 @@ else()
     target_compile_options(test_auth PRIVATE -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8)
     target_compile_options(test_file_transfer PRIVATE -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8)
     target_compile_options(test_crypto PRIVATE -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8)
+    target_compile_options(test_voice_notes PRIVATE -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8)
 endif()
 
 enable_testing()
@@ -136,3 +144,5 @@ add_test(NAME server_command_tests COMMAND test_server_command)
 add_test(NAME auth_tests COMMAND test_auth)
 add_test(NAME file_transfer_tests COMMAND test_file_transfer)
 add_test(NAME crypto_tests COMMAND test_crypto)
+add_test(NAME voice_notes_tests COMMAND test_voice_notes)
+

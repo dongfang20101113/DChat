@@ -50,6 +50,7 @@
 #include "rounded.h"
 #include "server_command.h"  // LooksLikePasswordCommand：改密码那一行不进输入历史
 #include "server_rules.h"    // RuleMbToBytes / 服务器规则
+#include "voice_notes.h"     // 语音消息：录音、播放、判定
 
 namespace {
 
@@ -59,6 +60,8 @@ constexpr UINT WM_APP_XFER = WM_APP + 3;  // 文件发送线程 -> 界面线程
 constexpr UINT WM_APP_FILECLICK = WM_APP + 4;  // 记录区点到了文件卡片 -> 主窗口处理
 constexpr UINT WM_APP_PREVIEW = WM_APP + 5;    // 缩略图加载完了
 constexpr UINT WM_APP_FILEOPEN = WM_APP + 6;   // 点了缩略图 -> 用默认程序打开
+constexpr UINT WM_APP_VOICECLICK = WM_APP + 7;  // 点到了语音气泡 -> 播放/暂停
+constexpr UINT_PTR kRecordTimerId = 1;          // 录音计时（每 200ms 刷一次界面）
 
 // 给客户端窗口发 WM_COPYDATA 时用的标识（脚本/其他程序可以借此让它发送文件）
 constexpr ULONG_PTR kFileSendMagic = 0x43484131;  // 'CHA1'
@@ -72,6 +75,7 @@ constexpr int IDC_STATUS = 1006;
 constexpr int IDC_COLOR = 1007;
 constexpr int IDC_THEME = 1008;
 constexpr int IDC_FILESEND = 1009;
+constexpr int IDC_VOICE = 1010;  // 「录音」按钮
 
 constexpr int IDD_OK = 1;
 constexpr int IDD_CANCEL = 2;
@@ -106,6 +110,15 @@ struct Item {
     int fileProgress = 0;          // 0..100
     std::string savedPath;         // 下载完成后保存到的路径（UTF-8）
     std::string fileNote;          // 失败原因等
+    // ---- 语音（ItemKind::File 且 isVoice）----
+    //
+    // 语音走的还是文件卡片那一套（同一个下载流程、同一份状态机），
+    // 只是**画法不同**：它是能点响的气泡，不是"点一下才下载"的卡片。
+    // 复用下载流程是有意的——那套逻辑已经被限速/过期/失败重试磨过了。
+    bool isVoice = false;
+    // 语音时长（下载完成时读一次 WAV 头存下来；0 = 还不知道）。
+    // **不在绘制里读文件**：记录区每秒都要重画（进度条在走），每帧开一次文件纯属浪费。
+    int voiceSeconds = 0;
     // 图片 / 视频的缩略图（HBITMAP，析构时自动 DeleteObject）
     std::shared_ptr<void> preview;
 };
@@ -127,6 +140,7 @@ struct UiState {
     HWND hColorToggle = nullptr;
     HWND hThemeButton = nullptr;
     HWND hFileSend = nullptr;
+    HWND hVoice = nullptr;    // 「录音」按钮
     HWND hSuggest = nullptr;  // 输入框上方的候选浮层
     HFONT font = nullptr;
     HFONT fontSmall = nullptr;
@@ -159,6 +173,20 @@ void Layout(HWND hwnd);
 void ApplySuggestion(int index);
 void StartFileDownload(const std::string& id);
 void RequestThumbnail(const std::string& fileId);
+
+// ---------------- 语音消息（阶段 4 桌面端） ----------------
+//
+// 录音/播放的实现在 voice_notes.cpp 里；这里只管界面接线：
+// 按钮、计时、气泡渲染、点一下播放。
+dchat::VoiceRecorder g_recorder;
+dchat::VoicePlayer g_voicePlayer;
+std::string g_playingVoiceId;   // 正在播的语音（空 = 没在播）
+int g_playingVoiceTotal = 0;    // 正在播的这条总共多少秒
+std::string g_recordingHint;    // 录音中状态栏显示的那句
+void StartVoiceRecording();     // 定义在下面：开始录音
+void StopVoiceRecordingAndSend();  // 定义在下面：结束并发送
+void ToggleVoicePlayback(const std::string& fileId);  // 定义在下面：播/暂停
+void RefreshVoiceState();       // 定义在下面：把录音/播放状态反映到界面
 
 std::string TrimAscii(const std::string& text) {
     std::size_t begin = 0, end = text.size();
@@ -435,6 +463,11 @@ struct BubbleRow {
     RECT buttonRect{};
     RECT previewRect{};  // 缩略图（没有预览时是空矩形）
     std::shared_ptr<void> preview;  // 缩略图位图（HBITMAP）
+    // 语音气泡专用（isVoice 时 fileButton 里放的是时长文字）
+    bool isVoice = false;
+    int voiceTotalSeconds = 0;   // 这条语音总长（下载完才知道，之前是 0）
+    int voicePlayedSeconds = 0;  // 正在播时播到第几秒
+    bool voicePlaying = false;   // 正在播（false 时画三角形，true 时画两条竖线）
 };
 
 // 文件卡片尺寸
@@ -447,6 +480,12 @@ constexpr int kFileButtonH = 30;
 constexpr int kFileCardRadius = 10;
 constexpr int kFilePreviewSize = 72;   // 缩略图边长
 constexpr int kFileCardHPreview = 100; // 带缩略图时卡片更高
+// 语音气泡：比文件卡片矮一截，宽度也窄（就一个播放键 + 时长）
+constexpr int kVoiceBubbleW = 176;
+constexpr int kVoiceBubbleH = 40;
+constexpr int kVoiceBubblePadX = 12;
+constexpr int kVoiceBubbleRadius = 12;
+constexpr int kVoiceBars = 4;         // 记号用的几根短竖条
 
 // 鼠标悬停在哪张卡片上（用于按钮高亮）
 std::string g_fileHoverId;
@@ -464,11 +503,15 @@ std::vector<BubbleRow> LayoutRows(HDC dc, int width, int* contentHeight) {
         BubbleRow row;
         row.itemIndex = itemIndex++;
         if (item.kind == ItemKind::File) {
-            // 文件卡片：头一行是"谁发的 + 时间"，下面一张卡片，卡片右侧一个按钮
+            // 文件卡片：头一行是"谁发的 + 时间"，下面一张卡片，卡片右侧一个按钮。
+            // **语音走同一条路**，只是卡片形状和按钮内容不同（见下面的 isVoice 分支）。
             row.isBubble = false;
             row.isFile = true;
             row.nick = item.nick;
             row.time = item.time;
+            // 自己发的靠右：文件卡片和语音气泡共用这一条判断，
+            // 免得出现"消息靠右、自己发的语音靠左"这种自相矛盾的界面
+            row.own = !g_nick.empty() && item.nick == g_nick;
             row.text = item.raw;  // 文件名
             row.fileId = item.fileId;
             row.fileSize = item.fileSize;
@@ -477,6 +520,29 @@ std::vector<BubbleRow> LayoutRows(HDC dc, int width, int* contentHeight) {
             row.preview = item.preview;
             row.fileNote = item.savedPath.empty() ? item.fileNote : item.savedPath;
             row.header = RECT{0, y, width, y + headerH};
+
+            if (item.isVoice) {
+                // 语音气泡：一个矮胶囊，整块可点（点一下播放/暂停）
+                row.isVoice = true;
+                row.voicePlaying = (g_playingVoiceId == item.fileId && g_voicePlayer.IsPlaying());
+                if (row.voicePlaying) {
+                    row.voicePlayedSeconds = g_voicePlayer.CurrentSeconds();
+                    row.voiceTotalSeconds = g_playingVoiceTotal;
+                } else if (item.fileState == 2 && !item.savedPath.empty()) {
+                    // 没在播时显示下载完成时存下来的真实时长（0 = 读不出来，显示 0:00）
+                    row.voiceTotalSeconds = item.voiceSeconds;
+                }
+                const int available = width - margin * 2;
+                const int cardW = available < kVoiceBubbleW ? available : kVoiceBubbleW;
+                row.bubble = RECT{margin, y + headerH, margin + cardW, y + headerH + kVoiceBubbleH};
+                // 文件卡片那段代码要用的字段，这里给上合理的值（绘制走 isVoice 分支）
+                row.fileButton = dchat::FormatDuration(row.voiceTotalSeconds);
+                row.fileDetail = dchat::FormatVoiceSize(item.fileSize);
+                y = row.bubble.bottom + gap;
+                rows.push_back(row);
+                continue;
+            }
+
             const int available = width - margin * 2;
             const int cardW = available < kFileCardMaxW ? available : kFileCardMaxW;
             const bool hasPreview = (item.preview != nullptr);
@@ -612,6 +678,114 @@ void DrawRowHeader(HDC dc, const BubbleRow& row) {
 }
 
 void DrawRow(HDC dc, const BubbleRow& row) {
+    if (row.isVoice) {
+        // 语音气泡：左（或右）一个播放键，中间几根短竖条当"这是语音"的记号，
+        // 右边时长。**不做假波形**：随宽度拉伸的假波形看起来像"这段声音很平"，
+        // 其实什么都没表达（真波形要在录制时采样、还要随消息一起传过去）。
+        DrawRowHeader(dc, row);
+
+        COLORREF fill = row.own ? g_palette->bubbleOwn : g_palette->bubbleOther;
+        COLORREF border = row.own ? g_palette->bubbleOwnBorder : g_palette->bubbleOtherBorder;
+        COLORREF fg = row.own ? g_palette->bubbleOwnText : g_palette->text;
+        if (!g_colorEnabled) {
+            fill = row.own ? g_palette->neutral : g_palette->bubbleOther;
+            border = g_palette->border;
+            fg = g_palette->text;
+        }
+        if (row.fileState == 2) {
+            // 已下好的语音可以点；鼠标悬停时给一点反馈
+            const bool hover = !g_fileHoverId.empty() && g_fileHoverId == row.fileId;
+            if (hover) fill = Adjust(fill, g_darkTheme ? 12 : -8);
+        }
+        ui::FillRoundedRect(dc, row.bubble, kVoiceBubbleRadius, fill, border, 1.0f);
+
+        const int midY = (row.bubble.top + row.bubble.bottom) / 2;
+        const int iconLeft = row.bubble.left + kVoiceBubblePadX;
+        const int iconSize = 16;
+
+        // 播放键 / 暂停键：没下好时画成灰色（**不隐藏**——隐藏会让气泡在下载完成的
+        // 那一刻突然变宽，整列消息跟着跳）
+        const COLORREF iconColor = (row.fileState == 2) ? fg : Adjust(fg, g_darkTheme ? -70 : 80);
+        if (row.voicePlaying) {  // 两条竖线
+            const int barW = 4;
+            const int gap = 4;
+            RECT left{iconLeft, midY - iconSize / 2, iconLeft + barW, midY + iconSize / 2};
+            RECT right{iconLeft + barW + gap, midY - iconSize / 2, iconLeft + barW * 2 + gap,
+                       midY + iconSize / 2};
+            HBRUSH brush = CreateSolidBrush(iconColor);
+            FillRect(dc, &left, brush);
+            FillRect(dc, &right, brush);
+            DeleteObject(brush);
+        } else {  // 三角形
+            POINT points[3] = {
+                {iconLeft, midY - iconSize / 2},
+                {iconLeft + iconSize, midY},
+                {iconLeft, midY + iconSize / 2},
+            };
+            HBRUSH brush = CreateSolidBrush(iconColor);
+            HPEN pen = CreatePen(PS_SOLID, 1, iconColor);
+            HGDIOBJ oldBrush = SelectObject(dc, brush);
+            HGDIOBJ oldPen = SelectObject(dc, pen);
+            Polygon(dc, points, 3);
+            SelectObject(dc, oldBrush);
+            SelectObject(dc, oldPen);
+            DeleteObject(brush);
+            DeleteObject(pen);
+        }
+
+        // 几根短竖条：只是"这是语音"的记号，高度固定（见上面的说明）
+        int barX = iconLeft + iconSize + 12;
+        for (int i = 0; i < kVoiceBars; ++i) {
+            const int height = (i % 2 == 0) ? 10 : 16;
+            RECT bar{barX, midY - height / 2, barX + 3, midY + height / 2};
+            // 正在播时中间两根亮起来，给一个"确实在走"的动静
+            const bool lit = row.voicePlaying && (i == 1 || i == 2);
+            HBRUSH brush = CreateSolidBrush(lit ? fg : Adjust(fg, g_darkTheme ? -60 : 70));
+            FillRect(dc, &bar, brush);
+            DeleteObject(brush);
+            barX += 6;
+        }
+
+        // 时长 / 状态
+        RECT timeRect{barX + 8, row.bubble.top, row.bubble.right - kVoiceBubblePadX,
+                      row.bubble.bottom};
+        std::string label = row.fileButton;  // 布局时算好的时长文字（"0:07"）
+        COLORREF labelColor = fg;
+        if (row.fileState == 1) {
+            label = "下载中 " + std::to_string(row.fileProgress) + "%";
+            labelColor = Adjust(fg, g_darkTheme ? -50 : 60);
+        } else if (row.fileState == 3) {
+            label = "没下来，点一下重试";
+            labelColor = g_palette->error;
+        } else if (row.fileState == 0) {
+            label = "点一下下载";
+            labelColor = Adjust(fg, g_darkTheme ? -50 : 60);
+        }
+        DrawTextIn(dc, Utf8ToWide(label), timeRect, ui.fontSmall, labelColor,
+                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        // 正在播：底部一条细进度条。按"播放位置/总时长"算，不是估算
+        // ——估出来的进度条走到一半就跳，比没有还糟。
+        if (row.voicePlaying && row.voiceTotalSeconds > 0) {
+            const int trackTop = row.bubble.bottom - 6;
+            RECT track{row.bubble.left + kVoiceBubblePadX, trackTop,
+                       row.bubble.right - kVoiceBubblePadX, trackTop + 3};
+            HBRUSH trackBrush = CreateSolidBrush(Adjust(fill, g_darkTheme ? 18 : -14));
+            FillRect(dc, &track, trackBrush);
+            DeleteObject(trackBrush);
+            RECT done = track;
+            int percent = row.voicePlayedSeconds * 100 / row.voiceTotalSeconds;
+            if (percent > 100) percent = 100;
+            if (percent < 0) percent = 0;
+            done.right = track.left + (track.right - track.left) * percent / 100;
+            if (done.right > done.left) {
+                HBRUSH doneBrush = CreateSolidBrush(fg);
+                FillRect(dc, &done, doneBrush);
+                DeleteObject(doneBrush);
+            }
+        }
+        return;
+    }
     if (row.isFile) {
         // QQ 式文件卡片：头一行显示发送者，下面是卡片本体 + 右侧按钮
         DrawRowHeader(dc, row);
@@ -767,6 +941,15 @@ void DrawView(HWND view, HDC target) {
     const int height = client.bottom - client.top;
     if (width <= 0 || height <= 0) return;
 
+    // 语音播完了：把"正在播"收回去，否则气泡上会一直显示暂停键。
+    // 判断放在这里是因为记录区**本来就是每秒重画的**（进度条在走），
+    // 不用再额外开一个定时器——多一个定时器就多一处要记得销毁的东西。
+    if (!g_playingVoiceId.empty() && g_voicePlayer.ReachedEnd()) {
+        g_voicePlayer.Stop();
+        g_playingVoiceId.clear();
+        g_playingVoiceTotal = 0;
+    }
+
     HDC memory = CreateCompatibleDC(target);
     HBITMAP bitmap = CreateCompatibleBitmap(target, width, height);
     HGDIOBJ oldBitmap = SelectObject(memory, bitmap);
@@ -803,7 +986,8 @@ void DrawView(HWND view, HDC target) {
 }
 
 // 在内容坐标系里找文件卡片（整张卡片都可点），返回 Item 下标；找不到返回 -1
-int HitTestFileCard(int contentX, int contentY, std::string* fileId, bool* onPreview = nullptr) {
+int HitTestFileCard(int contentX, int contentY, std::string* fileId, bool* onPreview = nullptr,
+                    bool* isVoice = nullptr) {
     if (!ui.hView) return -1;
     RECT client{};
     GetClientRect(ui.hView, &client);
@@ -818,8 +1002,10 @@ int HitTestFileCard(int contentX, int contentY, std::string* fileId, bool* onPre
         if (contentX >= row.bubble.left && contentX < row.bubble.right &&
             contentY >= row.bubble.top && contentY < row.bubble.bottom) {
             if (fileId) *fileId = row.fileId;
+            if (isVoice) *isVoice = row.isVoice;
             if (onPreview) {
-                *onPreview = row.preview && contentX >= row.previewRect.left &&
+                // 语音气泡整块都是"点一下播/暂停"，没有"预览区"这一说
+                *onPreview = !row.isVoice && row.preview && contentX >= row.previewRect.left &&
                              contentX < row.previewRect.right &&
                              contentY >= row.previewRect.top &&
                              contentY < row.previewRect.bottom;
@@ -833,15 +1019,23 @@ int HitTestFileCard(int contentX, int contentY, std::string* fileId, bool* onPre
 LRESULT CALLBACK ViewProc(HWND view, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_LBUTTONDOWN: {
-            // 点到文件卡片（整张卡片都可点，和 QQ 一样）：交给主窗口去下载 / 打开文件夹
+            // 点到文件卡片（整张卡片都可点，和 QQ 一样）：交给主窗口去下载 / 打开文件夹。
+            // 语音气泡也一样可点，只是点了是播放 / 暂停。
             const int x = GET_X_LPARAM(lp);
             const int y = GET_Y_LPARAM(lp) + g_scrollTop;  // 屏幕坐标 -> 内容坐标
             std::string fileId;
             bool onPreview = false;
-            if (HitTestFileCard(x, y, &fileId, &onPreview) >= 0 && !fileId.empty()) {
-                // 点在缩略图上 = 用默认程序打开文件；点在卡片其它地方 = 下载 / 打开文件夹
+            bool isVoice = false;
+            if (HitTestFileCard(x, y, &fileId, &onPreview, &isVoice) >= 0 && !fileId.empty()) {
                 auto* payload = new std::string(fileId);
-                const UINT message = onPreview ? WM_APP_FILEOPEN : WM_APP_FILECLICK;
+                UINT message = WM_APP_FILECLICK;
+                if (isVoice) {
+                    // 语音：整块都是播放键，没有"预览区"这一说
+                    message = WM_APP_VOICECLICK;
+                } else if (onPreview) {
+                    // 点在缩略图上 = 用默认程序打开文件
+                    message = WM_APP_FILEOPEN;
+                }
                 if (!PostMessageW(ui.hwnd, message, 0, reinterpret_cast<LPARAM>(payload))) {
                     delete payload;
                 }
@@ -1116,6 +1310,12 @@ void UpdateStatus() {
         text = L"已连接 " + Utf8ToWide(g_host) + L":" + std::to_wstring(g_port);
         text += g_authed ? (L"　用户：" + Utf8ToWide(g_nick)) : L"　未登录";
         if (!g_transferStatus.empty()) text += L"　｜ " + Utf8ToWide(g_transferStatus);
+        // 录音中：把计时挂在状态栏上，用户一眼能看到录了多久、还差多少
+        if (g_recorder.IsRunning()) {
+            const int seconds = g_recorder.ElapsedSeconds();
+            text += L"　｜ ● 录音中 " + Utf8ToWide(dchat::FormatDuration(seconds)) + L"（最长 " +
+                    Utf8ToWide(dchat::FormatDuration(dchat::kMaxVoiceSeconds)) + L"，到点自动发送）";
+        }
     } else {
         text = L"未连接　点右边「连接」填服务器地址，连上后再登录或注册";
     }
@@ -1125,6 +1325,11 @@ void UpdateStatus() {
     EnableWindow(ui.hSend, IsConnected());
     EnableWindow(ui.hInput, IsConnected());
     EnableWindow(ui.hFileSend, IsConnected());
+    // 录音按钮：没连上/没登录时点不动；录音中保持可点（再点一下 = 结束并发送）
+    if (ui.hVoice) {
+        const bool canRecord = IsConnected() && g_authed;
+        EnableWindow(ui.hVoice, g_recorder.IsRunning() ? TRUE : (canRecord ? TRUE : FALSE));
+    }
     InvalidateRect(ui.hConnect, nullptr, TRUE);
     InvalidateRect(ui.hDisconnect, nullptr, TRUE);
     InvalidateRect(ui.hSend, nullptr, TRUE);
@@ -1507,6 +1712,7 @@ struct FileSendJob {
     std::string displayName;  // UTF-8，用于提示
     std::string base64Name;   // 协议里传的文件名
     std::wstring sourcePath;  // 本地路径（用来生成缩略图）
+    std::string kind;         // 附件种类（空 = 普通文件；"voice" = 语音）
     unsigned long long total = 0;
     std::vector<char> data;
 };
@@ -1648,9 +1854,12 @@ void SendFileThread(std::shared_ptr<FileSendJob> job) {
         if (thumbnail.size() > kMaxThumbBytes) thumbnail.clear();
     }
 
-    if (!SendRawLine(dchat::BuildLine("FILE_SEND", job->id + " " + job->base64Name + " " +
-                                                      std::to_string(job->total) +
-                                                      (thumbnail.empty() ? "" : " 1")))) {
+    // FILE_SEND 的字段是**按位置**解析的：第 4 格是"接着会发缩略图"的标记或者种类，
+    // 二者互斥（见 BuildFileSendRest 的说明）。语音走的是"第 4 格 = kind"那条路。
+    const std::string fileSendRest =
+        dchat::BuildFileSendRest(job->id, job->base64Name, job->total, job->kind,
+                                 !thumbnail.empty());
+    if (!SendRawLine(dchat::BuildLine("FILE_SEND", fileSendRest))) {
         PostTransfer(true, true, std::string(), "发送失败：连接已断开");
         return;
     }
@@ -1701,7 +1910,7 @@ void SendFileThread(std::shared_ptr<FileSendJob> job) {
                      "），房间里的成员可以点击下载了");
 }
 
-void StartSendFile(const std::wstring& path) {
+void StartSendFile(const std::wstring& path, const std::string& kind = std::string()) {
     if (!IsConnected()) {
         ViewAddItem(ItemKind::Error, "还没连接服务器，先连接再发文件", dchat::NowTimeString());
         return;
@@ -1760,6 +1969,7 @@ void StartSendFile(const std::wstring& path) {
     job->displayName = displayName;
     job->base64Name = dchat::Base64Encode(displayName);
     job->sourcePath = path;
+    job->kind = kind;
     job->id = "f" + std::to_string(GetTickCount64()) + "_" + std::to_string(++g_xferCounter);
     g_sendBusy = true;
     g_sendProgress = displayName + " 0%";
@@ -1768,6 +1978,131 @@ void StartSendFile(const std::wstring& path) {
                 dchat::NowTimeString());
     RefreshTransferStatus();
     std::thread(SendFileThread, job).detach();
+}
+
+// ------------------------------------------------------------------
+// 语音消息：录音 / 播放
+// ------------------------------------------------------------------
+
+void RefreshVoiceState() {
+    if (ui.hVoice) {
+        const bool recording = g_recorder.IsRunning();
+        // 录音中按钮文字变成方块（再点一下 = 结束并发送）
+        SetWindowTextW(ui.hVoice, recording ? L"■ 发送" : L"录音");
+        InvalidateRect(ui.hVoice, nullptr, TRUE);
+    }
+    UpdateStatus();
+    if (ui.hView) InvalidateRect(ui.hView, nullptr, FALSE);
+}
+
+void StartVoiceRecording() {
+    if (!IsConnected() || !g_authed) {
+        ViewAddItem(ItemKind::Error, "先登录再发语音", dchat::NowTimeString());
+        return;
+    }
+    if (g_recorder.IsRunning()) return;
+    if (g_sendBusy) {
+        ViewAddItem(ItemKind::Notice, "上一个文件还在发送中，等它发完再录音",
+                    dchat::NowTimeString());
+        return;
+    }
+    // 录音时会外放，先把正在播的语音停掉（否则录进去的是别人说的话）
+    if (!g_playingVoiceId.empty()) {
+        g_voicePlayer.Stop();
+        g_playingVoiceId.clear();
+        g_playingVoiceTotal = 0;
+    }
+    if (!g_recorder.Start()) {
+        // 没有麦克风 / 被占用：voice_notes 那边已经给出一句人话
+        ViewAddItem(ItemKind::Error, g_recorder.LastError(), dchat::NowTimeString());
+        RefreshVoiceState();
+        return;
+    }
+    g_recordingHint.clear();
+    RefreshVoiceState();
+    // 200ms 刷一次计时：界面是按秒走的，更密没有意义，还白烧电
+    SetTimer(ui.hwnd, kRecordTimerId, 200, nullptr);
+}
+
+void StopVoiceRecordingAndSend() {
+    if (!g_recorder.IsRunning()) return;
+    KillTimer(ui.hwnd, kRecordTimerId);
+
+    const int seconds = g_recorder.ElapsedSeconds();
+    std::string path;
+    std::string error;
+    if (!g_recorder.Finished(&path, &error)) {
+        // 录得太短 / 写不出文件：**一定要说清是哪种**，否则用户只会看到"按了没反应"
+        ViewAddItem(ItemKind::Notice, error, dchat::NowTimeString());
+        g_recordingHint.clear();
+        RefreshVoiceState();
+        return;
+    }
+    g_recordingHint.clear();
+    RefreshVoiceState();
+
+    // 大小和时长再拦一道（录音过程里设备可能给出比预期大的数据）
+    const std::wstring wide = Utf8ToWide(path);
+    unsigned long long bytes = 0;
+    {
+        WIN32_FILE_ATTRIBUTE_DATA info{};
+        if (GetFileAttributesExW(wide.c_str(), GetFileExInfoStandard, &info)) {
+            bytes = (static_cast<unsigned long long>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+        }
+    }
+    const std::string name = WideToUtf8(wide.substr(wide.find_last_of(L"\\/") + 1));
+    const std::string reason = dchat::WhyCannotSendVoice(name, bytes, seconds);
+    if (!reason.empty()) {
+        DeleteFileW(wide.c_str());
+        ViewAddItem(ItemKind::Error, reason, dchat::NowTimeString());
+        return;
+    }
+    ViewAddItem(ItemKind::Notice,
+                "语音录好了（" + dchat::FormatDuration(seconds) + "，" +
+                    dchat::FormatVoiceSize(bytes) + "），正在上传…",
+                dchat::NowTimeString());
+    StartSendFile(wide, "voice");
+}
+
+// 点一条语音气泡：播 / 暂停 / 接着播
+void ToggleVoicePlayback(const std::string& fileId) {
+    Item* item = FindFileItem(fileId);
+    if (!item) return;
+
+    // 就是这条：在播 → 暂停；暂停着 → 接着播
+    if (g_playingVoiceId == fileId) {
+        if (g_voicePlayer.IsPlaying()) {
+            g_voicePlayer.Pause();
+        } else {
+            g_voicePlayer.Resume();
+        }
+        if (ui.hView) InvalidateRect(ui.hView, nullptr, FALSE);
+        return;
+    }
+
+    if (item->fileState == 0) {  // 还没下
+        StartFileDownload(fileId);
+        return;
+    }
+    if (item->fileState == 1) return;  // 下着呢，别抢
+    if (item->fileState == 3) {        // 失败过：再点一次就是重试
+        StartFileDownload(fileId);
+        return;
+    }
+    if (item->savedPath.empty()) return;
+
+    // 换一条：先把上一条停掉（两条一起响是谁也听不清的噪音）
+    g_voicePlayer.Stop();
+    const int seconds = g_voicePlayer.Play(item->savedPath);
+    if (seconds < 0) {
+        g_playingVoiceId.clear();
+        g_playingVoiceTotal = 0;
+        ViewAddItem(ItemKind::Error, g_voicePlayer.LastError(), dchat::NowTimeString());
+    } else {
+        g_playingVoiceId = fileId;
+        g_playingVoiceTotal = seconds;
+    }
+    if (ui.hView) InvalidateRect(ui.hView, nullptr, FALSE);
 }
 
 // 处理服务器发来的文件相关消息
@@ -1832,14 +2167,21 @@ void HandleFileLine(const std::string& line) {
         item.raw = dchat::SanitizeFileName(std::string(nameBytes.begin(), nameBytes.end()));
         item.fileSize = size;
         item.time = dchat::NowTimeString();
+        // 附件种类是**追加在末尾**的第 7 格（老服务器不发这一格）。
+        // 它决定渲染成语音气泡还是普通文件卡片——**不看扩展名**：
+        // 安卓端录出来是 .m4a、桌面端是 .wav，扩展名不可靠。
+        const std::string kind = fields.size() >= 6 ? fields[5] : std::string();
+        item.isVoice = dchat::IsVoiceKind(kind);
         g_items.push_back(item);
         while (g_items.size() > kMaxItems) g_items.pop_front();
         if (g_stickToBottom) g_scrollTop = 1 << 30;
         if (ui.hView) InvalidateRect(ui.hView, nullptr, FALSE);
         MarkMessageArrived(true);  // 有人发了文件，和「被 @」一样提醒一下
         const bool hasThumb = (fields.size() >= 5 && fields[4] == "1");
-        // 图片自动下载（下完直接出缩略图）；视频不自动下整份，只取第一帧预览
-        if (dchat::ShouldAutoDownload(item.raw)) {
+        // 语音和图片自动下载（语音的意义就是"立刻能听"）；视频不自动下整份，
+        // 只取第一帧预览。判断只走 ShouldAutoDownloadVoice 这一个入口——
+        // 分成两处判断迟早会不一致，而且只在特定消息上表现出来，极难排查。
+        if (dchat::ShouldAutoDownloadVoice(kind, item.raw)) {
             StartFileDownload(item.fileId);
         } else if (hasThumb) {
             RequestThumbnail(item.fileId);
@@ -1961,10 +2303,23 @@ void HandleFileLine(const std::string& line) {
         const std::wstring saved = job->path;
         std::string savedUtf8;
         std::string fileName;
+        bool voice = false;
         if (Item* item = FindFileItem(id)) {
             savedUtf8 = WideToUtf8(saved);
             item->savedPath = savedUtf8;
             fileName = item->raw;
+            voice = item->isVoice;
+        }
+        // 语音的时长**在这里读一次并存下来**，不要在绘制里读：
+        // 记录区每秒都要重画（进度条在走），每帧去开一次文件纯属浪费。
+        if (voice) {
+            if (Item* item = FindFileItem(id)) {
+                unsigned short tag = 0;
+                int rate = 0, seconds = 0;
+                if (dchat::ReadWavFormat(savedUtf8, &tag, &rate, &seconds)) {
+                    item->voiceSeconds = seconds;
+                }
+            }
         }
         FinishDownload(id, true, std::string());
         MarkMessageArrived(true);
@@ -2974,13 +3329,15 @@ void Layout(HWND hwnd) {
     RECT rc{};
     GetClientRect(hwnd, &rc);
     const int margin = 12, stripH = 32, gap = 8;
-    const int buttonW = 78, colorW = 96, themeW = 128, fileW = 96;
+    const int buttonW = 78, colorW = 96, themeW = 128, fileW = 96, voiceW = 76;
     const int contentW = rc.right - margin * 2;
-    const int rightStack = buttonW * 2 + colorW + themeW + fileW + gap * 4;
+    const int rightStack = buttonW * 2 + colorW + themeW + fileW + voiceW + gap * 5;
 
     const int statusW = contentW - rightStack - gap;
     MoveWindow(ui.hStatus, margin, margin + 6, statusW > 120 ? statusW : 120, stripH - 6, TRUE);
     int x = rc.right - margin - rightStack;
+    MoveWindow(ui.hVoice, x, margin, voiceW, stripH, TRUE);
+    x += voiceW + gap;
     MoveWindow(ui.hFileSend, x, margin, fileW, stripH, TRUE);
     x += fileW + gap;
     MoveWindow(ui.hColorToggle, x, margin, colorW, stripH, TRUE);
@@ -3298,6 +3655,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ui.hFileSend = CreateWindowW(L"BUTTON", L"发送文件",
                                          WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, hwnd,
                                          reinterpret_cast<HMENU>(IDC_FILESEND), nullptr, nullptr);
+            ui.hVoice = CreateWindowW(L"BUTTON", L"录音", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0,
+                                      0, 10, 10, hwnd, reinterpret_cast<HMENU>(IDC_VOICE), nullptr,
+                                      nullptr);
             ui.hThemeButton = CreateWindowW(L"BUTTON", ThemeLabel(g_themeMode),
                                             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, hwnd,
                                             reinterpret_cast<HMENU>(IDC_THEME), nullptr, nullptr);
@@ -3312,7 +3672,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                      nullptr);
 
             HWND controls[] = {ui.hStatus, ui.hInput,      ui.hColorToggle, ui.hThemeButton,
-                               ui.hConnect, ui.hDisconnect, ui.hSend,        ui.hFileSend};
+                               ui.hConnect, ui.hDisconnect, ui.hSend,        ui.hFileSend,
+                               ui.hVoice};
             for (HWND control : controls) {
                 SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
             }
@@ -3321,7 +3682,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_oldButtonProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
                 ui.hSend, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc)));
             HWND ownerDrawn[] = {ui.hColorToggle, ui.hThemeButton, ui.hConnect, ui.hDisconnect,
-                                 ui.hFileSend};
+                                 ui.hFileSend,     ui.hVoice};
             for (HWND control : ownerDrawn) {
                 SetWindowLongPtrW(control, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc));
             }
@@ -3374,6 +3735,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 case IDC_FILESEND:
                     DoSendFile(hwnd);
+                    return 0;
+                case IDC_VOICE:
+                    // 点一下开始录，再点一下结束并发送。
+                    // （面板上的按钮很难做"按住不放"，所以用点按两下这一套；
+                    //   状态栏会一直显示"录音中 0:03"，不会让人不知道在录。）
+                    if (g_recorder.IsRunning()) {
+                        StopVoiceRecordingAndSend();
+                    } else {
+                        StartVoiceRecording();
+                    }
                     return 0;
                 case IDC_COLOR:
                     g_colorEnabled = !g_colorEnabled;
@@ -3533,6 +3904,35 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        case WM_APP_VOICECLICK: {
+            // 记录区里点到了语音气泡：播放 / 暂停 / 接着播
+            auto* fileId = reinterpret_cast<std::string*>(lp);
+            if (fileId) {
+                ToggleVoicePlayback(*fileId);
+                delete fileId;
+            }
+            return 0;
+        }
+        case WM_TIMER:
+            if (wp == kRecordTimerId) {
+                if (!g_recorder.IsRunning()) {
+                    KillTimer(hwnd, kRecordTimerId);  // 已经收尾了，别再空转
+                    return 0;
+                }
+                const int seconds = g_recorder.ElapsedSeconds();
+                UpdateStatus();
+                // 到点自动收尾并发送：录满上限还不停，用户会一直录到超限、
+                // 最后被拦下来——白录一场。
+                if (seconds >= dchat::kMaxVoiceSeconds) {
+                    ViewAddItem(ItemKind::Notice,
+                                "语音最长 " + dchat::FormatDuration(dchat::kMaxVoiceSeconds) +
+                                    "，已自动发送",
+                                dchat::NowTimeString());
+                    StopVoiceRecordingAndSend();
+                }
+                return 0;
+            }
+            break;
         case WM_APP_XFER: {
             // 发送线程的进度/结果回到界面线程
             auto* event = reinterpret_cast<TransferEvent*>(lp);

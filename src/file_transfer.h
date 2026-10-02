@@ -1,4 +1,4 @@
-﻿// 文件传输的公共部分：Base64 编解码、文件名清理、分块大小、字节数格式化。
+// 文件传输的公共部分：Base64 编解码、文件名清理、分块大小、字节数格式化。
 // 只依赖标准库，方便单独做单元测试。
 //
 // 传输方式（广播式，和 IRC 的 DCC 思路类似）：
@@ -42,5 +42,30 @@ std::wstring MakeUniquePathW(const std::wstring& directory, const std::wstring& 
 
 // 1234567 -> "1.2 MB"；1024 -> "1.0 KB"
 std::string FormatBytes(unsigned long long bytes);
+
+// 一条 FILE_SEND 命令的字段（**按位置**，服务器就是这么解析的）：
+//
+//     FILE_SEND <传输ID> <文件名(Base64)> <字节数> [有缩略图] [种类]
+//
+//     字段数只能是 3 或 4：
+//       - 普通文件、不带缩略图   → 3 格：id 名字 字节数
+//       - 普通文件、带缩略图     → 4 格：id 名字 字节数 1        （"1" 表示接着会发缩略图）
+//       - 语音（带种类）         → 4 格：id 名字 字节数 voice    （第 4 格就是种类，不是标记）
+//
+// **种类和缩略图标记会抢第 4 格**，所以带种类的附件一律不发缩略图标记。
+// 抽成这个函数是因为"按位置解析"最容易写错，而写错的表现是**服务器直接拒绝整条命令**：
+//     if (!SendRawLine(dchat::BuildLine("FILE_SEND", BuildFileSendRest(...)))) { ... }
+std::string BuildFileSendRest(const std::string& transferId, const std::string& nameBase64,
+                              unsigned long long bytes, const std::string& kind,
+                              bool hasThumbnail);
+
+// `FILE_OFFER` 最后一格的"种类"说的是不是语音？
+//
+// 取值与安卓端一致：`voice` = 语音；`0`/`file` = 普通文件；`1`/`sticker` = 贴纸。
+// **这一格缺失时不能当成语音**：老服务器不会发它，那时按普通文件卡片显示才是对的
+// （用户点一下还能下载），当成语音会得到一个点了没反应的灰气泡。
+//
+// 大小写不敏感：种类是两端自己发的字符串，宽容一点不会出错。
+bool IsVoiceKind(const std::string& kind);
 
 }  // namespace dchat
