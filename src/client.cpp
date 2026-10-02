@@ -1977,7 +1977,17 @@ void StartSendFile(const std::wstring& path, const std::string& kind = std::stri
                 "开始发送 " + displayName + "（" + dchat::FormatBytes(job->total) + "）…",
                 dchat::NowTimeString());
     RefreshTransferStatus();
-    std::thread(SendFileThread, job).detach();
+    // 语音：上传线程用完就把它删掉，本地不留（想听自己刚说的那条，
+    // 点气泡下载服务器上那一份就行——和 QQ / 微信一样）。
+    // 不删的话 voice-notes\ 会随着每次录音一直涨，用户唯一的感受就是"这程序怎么这么占地方"。
+    if (job->kind == "voice") {
+        std::thread([job] {
+            SendFileThread(job);
+            DeleteFileW(job->sourcePath.c_str());
+        }).detach();
+    } else {
+        std::thread(SendFileThread, job).detach();
+    }
 }
 
 // ------------------------------------------------------------------
