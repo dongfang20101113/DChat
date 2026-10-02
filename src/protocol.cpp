@@ -1,4 +1,4 @@
-﻿#include "protocol.h"
+#include "protocol.h"
 
 #include <cctype>
 #include <cstdio>
@@ -122,6 +122,73 @@ std::string NowTimeString() {
     local = *std::localtime(&now);
 #endif
     return FormatTime(local.tm_hour, local.tm_min);
+}
+
+// ---- 多行文本的转义 ----
+//
+// 只有两条规则，扫一遍即可：`\` -> `\\`，换行 -> `\n`。
+// 反转义遇到不认识的转义**原样保留**，免得把旧客户端发来的真实反斜杠吃掉。
+
+std::string EscapeText(const std::string& text) {
+    std::string out;
+    out.reserve(text.size() + 8);
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const char c = text[i];
+        if (c == '\\') {
+            out += "\\\\";
+        } else if (c == '\n') {
+            out += "\\n";
+        } else if (c == '\r') {
+            // \r\n 归一成一个换行；单独的 \r 也当换行（从别处粘贴来的文本常见）
+            if (i + 1 < text.size() && text[i + 1] == '\n') ++i;
+            out += "\\n";
+        } else {
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
+std::string UnescapeText(const std::string& escaped) {
+    std::string out;
+    out.reserve(escaped.size());
+    for (std::size_t i = 0; i < escaped.size(); ++i) {
+        const char c = escaped[i];
+        if (c != '\\' || i + 1 >= escaped.size()) {
+            out.push_back(c);
+            continue;
+        }
+        const char next = escaped[i + 1];
+        if (next == '\\') {
+            out.push_back('\\');
+            ++i;
+        } else if (next == 'n') {
+            out.push_back('\n');
+            ++i;
+        } else {
+            out.push_back(c);  // 不认识的转义：原样保留
+        }
+    }
+    return out;
+}
+
+std::size_t CountTextLines(const std::string& escaped) {
+    if (escaped.empty()) return 0;
+    std::size_t lines = 1;
+    for (std::size_t i = 0; i < escaped.size(); ++i) {
+        if (escaped[i] != '\\') continue;
+        if (i + 1 >= escaped.size()) break;
+        const char next = escaped[i + 1];
+        if (next == '\\') {
+            ++i;  // \\ 是字面反斜杠，不算换行
+            continue;
+        }
+        if (next == 'n') {
+            ++lines;
+            ++i;
+        }
+    }
+    return lines;
 }
 
 Message ParseLine(const std::string& line) {

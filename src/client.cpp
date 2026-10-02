@@ -1,4 +1,4 @@
-﻿// 聊天客户端：Win32 图形界面 + Winsock。
+// 聊天客户端：Win32 图形界面 + Winsock。
 // 界面特点：
 // - 微信式气泡记录区（自绘子窗口）：自己的消息靠右、别人的靠左、系统提示居中
 // - 所有按钮/开关都是 GDI+ 抗锯齿的圆角自绘控件
@@ -2653,7 +2653,10 @@ void SendCurrentInput() {
     const std::string utf8 = WideToUtf8(text);
     if (utf8.empty()) return;
     HideSuggestions();  // 发出去了，候选浮层收起来
-    if (!SendRawLine(dchat::BuildLine("MSG", utf8))) {
+    // 转义换行和反斜杠：协议是行式的，不转义的话多行文本会被 BuildLine 截断成一行，
+    // 而且服务端也没法按"行数"做限制。
+    const std::string escaped = dchat::EscapeText(utf8);
+    if (!SendRawLine(dchat::BuildLine("MSG", escaped))) {
         ViewAddItem(ItemKind::Error, "发送失败，连接可能已断开", dchat::NowTimeString());
         DisconnectFromServer(false);
         return;

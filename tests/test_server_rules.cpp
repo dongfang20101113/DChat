@@ -33,11 +33,18 @@ int main() {
         check(rules.documentSizeMb == 64, "documentsize 默认 64 MB");
         check(!rules.keepChatHistory, "keepchathistory 默认关闭");
         check(rules.maxServerTempMb == 1048, "maxservertemp 默认 1048 MB");
-        check(dchat::AllRuleNames().size() == 4, "一共 4 条规则");
+        // 2026-10 新增的 4 条，默认全部是 0（不限制），保证升级后行为不变
+        check(rules.uploadRateKbps == 0, "uploadrate 默认 0（不限制）");
+        check(rules.downloadRateKbps == 0, "downloadrate 默认 0（不限制）");
+        check(rules.maxTextLength == 0, "maxtextlen 默认 0（不限制）");
+        check(rules.maxTextLines == 0, "maxtextlines 默认 0（不限制）");
+        check(dchat::AllRuleNames().size() == 8, "一共 8 条规则");
         check(dchat::IsKnownRule("chatinterval") && dchat::IsKnownRule("DOCUMENTSIZE") &&
                   dchat::IsKnownRule("keepchathistory") &&
-                  dchat::IsKnownRule("maxservertemp"),
-              "四条规则名都能识别（大小写不敏感）");
+                  dchat::IsKnownRule("maxservertemp") && dchat::IsKnownRule("UPLOADRATE") &&
+                  dchat::IsKnownRule("downloadrate") && dchat::IsKnownRule("maxtextlen") &&
+                  dchat::IsKnownRule("maxtextlines"),
+              "八条规则名都能识别（大小写不敏感）");
         check(!dchat::IsKnownRule("nope"), "不认识的规则名返回非法");
         check(dchat::RuleMbToBytes(1) == 1024ull * 1024ull, "MB 转字节");
     }
@@ -111,10 +118,10 @@ int main() {
               "说明里带当前值");
         check(dchat::DescribeRule(rules, "keepchathistory").find("true") != std::string::npos,
               "布尔规则显示 true/false");
-        check(dchat::RulesLineForClient(rules) == "RULES 8 300 1",
-              "发给客户端的 RULES 行格式正确");
+        check(dchat::RulesLineForClient(rules) == "RULES 8 300 1 0 0 0 0",
+              "发给客户端的 RULES 行格式正确（新字段默认 0）");
         rules.keepChatHistory = false;
-        check(dchat::RulesLineForClient(rules) == "RULES 8 300 0", "关闭时最后一位是 0");
+        check(dchat::RulesLineForClient(rules) == "RULES 8 300 0 0 0 0 0", "关闭时第 3 位是 0");
         check(dchat::RuleRangeText("chatinterval").find("60000") != std::string::npos,
               "取值范围说明里有上限");
         check(dchat::RuleRangeText("keepchathistory") == "true / false", "布尔规则的范围说明");
@@ -133,7 +140,7 @@ int main() {
         check(text.find("keepchathistory true") != std::string::npos, "布尔规则写进去了");
 
         ServerRules loaded;
-        check(dchat::ParseRules(text, &loaded) == 4, "四条规则都能读回来");
+        check(dchat::ParseRules(text, &loaded) == 8, "八条规则都能读回来（4 条旧的 + 4 条新的）");
         check(loaded.chatIntervalMs == 400 && loaded.documentSizeMb == 8 &&
                   loaded.keepChatHistory && loaded.maxServerTempMb == 512,
               "写出去再读回来完全一致（往返正确）");
@@ -165,7 +172,7 @@ int main() {
     {
         std::printf("[9] 规则元数据（Tab 补全用）\n");
         const std::vector<dchat::RuleInfo>& infos = dchat::AllRuleInfos();
-        check(infos.size() == 4, "四条规则各有一份元数据");
+        check(infos.size() == 8, "八条规则各有一份元数据");
         bool hintsOk = true;
         bool namesOk = true;
         for (std::size_t i = 0; i < infos.size(); ++i) {
@@ -182,6 +189,136 @@ int main() {
                   dchat::IsKnownRule("maxservertemp") && dchat::IsKnownRule("documentsize"),
               "IsKnownRule 仍然认得这四条规则");
         check(!dchat::IsKnownRule("chatintervalX"), "IsKnownRule 不会把别的前缀当规则");
+    }
+
+    // ------------------------------------------------------------------
+    // 2026-10 新增：限速与文本限制
+    // ------------------------------------------------------------------
+    {
+        std::printf("[10] 新增规则：set / add / remove 与范围\n");
+        ServerRules rules;
+
+        dchat::RuleChange up = dchat::ApplyRule(&rules, "uploadrate", RuleAction::Set, 128, false);
+        check(up.ok && up.changed && rules.uploadRateKbps == 128, "uploadrate set 128");
+        up = dchat::ApplyRule(&rules, "uploadrate", RuleAction::Add, 128, false);
+        check(rules.uploadRateKbps == 256, "uploadrate add 128 -> 256");
+        up = dchat::ApplyRule(&rules, "uploadrate", RuleAction::Remove, 100, false);
+        check(rules.uploadRateKbps == 156, "uploadrate remove 100 -> 156");
+
+        // 0 是合法值（表示不限制），不能被夹到别的数
+        up = dchat::ApplyRule(&rules, "uploadrate", RuleAction::Set, 0, false);
+        check(rules.uploadRateKbps == 0, "uploadrate 可以设回 0（不限制）");
+
+        // 负数会被夹到最小值 0
+        up = dchat::ApplyRule(&rules, "downloadrate", RuleAction::Set, -50, false);
+        check(rules.downloadRateKbps == 0, "downloadrate 负数被夹到 0");
+        check(up.ok && up.message.find("最小值") != std::string::npos, "会提示被夹到最小值");
+
+        // 超上限会被夹住
+        dchat::ApplyRule(&rules, "downloadrate", RuleAction::Set, 99999999, false);
+        check(rules.downloadRateKbps == 1048576, "downloadrate 上限 1048576 KB/s");
+
+        dchat::ApplyRule(&rules, "maxtextlen", RuleAction::Set, 2000, false);
+        check(rules.maxTextLength == 2000, "maxtextlen set 2000");
+        dchat::ApplyRule(&rules, "maxtextlines", RuleAction::Set, 20, false);
+        check(rules.maxTextLines == 20, "maxtextlines set 20");
+
+        // 布尔规则的写法对数值规则应当被拒绝
+        const dchat::RuleChange bad = dchat::ApplyRule(&rules, "maxtextlen", RuleAction::SetBool, 0, true);
+        check(!bad.ok && bad.message.find("数值规则") != std::string::npos,
+              "对数值规则用 true/false 会被拒绝并说明原因");
+
+        // Show 动作只读不改
+        const dchat::RuleChange shown = dchat::ApplyRule(&rules, "maxtextlines", RuleAction::Show, 0, false);
+        check(shown.ok && shown.message.find("20") != std::string::npos, "Show 能读出当前值");
+    }
+
+    {
+        std::printf("[11] RULES 下发行的向后兼容\n");
+        ServerRules rules;
+        rules.documentSizeMb = 32;
+        rules.chatIntervalMs = 500;
+        rules.keepChatHistory = true;
+        rules.uploadRateKbps = 128;
+        rules.downloadRateKbps = 256;
+        rules.maxTextLength = 1000;
+        rules.maxTextLines = 10;
+        const std::string line = dchat::RulesLineForClient(rules);
+
+        // 前三个字段的位置和含义**绝对不能变**，否则老客户端会读错
+        check(line.rfind("RULES 32 500 1 ", 0) == 0,
+              "前 3 个字段仍是 documentsize/chatinterval/keepchathistory，位置不变");
+        check(line == "RULES 32 500 1 128 256 1000 10", "新增字段按顺序追加在末尾");
+
+        // 字段总数
+        std::size_t spaces = 0;
+        for (char c : line) {
+            if (c == ' ') ++spaces;
+        }
+        check(spaces == 7, "一共 8 个字段（7 个空格）");
+
+        // 默认值下也要能生成合法行
+        ServerRules plain;
+        check(dchat::RulesLineForClient(plain) == "RULES 64 0 0 0 0 0 0", "默认值的下发行");
+    }
+
+    {
+        std::printf("[12] 新增规则的序列化 / 解析往返\n");
+        ServerRules rules;
+        rules.uploadRateKbps = 64;
+        rules.downloadRateKbps = 512;
+        rules.maxTextLength = 500;
+        rules.maxTextLines = 8;
+
+        const std::string text = dchat::SerializeRules(rules);
+        check(text.find("uploadrate 64") != std::string::npos, "序列化含 uploadrate");
+        check(text.find("maxtextlines 8") != std::string::npos, "序列化含 maxtextlines");
+
+        ServerRules loaded;
+        check(dchat::ParseRules(text, &loaded) >= 4, "往返能读回规则");
+        check(loaded.uploadRateKbps == 64 && loaded.downloadRateKbps == 512 &&
+                  loaded.maxTextLength == 500 && loaded.maxTextLines == 8,
+              "往返后 4 个新值都对");
+
+        // 超范围的坏行应当被夹住而不是整份文件失败
+        ServerRules clamped;
+        dchat::ParseRules("uploadrate 99999999\nmaxtextlines 99999\n", &clamped);
+        check(clamped.uploadRateKbps == 1048576, "解析时超上限被夹住");
+        check(clamped.maxTextLines == 200, "maxtextlines 超上限被夹住");
+
+        // "100abc" 这种坏行要跳过（沿用已有的严格解析约定）
+        ServerRules bad;
+        const int before = bad.uploadRateKbps;
+        dchat::ParseRules("uploadrate 100abc\n", &bad);
+        check(bad.uploadRateKbps == before, "带尾巴的坏值被跳过，不改动原值");
+    }
+
+    {
+        std::printf("[13] 令牌桶限速器\n");
+        dchat::RateLimiter limiter;
+
+        // 0 = 不限制：永远不用等
+        limiter.Configure(0);
+        check(limiter.Consume(1024 * 1024) == 0, "限速为 0 时永不等待");
+
+        // 128 KB/s：开局有一整桶（128 KB），一次要 64 KB 不用等
+        limiter.Configure(128);
+        check(limiter.Consume(64 * 1024) == 0, "开局桶是满的，64 KB 不用等");
+        // 再要 64 KB 刚好用完
+        check(limiter.Consume(64 * 1024) == 0, "再用掉 64 KB（桶刚好用尽）");
+        // 第三次就该等了：再要 64 KB，桶空了，需要约 500 ms
+        const int wait = limiter.Consume(64 * 1024);
+        check(wait >= 400 && wait <= 600, "桶空了以后要等约 500 ms（128 KB/s 下 64 KB）");
+
+        // 一次要得比整桶还多：也应当给出合理的等待时间，而不是死循环
+        dchat::RateLimiter small;
+        small.Configure(1);  // 1 KB/s
+        const int big = small.Consume(4096);  // 要 4 KB
+        check(big > 0 && big <= 8000, "一次要超过整桶容量时也能给出等待时间");
+
+        // Configure 会重置状态
+        limiter.Configure(1024);
+        check(limiter.Consume(512 * 1024) == 0, "重新配置后桶又是满的");
     }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

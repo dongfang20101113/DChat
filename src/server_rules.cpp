@@ -19,6 +19,11 @@ const RuleRange kRanges[] = {
     {"chatinterval", 0, 60000, "ms", "两条消息之间最少间隔（0 = 不限制）"},
     {"documentsize", 1, 4096, "MB", "单个文件最大大小"},
     {"maxservertemp", 16, 32768, "MB", "服务端保存文件 + 聊天记录缓存的总上限"},
+    // ---- 2026-10 新增 ----
+    {"uploadrate", 0, 1048576, "KB/s", "单个客户端上传限速（0 = 不限制）"},
+    {"downloadrate", 0, 1048576, "KB/s", "单个客户端下载限速（0 = 不限制）"},
+    {"maxtextlen", 0, 4096, "字符", "单条消息最大字符数（Unicode 码点，0 = 不限制）"},
+    {"maxtextlines", 0, 200, "行", "单条消息最大行数（0 = 不限制）"},
 };
 
 const RuleRange* FindRange(const std::string& name) {
@@ -53,6 +58,10 @@ const std::vector<RuleInfo>& AllRuleInfos() {
         {"documentsize", "<MB> 单个文件最大大小", false},
         {"keepchathistory", "true|false 新加入的人能否看到之前的记录", true},
         {"maxservertemp", "<MB> 服务端缓存（文件 + 记录）总上限", false},
+        {"uploadrate", "<KB/s> 单客户端上传限速，0 = 不限", false},
+        {"downloadrate", "<KB/s> 单客户端下载限速，0 = 不限", false},
+        {"maxtextlen", "<字符> 单条消息最大字符数，0 = 不限", false},
+        {"maxtextlines", "<行> 单条消息最大行数，0 = 不限", false},
     };
     return infos;
 }
@@ -102,6 +111,22 @@ std::string DescribeRule(const ServerRules& rules, const std::string& name) {
     if (lower == "maxservertemp") {
         return "maxservertemp = " + std::to_string(rules.maxServerTempMb) +
                " MB（服务端保存文件 + 聊天记录缓存的总上限）";
+    }
+    if (lower == "uploadrate") {
+        return "uploadrate = " + std::to_string(rules.uploadRateKbps) +
+               " KB/s（单个客户端上传限速，0 = 不限制）";
+    }
+    if (lower == "downloadrate") {
+        return "downloadrate = " + std::to_string(rules.downloadRateKbps) +
+               " KB/s（单个客户端下载限速，0 = 不限制）";
+    }
+    if (lower == "maxtextlen") {
+        return "maxtextlen = " + std::to_string(rules.maxTextLength) +
+               " 字符（单条消息最大字符数，按 Unicode 码点算，0 = 不限制）";
+    }
+    if (lower == "maxtextlines") {
+        return "maxtextlines = " + std::to_string(rules.maxTextLines) +
+               " 行（单条消息最大行数，0 = 不限制）";
     }
     return "未知规则：" + name;
 }
@@ -164,6 +189,10 @@ RuleChange ApplyRule(ServerRules* rules, const std::string& name, RuleAction act
     if (lower == "chatinterval") current = rules->chatIntervalMs;
     if (lower == "documentsize") current = rules->documentSizeMb;
     if (lower == "maxservertemp") current = rules->maxServerTempMb;
+    if (lower == "uploadrate") current = rules->uploadRateKbps;
+    if (lower == "downloadrate") current = rules->downloadRateKbps;
+    if (lower == "maxtextlen") current = rules->maxTextLength;
+    if (lower == "maxtextlines") current = rules->maxTextLines;
 
     long long next = current;
     if (action == RuleAction::Set) {
@@ -201,13 +230,47 @@ RuleChange ApplyRule(ServerRules* rules, const std::string& name, RuleAction act
     if (lower == "chatinterval") rules->chatIntervalMs = static_cast<int>(next);
     if (lower == "documentsize") rules->documentSizeMb = static_cast<int>(next);
     if (lower == "maxservertemp") rules->maxServerTempMb = static_cast<int>(next);
+    if (lower == "uploadrate") rules->uploadRateKbps = static_cast<int>(next);
+    if (lower == "downloadrate") rules->downloadRateKbps = static_cast<int>(next);
+    if (lower == "maxtextlen") rules->maxTextLength = static_cast<int>(next);
+    if (lower == "maxtextlines") rules->maxTextLines = static_cast<int>(next);
     change.message = lower + " = " + std::to_string(next) + " " + range->unit + note;
     return change;
 }
 
 std::string RulesLineForClient(const ServerRules& rules) {
+    // 前三个字段的位置和含义**绝对不能动**：老客户端按位置解析它们。
+    // 新字段一律追加在末尾——桌面端的解析器只读 fields[0]，
+    // 安卓端的 ServerLine.Rules 也是按位置读并且容忍缺字段，
+    // 所以"只追加不重排"能保证新旧客户端都能正常工作。
     return "RULES " + std::to_string(rules.documentSizeMb) + " " +
-           std::to_string(rules.chatIntervalMs) + " " + (rules.keepChatHistory ? "1" : "0");
+           std::to_string(rules.chatIntervalMs) + " " + (rules.keepChatHistory ? "1" : "0") + " " +
+           std::to_string(rules.uploadRateKbps) + " " + std::to_string(rules.downloadRateKbps) +
+           " " + std::to_string(rules.maxTextLength) + " " + std::to_string(rules.maxTextLines);
+}
+
+int RateLimiter::Consume(std::size_t bytes) {
+    if (kbps <= 0) return 0;
+    const auto now = std::chrono::steady_clock::now();
+    const double rate = static_cast<double>(kbps) * 1024.0;  // 字节/秒
+
+    if (last.time_since_epoch().count() == 0) {
+        last = now;
+        tokens = rate;  // 开局先给满一桶，避免第一条就被卡住
+    }
+    const double elapsed = std::chrono::duration<double>(now - last).count();
+    last = now;
+    tokens = std::min(tokens + elapsed * rate, rate);  // 桶容量 = 1 秒的量
+
+    const double need = static_cast<double>(bytes);
+    if (tokens >= need) {
+        tokens -= need;
+        return 0;
+    }
+    // 不够：把桶清零，让调用方等够"欠账"的时间，下一轮自然就补回来了
+    const double deficit = need - tokens;
+    tokens = 0.0;
+    return static_cast<int>(deficit / rate * 1000.0 + 0.5);
 }
 
 std::string SerializeRules(const ServerRules& rules) {
@@ -220,6 +283,14 @@ std::string SerializeRules(const ServerRules& rules) {
            "  # 新加入的客户端能否看到之前的聊天记录和文件\n";
     out += "maxservertemp " + std::to_string(rules.maxServerTempMb) +
            "      # 服务端保存文件 + 聊天记录缓存的总上限（MB）\n";
+    out += "uploadrate " + std::to_string(rules.uploadRateKbps) +
+           "      # 单个客户端上传限速（KB/s），0 = 不限制\n";
+    out += "downloadrate " + std::to_string(rules.downloadRateKbps) +
+           "      # 单个客户端下载限速（KB/s），0 = 不限制\n";
+    out += "maxtextlen " + std::to_string(rules.maxTextLength) +
+           "      # 单条消息最大字符数（Unicode 码点），0 = 不限制\n";
+    out += "maxtextlines " + std::to_string(rules.maxTextLines) +
+           "      # 单条消息最大行数，0 = 不限制\n";
     return out;
 }
 
@@ -284,6 +355,10 @@ int ParseRules(const std::string& text, ServerRules* rules) {
         if (name == "chatinterval") parsed.chatIntervalMs = static_cast<int>(number);
         if (name == "documentsize") parsed.documentSizeMb = static_cast<int>(number);
         if (name == "maxservertemp") parsed.maxServerTempMb = static_cast<int>(number);
+        if (name == "uploadrate") parsed.uploadRateKbps = static_cast<int>(number);
+        if (name == "downloadrate") parsed.downloadRateKbps = static_cast<int>(number);
+        if (name == "maxtextlen") parsed.maxTextLength = static_cast<int>(number);
+        if (name == "maxtextlines") parsed.maxTextLines = static_cast<int>(number);
         ++count;
     }
     // 文件里可能把两个值写成互相矛盾的样子，这里把 documentsize 夹到不超过 maxservertemp

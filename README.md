@@ -1,4 +1,4 @@
-﻿# 聊天室（C++ 客户端 + 服务器）
+# 聊天室（C++ 客户端 + 服务器）
 
 用 C++17 + Winsock2 手写的局域网聊天程序，**零第三方依赖**：服务器是多线程 TCP 服务，客户端是 Win32 图形界面。
 
@@ -212,7 +212,7 @@ alice 2f9c... 8b41... 12000
 | `/ops` | 列出当前管理员名单（`/oplist` 也行；控制台里直接敲 `ops` 也可以） |
 | `/help` | 显示指令帮助 |
 
-四条服务器规则的默认值与作用（都能用 `/chatrule` 改，**只能控制台**）：
+八条服务器规则的默认值与作用（都能用 `/chatrule` 改，**只能控制台**）：
 
 规则**存在服务器端的 `dchat-rules.txt`** 里（一行一条 `规则名 值`，`#` 开头是注释，可以直接用记事本改；启动时读取，**改文件要重启才生效**）。用 `/chatrule` 改的话**会立刻写回这个文件**，重启服务器依然生效；文件位置可以用 `--rules <路径>` 指定。
 
@@ -222,6 +222,14 @@ alice 2f9c... 8b41... 12000
 | `documentsize` | `64` MB | 单个文件最大大小（原来的 64 MB 上限现在由它控制；**不能超过 `maxservertemp`**）。服务器会把当前值发给客户端，客户端据此调整本地检查 |
 | `keepchathistory` | `false` | 打开后，**新加入房间的客户端能看到之前的聊天记录**（公告也在内），以及还留在服务器上的文件卡片（点一下就能下载） |
 | `maxservertemp` | `1048` MB | 服务端保存「文件 + 聊天记录缓存」的**总上限**；超出时先淘汰最旧的（文件和最早的聊天记录），调小时立刻生效 |
+| `uploadrate` | `0` KB/s | **单个客户端上传限速**；`0` = 不限制。公网服务器建议设 128 左右，防止一个人把上行占满 |
+| `downloadrate` | `0` KB/s | **单个客户端下载限速**；`0` = 不限制。公网服务器建议设 256 左右 |
+| `maxtextlen` | `0` 字符 | **单条消息最大字符数**（按 Unicode 码点算，一个汉字算 1 个）；`0` = 不限制。超了只回给本人一条 `ERROR`，不广播 |
+| `maxtextlines` | `0` 行 | **单条消息最大行数**；`0` = 不限制 |
+
+**关于限速的实现方式**：用的是**每客户端一个令牌桶**（桶容量等于 1 秒的量，允许 1 秒的突发），超额时服务端**阻塞等待**形成背压——发送方只是变慢，**不丢包也不断连**。这比"超速就断开"友好得多。
+
+**关于多行消息**：协议是行式的，所以消息里的换行在传输时**转义**成 `\n` 两个字符（反斜杠本身转义成 `\\`）。客户端显示时会还原成真换行。老客户端看到的是字面量 `\n`，**不会崩，只是不好看**。`maxtextlen` 统计的是**还原后**的字符数，`maxtextlines` 统计的是还原后的行数。
 
 **广播**：封禁、踢人、解封、授予/取消管理员权限都会向房间里其他人发一条系统提示，例如「张三 已被管理员封禁（1 小时 30 分）」「李四 被管理员移出房间」。执行者自己会收到一条执行结果提示，不会把自己的指令当成聊天消息广播出去。
 
@@ -561,7 +569,7 @@ Once the server is running you can manage the room from its console; admins gran
 | `/ops` | List the current admins (`/oplist` works too; typing `ops` in the console is fine as well) |
 | `/help` | Show the command help |
 
-The four server rules, with their defaults and effects (all changeable with `/chatrule`, **console only**):
+The eight server rules, with their defaults and effects (all changeable with `/chatrule`, **console only**):
 
 The rules **live in `dchat-rules.txt` on the server** (one `rule-name value` per line, `#` starts a comment, editable in Notepad; read at startup, so **editing the file requires a restart**). Changing them with `/chatrule` **writes the file back immediately**, so it also survives a restart; point `--rules <path>` somewhere else to move it.
 
@@ -571,6 +579,14 @@ The rules **live in `dchat-rules.txt` on the server** (one `rule-name value` per
 | `documentsize` | `64` MB | Maximum size of a single file (the old 64 MB cap is now controlled here; **it cannot exceed `maxservertemp`**). The server sends the current value to clients, which adjust their local checks accordingly |
 | `keepchathistory` | `false` | When on, **clients that join the room later can see the earlier chat history** (announcements included) and the file cards still staged on the server (one click downloads them) |
 | `maxservertemp` | `1048` MB | The **total budget** for "files + chat history cache" on the server; when exceeded the oldest items go first (oldest files and earliest chat lines), and lowering it takes effect at once |
+| `uploadrate` | `0` KB/s | **Per-client upload rate limit**; `0` = unlimited. On a public server try 128 so one person cannot saturate the uplink |
+| `downloadrate` | `0` KB/s | **Per-client download rate limit**; `0` = unlimited. On a public server try 256 |
+| `maxtextlen` | `0` chars | **Maximum characters per message** (counted in Unicode code points, so one CJK character counts as 1); `0` = unlimited. An over-long message is answered only to its sender with an `ERROR` and is not broadcast |
+| `maxtextlines` | `0` lines | **Maximum lines per message**; `0` = unlimited |
+
+**How the rate limit works**: each client gets its own **token bucket** (capacity = one second's worth, so a one-second burst is allowed). When a client is over budget the server simply **blocks and waits**, which creates natural back-pressure — the sender slows down and **nothing is dropped or disconnected**. That is far friendlier than "disconnect on over-speed".
+
+**About multi-line messages**: the protocol is line-based, so newlines inside a message are **escaped** on the wire as the two characters `\n` (a literal backslash becomes `\\`). Clients unescape for display. Older clients see a literal `\n` — **they do not break, it just looks odd**. `maxtextlen` counts the characters *after* unescaping, and `maxtextlines` counts the lines *after* unescaping.
 
 **Broadcasting**: bans, kicks, unbans and granting/revoking admin rights all send a system notice to the rest of the room, e.g. 「张三 已被管理员封禁（1 小时 30 分）」 or 「李四 被管理员移出房间」. The person who ran the command gets the result back, and their command is never broadcast as a chat message.
 

@@ -1,4 +1,4 @@
-﻿// 协议层单元测试：不需要网络即可运行。
+// 协议层单元测试：不需要网络即可运行。
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -108,6 +108,89 @@ int main() {
         check(dchat::MakeError(dchat::NickErrorText(dchat::NickError::Taken)) ==
                   "ERROR 昵称已被占用",
               "error text is utf-8 chinese");
+    }
+
+    // ------------------------------------------------------------------
+    // 多行文本转义（协议是行式的，真换行会被 BuildLine 丢掉，
+    // 所以多行消息必须先转义；maxtextlines 这条规则也依赖它）
+    // ------------------------------------------------------------------
+    {
+        std::printf("[6] text escaping\n");
+        check(dchat::EscapeText("abc") == "abc", "no special chars -> unchanged");
+        check(dchat::EscapeText("a\nb") == "a\\nb", "newline -> backslash n");
+        check(dchat::EscapeText("a\r\nb") == "a\\nb", "crlf collapses to one newline");
+        check(dchat::EscapeText("a\rb") == "a\\nb", "lone cr is also a newline");
+        check(dchat::EscapeText("a\\b") == "a\\\\b", "backslash is doubled");
+        check(dchat::EscapeText("a\\nb") == "a\\\\nb",
+              "literal backslash-n gets escaped (so it is NOT read as a newline)");
+        check(dchat::EscapeText("") == "", "empty stays empty");
+    }
+
+    {
+        std::printf("[7] text unescaping\n");
+        check(dchat::UnescapeText("abc") == "abc", "plain text unchanged");
+        check(dchat::UnescapeText("a\\nb") == "a\nb", "backslash n -> newline");
+        check(dchat::UnescapeText("a\\\\b") == "a\\b", "doubled backslash -> one backslash");
+        // 关键：旧客户端发来的真实反斜杠不能被吃掉
+        check(dchat::UnescapeText("C:\\x") == "C:\\x", "unknown escape is preserved verbatim");
+        check(dchat::UnescapeText("tail\\") == "tail\\", "trailing lone backslash is preserved");
+        check(dchat::UnescapeText("") == "", "empty stays empty");
+    }
+
+    {
+        std::printf("[8] escape round-trip\n");
+        const char* samples[] = {
+            "hello",
+            "第一行\n第二行",
+            "a\\b",
+            "路径 C:\\Users\\test",
+            "混合 \\ 和 \n 都有",
+            "\n\n开头两个换行",
+            "结尾换行\n",
+        };
+        bool allOk = true;
+        for (const char* sample : samples) {
+            const std::string original(sample);
+            if (dchat::UnescapeText(dchat::EscapeText(original)) != original) allOk = false;
+        }
+        check(allOk, "escape -> unescape returns the original for all samples");
+
+        // 转义后的文本里不能再有真换行，否则会破坏分帧
+        bool noRawNewline = true;
+        for (const char* sample : samples) {
+            const std::string escaped = dchat::EscapeText(sample);
+            if (escaped.find('\n') != std::string::npos ||
+                escaped.find('\r') != std::string::npos) {
+                noRawNewline = false;
+            }
+        }
+        check(noRawNewline, "escaped text never contains a raw newline");
+    }
+
+    {
+        std::printf("[9] line counting\n");
+        check(dchat::CountTextLines("") == 0, "empty text is 0 lines");
+        check(dchat::CountTextLines("abc") == 1, "single line");
+        check(dchat::CountTextLines("a\\nb") == 2, "two lines");
+        check(dchat::CountTextLines("a\\nb\\nc") == 3, "three lines");
+        check(dchat::CountTextLines("a\\\\nb") == 1,
+              "escaped backslash followed by n is NOT a line break");
+        check(dchat::CountTextLines("a\\\\\\nb") == 2,
+              "a literal backslash then a real newline is 2 lines");
+        check(dchat::CountTextLines("end\\") == 1, "trailing lone backslash does not crash");
+        check(dchat::CountTextLines("\\n") == 2, "text starting with a newline is 2 lines");
+    }
+
+    {
+        std::printf("[10] escaping survives the wire format\n");
+        // 多行文本经过 BuildLine 之后必须仍是一行，且换行信息不丢
+        const std::string multi = "第一行\n第二行\n第三行";
+        const std::string line = dchat::BuildLine("MSG", dchat::EscapeText(multi));
+        check(line.find('\n') == std::string::npos, "built line has no raw newline");
+        const dchat::Message parsed = dchat::ParseLine(line);
+        check(parsed.command == "MSG", "command survives");
+        check(dchat::UnescapeText(parsed.rest) == multi, "text survives the round trip intact");
+        check(dchat::CountTextLines(parsed.rest) == 3, "server can count 3 lines from the wire form");
     }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

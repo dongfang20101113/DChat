@@ -1,4 +1,4 @@
-﻿// 聊天服务器：Winsock2 + 每客户端一个线程，收到消息后广播给所有人。
+// 聊天服务器：Winsock2 + 每客户端一个线程，收到消息后广播给所有人。
 // 控制台日志保持纯 ASCII（避免代码页问题），协议里的用户可见文本是 UTF-8 中文。
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -308,6 +308,22 @@ struct Client {
     // 正在上传的文件（收齐后由服务器暂存，别人点击下载时才发出去）
     std::shared_ptr<PendingUpload> upload;
     std::chrono::steady_clock::time_point lastMessage{};  // chatinterval 用：上一条消息的时间
+
+    // 每个客户端各自的限速器（uploadrate / downloadrate）。0 = 不限制。
+    // 用阻塞 Sleep 形成背压，而不是丢包或断连——发送方只是变慢，数据不会损坏。
+    dchat::RateLimiter uploadLimiter;
+    dchat::RateLimiter downloadLimiter;
+
+    // 按限速器睡够时间。返回 false 表示 socket 已经不可用，调用方应当中止传输。
+    void Throttle(dchat::RateLimiter* limiter, std::size_t bytes, int rateKbps) {
+        if (!limiter) return;
+        if (limiter->kbps != rateKbps) limiter->Configure(rateKbps);
+        const int waitMs = limiter->Consume(bytes);
+        if (waitMs > 0) {
+            // 单次最多睡 1 秒，避免管理员把限速设得极低时整个线程卡死太久
+            std::this_thread::sleep_for(std::chrono::milliseconds(std::min(waitMs, 1000)));
+        }
+    }
 
     bool SendLine(const std::string& line) {
         if (sock == INVALID_SOCKET) return false;
@@ -994,6 +1010,29 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             ExecuteCommand(command, client.get());
             return true;
         }
+        // ---- 文本长度 / 行数限制（2026-10 新增，公网接入用）----
+        // 消息里的换行是**转义**过的（\n 两个字符），所以这里要用协议层的函数来判断，
+        // 不能直接数字符——转义后 "\n" 是 2 个字符但只代表 1 个换行。
+        const dchat::ServerRules& rules = CurrentRules();
+        if (rules.maxTextLength > 0 &&
+            dchat::Utf8CharCount(dchat::UnescapeText(msg.rest)) >
+                static_cast<std::size_t>(rules.maxTextLength)) {
+            client->SendLine(Timed("ERROR", "消息太长了：当前规则 maxtextlen = " +
+                                                std::to_string(rules.maxTextLength) +
+                                                " 字符，你这条有 " +
+                                                std::to_string(dchat::Utf8CharCount(
+                                                    dchat::UnescapeText(msg.rest))) +
+                                                " 字符"));
+            return true;
+        }
+        if (rules.maxTextLines > 0 &&
+            dchat::CountTextLines(msg.rest) > static_cast<std::size_t>(rules.maxTextLines)) {
+            client->SendLine(Timed("ERROR", "消息行数太多：当前规则 maxtextlines = " +
+                                                std::to_string(rules.maxTextLines) + " 行，你这条有 " +
+                                                std::to_string(dchat::CountTextLines(msg.rest)) +
+                                                " 行"));
+            return true;
+        }
         // chatinterval：两条消息之间的最小间隔（0 = 不限制）
         const int interval = CurrentRules().chatIntervalMs;
         const auto now = std::chrono::steady_clock::now();
@@ -1121,6 +1160,9 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
                 return true;
             }
             client->upload->data.append(chunk.begin(), chunk.end());
+            // uploadrate：按限速睡够再收下一块。客户端会自然被 TCP 反压拖慢，
+            // 不需要额外通知——这比"超速就断开"友好得多。
+            client->Throttle(&client->uploadLimiter, chunk.size(), CurrentRules().uploadRateKbps);
             return true;
         }
 
@@ -1233,6 +1275,8 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
                                            : dchat::kFileChunkBytes;
             const std::string chunk = dchat::Base64Encode(
                 reinterpret_cast<const unsigned char*>(file->data.data() + offset), length);
+            // downloadrate：按限速睡够再发下一块（阻塞形成背压，不丢数据）
+            client->Throttle(&client->downloadLimiter, length, CurrentRules().downloadRateKbps);
             ok = client->SendLine(dchat::BuildLine("FILE_DATA", file->id + " " + chunk));
         }
         if (ok) client->SendLine(dchat::BuildLine("FILE_END", file->id));

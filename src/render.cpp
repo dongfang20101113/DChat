@@ -1,4 +1,4 @@
-﻿#include "render.h"
+#include "render.h"
 
 #include "protocol.h"
 
@@ -83,9 +83,13 @@ bool ParseSay(const std::string& rawLine, const std::string& selfNick, SayInfo* 
     if (out) {
         out->time = time;
         out->nick = nick;
-        out->text = rest;
+        // 线上的换行是转义过的（协议是行式的，真换行会被 BuildLine 丢掉）。
+        // 这里还原成真换行；气泡用 DrawTextW + DT_WORDBREAK 渲染，
+        // 它本来就把 \n 当换行处理，所以不需要改绘制代码。
+        out->text = UnescapeText(rest);
         out->own = !selfNick.empty() && nick == selfNick;
-        out->mention = !out->own && (MentionsNick(rest, selfNick) || MentionsAll(rest));
+        // 提及判断用**还原后**的文本，这样跨行写的 "@某人" 也能命中
+        out->mention = !out->own && (MentionsNick(out->text, selfNick) || MentionsAll(out->text));
     }
     return true;
 }

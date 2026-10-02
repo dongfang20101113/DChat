@@ -8,6 +8,8 @@
 //   /chatrule <规则> true|false   布尔规则（keepchathistory）的写法
 #pragma once
 
+#include <chrono>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -18,6 +20,33 @@ struct ServerRules {
     int documentSizeMb = 64;       // documentsize：单个文件最大 MB（默认 64，和以前一致）
     bool keepChatHistory = false;  // keepchathistory：新加入的人能否看到之前的聊天记录和文件
     int maxServerTempMb = 1048;    // maxservertemp：服务端保存文件 + 聊天记录缓存的总上限（MB）
+
+    // ---- 2026-10 新增：公网接入需要的限速与文本限制 ----
+    // 全部遵循上面 chatinterval 的约定：**0 = 不限制**，这样升级后行为不变，
+    // 由服务器管理员按需开启（公网服务器建议都设上）。
+    int uploadRateKbps = 0;    // uploadrate：单个客户端上传限速（KB/s），0 = 不限制
+    int downloadRateKbps = 0;  // downloadrate：单个客户端下载限速（KB/s），0 = 不限制
+    int maxTextLength = 0;     // maxtextlen：单条消息最大字符数（Unicode 码点），0 = 不限制
+    int maxTextLines = 0;      // maxtextlines：单条消息最大行数，0 = 不限制
+};
+
+// 令牌桶限速器：**每个客户端一个**，桶容量等于 1 秒的量（允许 1 秒的突发）。
+//
+// 用法是"先记账、再按返回的毫秒数 Sleep"，用阻塞形成天然背压——
+// 比丢包或断连都友好：发送方只是变慢，数据不会损坏。
+struct RateLimiter {
+    int kbps = 0;  // 0 = 不限制
+    double tokens = 0.0;
+    std::chrono::steady_clock::time_point last{};
+
+    void Configure(int rateKbps) {
+        kbps = rateKbps;
+        tokens = 0.0;
+        last = std::chrono::steady_clock::time_point{};
+    }
+
+    // 记入 bytes 字节，返回**调用方应该等待的毫秒数**（0 = 不用等）
+    int Consume(std::size_t bytes);
 };
 
 enum class RuleAction { Show, Set, Add, Remove, SetBool };

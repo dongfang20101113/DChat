@@ -1,4 +1,4 @@
-﻿// 聊天协议：一行一条消息，UTF-8 编码，用 \n 分隔（兼容 \r\n 结尾）。
+// 聊天协议：一行一条消息，UTF-8 编码，用 \n 分隔（兼容 \r\n 结尾）。
 // 设计原则：协议层不碰任何网络 API，便于单独做单元测试。
 #pragma once
 
@@ -31,6 +31,25 @@ const char* NickErrorText(NickError error);
 
 std::size_t Utf8CharCount(const std::string& text);
 std::string Utf8Truncate(const std::string& text, std::size_t maxChars);
+
+// ---- 多行文本的转义 ----
+//
+// 协议是**行式**的：BuildLine 会把 \r 和 \n 直接丢掉，所以聊天内容里不可能带真换行。
+// 要支持多行消息（以及"最多几行"这条规则），必须在发送前把换行转义成两个字符。
+//
+// 规则很小，就两条，扫一遍即可：
+//     反斜杠 -> 两个反斜杠
+//     换行   -> 反斜杠 + n    （\r\n 和单独的 \r 也归一成换行）
+//
+// 反转义遇到不认识的转义（比如 "\x"）**原样保留**，这样旧客户端发来的、
+// 恰好含反斜杠的普通文本不会被吃掉字符。
+//
+// 老客户端完全不受影响：它们看到的是字面量 "\n"，只是不好看，不会崩。
+std::string EscapeText(const std::string& text);
+std::string UnescapeText(const std::string& escaped);
+
+// 转义后的文本有多少行（没有任何换行时是 1；空串算 0 行）
+std::size_t CountTextLines(const std::string& escaped);
 
 // ---- 时间字段（协议里的 hh:mm，24 小时制） ----
 std::string FormatTime(int hour, int minute);  // 9:5 -> "09:05"
