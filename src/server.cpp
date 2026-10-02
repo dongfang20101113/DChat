@@ -369,6 +369,116 @@ std::vector<std::shared_ptr<Client>> g_clients;
 // 放在全局是因为它要跨连接生效——攻击者换个连接接着试也得被拦住。
 dchat::LoginFailTracker g_loginFails;
 
+// ---------------------------------------------------------------------------
+// 服务器身份密钥
+//
+// **必须持久化**。之前每次握手都现生成一对，结果指纹每次都变——
+// 那样 TOFU（客户端记住服务器指纹）根本没有意义，也就完全挡不住主动中间人。
+// 存文件里，首次运行生成，之后一直复用。
+//
+// 用的是"服务器静态 + 客户端临时"的 ECDH（TLS 里也常见）：
+// 身份密钥长期不变，每次连接的安全性靠客户端的临时密钥和双方随机数保证。
+// ---------------------------------------------------------------------------
+
+dchat::EcdhKeyPair g_identityKey;
+
+const char* const kIdentityKeyPath = "dchat-server-key.txt";
+
+std::string BytesToHex(const unsigned char* data, std::size_t size) {
+    static const char* kHex = "0123456789abcdef";
+    std::string out;
+    out.reserve(size * 2);
+    for (std::size_t i = 0; i < size; ++i) {
+        out.push_back(kHex[(data[i] >> 4) & 0x0F]);
+        out.push_back(kHex[data[i] & 0x0F]);
+    }
+    return out;
+}
+
+bool HexToBytes(const std::string& hex, std::vector<unsigned char>* out) {
+    if (hex.empty() || hex.size() % 2 != 0) return false;
+    auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    out->clear();
+    out->reserve(hex.size() / 2);
+    for (std::size_t i = 0; i + 1 < hex.size(); i += 2) {
+        const int hi = nibble(hex[i]);
+        const int lo = nibble(hex[i + 1]);
+        if (hi < 0 || lo < 0) return false;
+        out->push_back(static_cast<unsigned char>((hi << 4) | lo));
+    }
+    return true;
+}
+
+/** ECCPRIVATE_BLOB 的布局：header(8) + X(32) + Y(32) + d(32)，标量在最后 32 字节。 */
+constexpr std::size_t kEccScalarOffset = 8 + 32 + 32;
+
+bool LoadOrCreateIdentityKey() {
+    {
+        std::ifstream in(kIdentityKeyPath);
+        if (in) {
+            // ⚠️ 必须**跳过注释行**。这个文件第一版就是被这个坑住了：
+            // 文件里写了 '#' 开头的说明，读的时候却用 `in >> a >> b` 当两个裸 token 读，
+            // 结果读到的是 "#" 和 "dchat"，判定"内容不对"又生成了一对新密钥——
+            // 指纹照样每次都变，而且不报任何错。
+            std::string scalarHex, publicHex, line;
+            while (std::getline(in, line)) {
+                while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+                std::size_t begin = 0;
+                while (begin < line.size() && line[begin] == ' ') ++begin;
+                const std::string trimmed = line.substr(begin);
+                if (trimmed.empty() || trimmed[0] == '#') continue;
+                if (scalarHex.empty()) {
+                    scalarHex = trimmed;
+                } else {
+                    publicHex = trimmed;
+                    break;
+                }
+            }
+
+            if (!scalarHex.empty() && !publicHex.empty()) {
+                std::vector<unsigned char> scalar, pub;
+                if (HexToBytes(scalarHex, &scalar) && HexToBytes(publicHex, &pub) &&
+                    dchat::ImportEcdhKeyPair(scalar, pub, &g_identityKey)) {
+                    Log(std::string("身份密钥已加载：") + kIdentityKeyPath);
+                    Log("★ 服务器指纹（客户端应当记住它）：" +
+                        dchat::PublicKeyFingerprint(g_identityKey.publicKey));
+                    return true;
+                }
+                Log("⚠ 身份密钥文件解析失败，将重新生成（客户端记下的指纹会失效）");
+            }
+        }
+    }
+
+    if (!dchat::GenerateEcdhKeyPair(&g_identityKey)) return false;
+    if (g_identityKey.privateBlob.size() < kEccScalarOffset + 32) return false;
+
+    const std::string scalarHex =
+        BytesToHex(g_identityKey.privateBlob.data() + kEccScalarOffset, 32);
+    const std::string publicHex =
+        BytesToHex(g_identityKey.publicKey.data(), g_identityKey.publicKey.size());
+
+    std::ofstream out(kIdentityKeyPath);
+    if (!out) {
+        Log("⚠ 无法写入身份密钥文件：服务器重启后指纹会变，TOFU 会失效");
+    } else {
+        out << "# dchat 服务器身份密钥。\n"
+            << "# 删掉它服务器会生成新的一对，但**所有客户端记下的指纹都会对不上**——\n"
+            << "# 除非你确实想换身份，否则别删。\n"
+            << "# ⚠ 这个文件不要公开：拿到标量就能冒充这台服务器。\n"
+            << scalarHex << "\n"
+            << publicHex << "\n";
+        Log(std::string("已生成并保存身份密钥：") + kIdentityKeyPath);
+    }
+    Log("★ 服务器指纹（客户端应当记住它）：" +
+        dchat::PublicKeyFingerprint(g_identityKey.publicKey));
+    return true;
+}
+
 // ---- 黑名单：昵称 -> 解封时间点 ----
 struct BanEntry {
     std::string name;
@@ -971,11 +1081,13 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             return true;
         }
 
-        dchat::EcdhKeyPair serverKey;
-        if (!dchat::GenerateEcdhKeyPair(&serverKey)) {
-            client->SendLine(Timed("ERROR", "服务器无法生成密钥"));
+        // 用**持久化的身份密钥**，不是每次现生成——
+        // 后者会让指纹每次都变，客户端的 TOFU 就形同虚设。
+        if (g_identityKey.publicKey.empty()) {
+            client->SendLine(Timed("ERROR", "服务器身份密钥不可用"));
             return true;
         }
+        const dchat::EcdhKeyPair& serverKey = g_identityKey;
         std::vector<unsigned char> shared;
         if (!dchat::ComputeSharedSecret(serverKey, peerPublic, &shared)) {
             // 公钥不是曲线上的合法点（可能有人在瞎试），拒绝但不断开
@@ -1583,6 +1695,9 @@ int main(int argc, char** argv) {
     Log("accounts file: " + g_usersPath + "（密码以加盐哈希保存，不存明文）");
     LoadRules();
     Log("rules file: " + g_rulesPath + "（/chatrule 改完会自动写回）");
+    if (!LoadOrCreateIdentityKey()) {
+        Log("⚠ 身份密钥初始化失败：传输加密将不可用（客户端会退回明文）");
+    }
     Log("管理员指令：/ban <昵称> <时长>  /kick <昵称>  /unban <昵称>  /bans  /op <昵称>  /say <公告>");
     Log("查在线地址：/ip <昵称>（仅控制台）    改密码：/changepassword 或简写 /cp");
     Log("服务器规则：/chatrule（仅控制台）—— 聊天类：chatinterval / documentsize / keepchathistory / maxservertemp");
