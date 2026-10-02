@@ -50,6 +50,7 @@
 #include "rounded.h"
 #include "server_command.h"  // LooksLikePasswordCommand：改密码那一行不进输入历史
 #include "server_rules.h"    // RuleMbToBytes / 服务器规则
+#include "ui_layout.h"       // 菜单栏 / 状态条 / 输入行的几何与图标
 #include "voice_notes.h"     // 语音消息：录音、播放、判定
 
 namespace {
@@ -147,6 +148,27 @@ struct UiState {
     HFONT fontLarge = nullptr;
 } ui;
 
+// ---------------- 主窗口外壳（菜单栏 / 状态条 / 输入行）----------------
+//
+// 顶栏和底栏都改成**自绘**，不再是一排 BS_OWNERDRAW 按钮：
+//   以前顶部一条挤了 6 个按钮（录音 / 发送文件 / 彩色聊天 / 深浅色 / 连接 / 断开），
+//   "偶尔改一次"的设置和"每次都用"的发消息混在一起，还占掉整整一条把聊天挤矮。
+//   现在只剩：菜单栏（连接 / 设置 / 帮助 + 齿轮）+ 底部状态条 + 输入行。
+// 几何全部来自 src/ui_layout.cpp（可单测，见 tests/test_ui_layout.cpp）。
+std::vector<dchat::MenuItem> g_menuItems;
+RECT g_gearRect{0, 0, 0, 0};
+RECT g_chipRect{0, 0, 0, 0};
+dchat::BottomLayout g_bottom;
+dchat::PlusMenuLayout g_plusMenu;
+int g_menuHover = -1;   // 鼠标悬停的菜单项下标
+int g_plusHover = -1;   // ＋ 菜单里悬停的项：0 发送文件 / 1 录语音 / -1 没有
+bool g_plusMenuOpen = false;
+bool g_gearHover = false;
+bool g_chipHover = false;
+int g_contentTop = 0;          // 记录区上边界（菜单栏底边）
+std::string g_statusLine;      // 状态条上的只读文字
+int g_voiceLimitSeconds = 60;  // 语音最长时长（设置里可改；上限还受 2 MB 约束）
+
 std::map<HWND, bool> g_hover;
 
 dchat::TabCompleter g_tabComplete;  // Tab 指令补全的状态
@@ -173,6 +195,13 @@ void Layout(HWND hwnd);
 void ApplySuggestion(int index);
 void StartFileDownload(const std::string& id);
 void RequestThumbnail(const std::string& fileId);
+void UpdateStatus();        // 定义在下面：刷新状态条文字 + 控件可用状态
+void InvalidateChrome(HWND hwnd);  // 定义在下面：只重画菜单栏与底部（聊天记录不动）
+void LayoutWindowChrome(HWND hwnd);  // 定义在下面：算菜单栏/底部的几何
+void DrawWindowChrome(HWND hwnd, HDC dc, const RECT& client);  // 定义在下面：画外壳
+void OpenSettings(HWND parent);      // 定义在下面：打开设置窗口
+std::string StatusChipText();        // 定义在下面：菜单栏右侧胶囊上的字
+std::string BuildStatusLine();       // 定义在下面：状态条上的只读文字
 
 // ---------------- 语音消息（阶段 4 桌面端） ----------------
 //
@@ -285,6 +314,8 @@ struct Palette {
     COLORREF accent;
     COLORREF accentText;
     COLORREF border;
+    COLORREF panel;  // 菜单栏 / 状态条 / 设置窗口的背景（比窗口底色亮一点，才看得出分层）
+    COLORREF hover;  // 菜单项悬停
     COLORREF nick[dchat::kNickPaletteSize];
 };
 
@@ -294,7 +325,7 @@ const Palette kLightPalette{
     RGB(200, 0, 0),     RGB(130, 130, 130), RGB(176, 96, 0),     RGB(232, 234, 238),
     RGB(255, 246, 222), RGB(214, 150, 10),  RGB(150, 92, 0),
     RGB(233, 236, 239), RGB(205, 210, 216), RGB(0, 120, 215),    RGB(255, 255, 255),
-    RGB(214, 217, 222),
+    RGB(214, 217, 222), RGB(250, 250, 251), RGB(230, 233, 237),
     {RGB(0, 102, 204), RGB(0, 140, 60), RGB(204, 102, 0), RGB(150, 0, 150), RGB(0, 140, 140),
      RGB(200, 0, 100), RGB(110, 110, 0), RGB(90, 60, 160)}};
 
@@ -304,7 +335,7 @@ const Palette kDarkPalette{
     RGB(255, 110, 110), RGB(140, 140, 140), RGB(255, 190, 80),  RGB(44, 46, 50),
     RGB(58, 48, 24),    RGB(255, 190, 80),  RGB(255, 214, 140),
     RGB(52, 54, 58),    RGB(74, 77, 82),    RGB(0, 120, 215),   RGB(255, 255, 255),
-    RGB(64, 66, 70),
+    RGB(64, 66, 70),    RGB(42, 44, 48),    RGB(58, 61, 66),
     {RGB(86, 156, 214), RGB(120, 200, 130), RGB(235, 175, 95), RGB(205, 140, 235),
      RGB(95, 205, 205), RGB(245, 135, 175), RGB(205, 205, 115), RGB(155, 155, 245)}};
 
@@ -356,18 +387,6 @@ bool SystemPrefersDark() {
     return value == 0;
 }
 
-const wchar_t* ThemeLabel(ThemeMode mode) {
-    switch (mode) {
-        case ThemeMode::Light:
-            return L"主题：浅色";
-        case ThemeMode::System:
-            return L"主题：跟随系统";
-        case ThemeMode::Dark:
-        default:
-            return L"主题：深色";
-    }
-}
-
 // 让"由系统绘制"的部分（滚动条、窗口标题栏）也跟随深色模式。
 // 不调用这个的话，深色主题下滚动条和标题栏仍然是系统的浅色。
 void ApplySystemDarkMode(HWND hwnd) {
@@ -377,24 +396,6 @@ void ApplySystemDarkMode(HWND hwnd) {
     // DWMWA_USE_IMMERSIVE_DARK_MODE：Win10 20H1 起是 20，早期版本是 19，两个都设一遍
     DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark));
     DwmSetWindowAttribute(hwnd, 19, &dark, sizeof(dark));
-}
-
-void ApplyThemeMode();
-
-void CycleThemeMode() {
-    switch (g_themeMode) {
-        case ThemeMode::Dark:
-            g_themeMode = ThemeMode::Light;
-            break;
-        case ThemeMode::Light:
-            g_themeMode = ThemeMode::System;
-            break;
-        case ThemeMode::System:
-        default:
-            g_themeMode = ThemeMode::Dark;
-            break;
-    }
-    ApplyThemeMode();
 }
 
 void ApplyThemeMode() {
@@ -416,7 +417,6 @@ void ApplyThemeMode() {
     if (g_pillBrush) DeleteObject(g_pillBrush);
     g_pillBrush = CreateSolidBrush(g_palette->bubbleOther);
 
-    if (ui.hThemeButton) SetWindowTextW(ui.hThemeButton, ThemeLabel(g_themeMode));
     HWND controls[] = {ui.hConnect, ui.hDisconnect, ui.hSend, ui.hColorToggle, ui.hThemeButton};
     for (HWND control : controls) {
         if (control) InvalidateRect(control, nullptr, TRUE);
@@ -1146,7 +1146,9 @@ void ViewAddItem(ItemKind kind, const std::string& raw, const std::string& time)
 bool WindowIsActive() { return ui.hwnd != nullptr && GetForegroundWindow() == ui.hwnd; }
 
 void UpdateTitle() {
-    const std::string title = dchat::FormatUnreadTitle(WideToUtf8(kWindowTitle), g_unread);
+    std::string title = dchat::FormatUnreadTitle(WideToUtf8(kWindowTitle), g_unread);
+    // 自动化冒烟用：把界面内部状态写进标题，脚本读标题就能验证命中判断，
+    // 不用去猜像素（屏幕抓图在 DWM 下会拿到旧内容，实测完全不可靠）
     SetWindowTextW(ui.hwnd, Utf8ToWide(title).c_str());
 }
 
@@ -1300,40 +1302,178 @@ LRESULT CALLBACK ButtonProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return CallWindowProcW(g_oldButtonProc, hwnd, msg, wp, lp);
 }
 
+// ---------------- 主窗口外壳 ----------------
+
+bool IsConnected();  // 定义在下面（外壳要用它决定显示"连接"还是"断开"）
+
+// 画一行文字（外壳上所有文字都走这里，省得每次写 SelectObject/SetTextColor）
+void TextOutUtf8(HDC dc, const std::wstring& text, const RECT& rect, HFONT font, COLORREF color,
+                 UINT flags) {
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    const int oldMode = SetBkMode(dc, TRANSPARENT);
+    const COLORREF oldColor = SetTextColor(dc, color);
+    RECT target = rect;
+    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &target, flags);
+    SetTextColor(dc, oldColor);
+    SetBkMode(dc, oldMode);
+    SelectObject(dc, oldFont);
+}
+
+// 菜单栏右侧那颗小胶囊上的字：一眼看出连没连上、是谁
+std::string StatusChipText() {
+    if (!IsConnected()) return "○ 未连接";
+    if (g_authed) return "● " + g_host + "　" + g_nick;
+    return "● " + g_host + "　未登录";
+}
+
+// 状态条上的只读文字（连接 · 在线人数 · 传输进度 · 录音计时）
+std::string BuildStatusLine() {
+    if (!IsConnected()) return "未连接——点菜单里的「连接」填服务器地址，连上后再登录或注册";
+    std::string text = "已连接 " + g_host + ":" + std::to_string(g_port);
+    text += g_authed ? ("　·　用户 " + g_nick) : "　·　未登录";
+    if (!g_onlineNicks.empty()) text += "　·　在线 " + std::to_string(g_onlineNicks.size()) + " 人";
+    if (!g_transferStatus.empty()) text += "　·　" + g_transferStatus;
+    // 录音中：计时放这里，一眼能看到录了多久、还差多少
+    if (g_recorder.IsRunning()) {
+        const int seconds = g_recorder.ElapsedSeconds();
+        text += "　·　● 录音中 " + dchat::FormatDuration(seconds) + "（最长 " +
+                dchat::FormatDuration(g_voiceLimitSeconds) + "，到点自动发送）";
+    }
+    return text;
+}
+
+// 只重画菜单栏与底部（聊天记录不动：那里每次重画都要重新排版全部气泡）
+void InvalidateChrome(HWND hwnd) {
+    if (!hwnd) return;
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    RECT top{0, 0, rc.right, dchat::kMenuBarHeight + 1};
+    RECT bottom{0, g_bottom.statusBar.top - 1, rc.right, rc.bottom};
+    InvalidateRect(hwnd, &top, FALSE);
+    InvalidateRect(hwnd, &bottom, FALSE);
+}
+
+void LayoutWindowChrome(HWND hwnd) {
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    if (rc.right <= 0 || rc.bottom <= 0) return;
+    HDC dc = GetDC(hwnd);  // 量文字宽度用；三次布局共用，最后统一释放
+    g_menuItems = dchat::LayoutMenuItems(dc, ui.font, rc.right, IsConnected());
+    g_gearRect = dchat::GearRect(rc.right);
+    g_chipRect = dchat::StatusChipRect(dc, ui.fontSmall, rc.right, Utf8ToWide(StatusChipText()));
+    g_contentTop = dchat::kMenuBarHeight;
+    g_bottom = dchat::LayoutBottom(dc, ui.font, rc.right, rc.bottom, g_contentTop);
+    ReleaseDC(hwnd, dc);
+
+    g_plusMenu = dchat::LayoutPlusMenu(g_bottom, g_contentTop);
+    if (!g_plusMenu.valid) g_plusMenuOpen = false;
+}
+
+void DrawWindowChrome(HWND hwnd, HDC dc, const RECT& client) {
+    const int width = client.right;
+
+    // ---- 菜单栏 ----
+    HBRUSH panelBrush = CreateSolidBrush(g_palette->panel);
+    RECT menuBar{0, 0, width, dchat::kMenuBarHeight};
+    FillRect(dc, &menuBar, panelBrush);
+    DeleteObject(panelBrush);
+    HBRUSH borderBrush = CreateSolidBrush(g_palette->border);
+    RECT menuLine{0, dchat::kMenuBarHeight - 1, width, dchat::kMenuBarHeight};
+    FillRect(dc, &menuLine, borderBrush);
+    DeleteObject(borderBrush);
+
+    // 菜单项（"连接/断开"跟着状态变文字，不再像以前那样两个按钮都摆着、
+    // 还只有一个能用）
+    for (std::size_t i = 0; i < g_menuItems.size(); ++i) {
+        const dchat::MenuItem& item = g_menuItems[i];
+        if (static_cast<int>(i) == g_menuHover) {
+            ui::FillRoundedRect(dc, item.rect, 6, g_palette->hover, g_palette->hover, 0.0f);
+        }
+        TextOutUtf8(dc, item.label, item.rect, ui.font, g_palette->text,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    // 右侧：连接状态胶囊 + 齿轮
+    if (g_chipRect.right > g_chipRect.left) {
+        const COLORREF chipFill = g_chipHover ? g_palette->hover : g_palette->noticeBg;
+        ui::FillRoundedRect(dc, g_chipRect, dchat::kStatusChipHeight / 2, chipFill,
+                            g_palette->border, 1.0f);
+        TextOutUtf8(dc, Utf8ToWide(StatusChipText()), g_chipRect, ui.fontSmall,
+                    IsConnected() ? g_palette->text : g_palette->system,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+    if (g_gearHover) {
+        ui::FillRoundedRect(dc, g_gearRect, 6, g_palette->hover, g_palette->hover, 0.0f);
+    }
+    dchat::DrawGearIcon(dc, (g_gearRect.left + g_gearRect.right) / 2,
+                        (g_gearRect.top + g_gearRect.bottom) / 2, 8, g_palette->text);
+
+    // ---- 状态条：只读信息，不是按钮 ----
+    const RECT statusBar = g_bottom.statusBar;
+    HBRUSH statusBrush = CreateSolidBrush(g_palette->panel);
+    FillRect(dc, &statusBar, statusBrush);
+    DeleteObject(statusBrush);
+    RECT statusLine{0, statusBar.top, width, statusBar.top + 1};
+    HBRUSH statusLineBrush = CreateSolidBrush(g_palette->border);
+    FillRect(dc, &statusLine, statusLineBrush);
+    DeleteObject(statusLineBrush);
+    RECT statusText{14, statusBar.top, width - 14, statusBar.bottom};
+    TextOutUtf8(dc, Utf8ToWide(g_statusLine), statusText, ui.fontSmall, g_palette->system,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    // ---- 输入胶囊 ----
+    if (g_inputPill.right > g_inputPill.left) {
+        const int radius = (g_inputPill.bottom - g_inputPill.top) / 2;
+        ui::DrawRoundedControl(dc, g_inputPill, radius, g_palette->windowBg,
+                               g_palette->bubbleOther, g_palette->border);
+    }
+
+    // ---- 「＋」：文件和语音都从这里进（以前是两个常驻按钮）----
+    const RECT plus = g_bottom.plusButton;
+    const COLORREF plusFill = g_plusMenuOpen ? g_palette->accent : g_palette->neutral;
+    const COLORREF plusBorder = g_plusMenuOpen
+                                    ? dchat::AdjustColor(g_palette->accent, -20)
+                                    : g_palette->neutralBorder;
+    ui::DrawRoundedControl(dc, plus, (plus.bottom - plus.top) / 2, g_palette->windowBg, plusFill,
+                           plusBorder);
+    dchat::DrawPlusIcon(dc, (plus.left + plus.right) / 2, (plus.top + plus.bottom) / 2, 8, 2,
+                        g_plusMenuOpen ? g_palette->accentText : g_palette->text);
+
+    // ---- 录音中：输入胶囊描一圈红边，说明"现在说话会被录进去" ----
+    if (g_recorder.IsRunning()) {
+        ui::FillRoundedRect(dc, g_inputPill, (g_inputPill.bottom - g_inputPill.top) / 2,
+                            g_palette->noticeBg, g_palette->error, 2.0f);
+        RECT hint{g_inputPill.left + 20, g_inputPill.top, g_inputPill.right - 12,
+                  g_inputPill.bottom};
+        TextOutUtf8(dc, L"● 正在录音…… 说完点「＋」里的「结束并发送语音」", hint, ui.font,
+                    g_palette->error, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+
+    // ---- 「＋」弹出的菜单（往上弹，盖在记录区上）----
+    if (g_plusMenuOpen && g_plusMenu.valid) {
+        ui::DrawRoundedControl(dc, g_plusMenu.panel, 10, g_palette->windowBg, g_palette->neutral,
+                               g_palette->border);
+        auto item = [&](const RECT& rect, const wchar_t* label, int index) {
+            if (g_plusHover == index) {
+                ui::FillRoundedRect(dc, rect, 8, g_palette->hover, g_palette->hover, 0.0f);
+            }
+            RECT textRect{rect.left + 14, rect.top, rect.right, rect.bottom};
+            TextOutUtf8(dc, label, textRect, ui.font, g_palette->text,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        };
+        item(g_plusMenu.fileItem, L"发送文件", 0);
+        item(g_plusMenu.voiceItem, g_recorder.IsRunning() ? L"结束并发送语音" : L"录一段语音", 1);
+    }
+}
+
 // ---------------- 连接状态 ----------------
 bool IsConnected() { return g_sock != INVALID_SOCKET; }
 
 void UpdateStatus() {
-    if (!ui.hStatus) return;
-    std::wstring text;
-    if (IsConnected()) {
-        text = L"已连接 " + Utf8ToWide(g_host) + L":" + std::to_wstring(g_port);
-        text += g_authed ? (L"　用户：" + Utf8ToWide(g_nick)) : L"　未登录";
-        if (!g_transferStatus.empty()) text += L"　｜ " + Utf8ToWide(g_transferStatus);
-        // 录音中：把计时挂在状态栏上，用户一眼能看到录了多久、还差多少
-        if (g_recorder.IsRunning()) {
-            const int seconds = g_recorder.ElapsedSeconds();
-            text += L"　｜ ● 录音中 " + Utf8ToWide(dchat::FormatDuration(seconds)) + L"（最长 " +
-                    Utf8ToWide(dchat::FormatDuration(dchat::kMaxVoiceSeconds)) + L"，到点自动发送）";
-        }
-    } else {
-        text = L"未连接　点右边「连接」填服务器地址，连上后再登录或注册";
-    }
-    SetWindowTextW(ui.hStatus, text.c_str());
-    EnableWindow(ui.hConnect, !IsConnected());
-    EnableWindow(ui.hDisconnect, IsConnected());
-    EnableWindow(ui.hSend, IsConnected());
-    EnableWindow(ui.hInput, IsConnected());
-    EnableWindow(ui.hFileSend, IsConnected());
-    // 录音按钮：没连上/没登录时点不动；录音中保持可点（再点一下 = 结束并发送）
-    if (ui.hVoice) {
-        const bool canRecord = IsConnected() && g_authed;
-        EnableWindow(ui.hVoice, g_recorder.IsRunning() ? TRUE : (canRecord ? TRUE : FALSE));
-    }
-    InvalidateRect(ui.hConnect, nullptr, TRUE);
-    InvalidateRect(ui.hDisconnect, nullptr, TRUE);
-    InvalidateRect(ui.hSend, nullptr, TRUE);
-    InvalidateRect(ui.hFileSend, nullptr, TRUE);
+    g_statusLine = BuildStatusLine();
+    if (ui.hSend) EnableWindow(ui.hSend, IsConnected());
+    if (ui.hInput) EnableWindow(ui.hInput, IsConnected());
+    if (ui.hwnd) InvalidateChrome(ui.hwnd);
 }
 
 // ---------------- 网络 ----------------
@@ -3186,6 +3326,398 @@ bool PromptAuth(HWND parent, AuthDialogState& state) {
     return state.accepted;
 }
 
+// ---------------- 设置窗口 ----------------
+//
+// 「偶尔才改一次」的东西全在这里：主题、彩色聊天、服务器地址端口、语音时长。
+// 以前这些是顶栏的常驻按钮（彩色聊天 / 浅色 / 连接 / 断开 / 录音 / 发送文件），
+// 天天占着一条，还让人分不清哪个是"状态"、哪个是"操作"。
+//
+// 样式和连接/登录窗口保持一致：自绘圆角、系统标题栏下不刺眼。
+constexpr const wchar_t* kSettingsClass = L"DchatSettingsDlg";
+constexpr int IDS_HOST = 200;
+constexpr int IDS_PORT = 201;
+constexpr int IDS_OK = 202;
+constexpr int IDS_CANCEL = 203;
+
+// 语音时长的可选项（秒）。上限还受 voice_notes 的 2 MB 字节数约束，这里不给出超过它的值。
+constexpr int kVoiceLimitOptions[3] = {30, 60, 120};
+constexpr const wchar_t* kVoiceLimitLabels[3] = {L"30 秒", L"1 分钟", L"2 分钟"};
+constexpr const wchar_t* kThemeChoiceLabels[3] = {L"深色", L"浅色", L"跟随系统"};
+
+struct SettingsState {
+    HWND dlg = nullptr;
+    HWND hostEdit = nullptr;
+    HWND portEdit = nullptr;
+    HBRUSH fieldBrush = nullptr;
+    dchat::SettingsLayout layout;
+    // 打开时的快照；点「完成」才写回全局，点「取消」/ Esc 原样丢弃
+    ThemeMode themeMode = ThemeMode::Dark;
+    bool colorEnabled = true;
+    int voiceLimit = 60;
+    int themeChoice = 0;
+    int voiceChoice = 1;
+    int themeHover = -1;
+    int voiceHover = -1;
+    bool accepted = false;
+};
+
+// 三段式选择器：画出来（点中的那一项由调用方解释）
+void DrawSegment(HDC dc, const RECT& rect, const wchar_t* const* labels, int count, int selected,
+                 HFONT font, int hovered) {
+    ui::DrawRoundedControl(dc, rect, 8, g_palette->panel, g_palette->neutral,
+                           g_palette->neutralBorder);
+    const int width = (rect.right - rect.left) / (count > 0 ? count : 1);
+    for (int i = 0; i < count; ++i) {
+        RECT part{rect.left + i * width + 2, rect.top + 2, rect.left + (i + 1) * width - 2,
+                  rect.bottom - 2};
+        const bool on = (i == selected);
+        if (on) {
+            ui::FillRoundedRect(dc, part, 6, g_palette->accent, g_palette->accent, 0.0f);
+        } else if (i == hovered) {
+            ui::FillRoundedRect(dc, part, 6, g_palette->hover, g_palette->hover, 0.0f);
+        }
+        DrawTextIn(dc, labels[i], part, font, on ? g_palette->accentText : g_palette->system,
+                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+}
+
+// 开关（彩色聊天）：轨道 + 圆点
+void DrawToggle(HDC dc, const RECT& track, bool on) {
+    ui::DrawRoundedControl(dc, track, (track.bottom - track.top) / 2, g_palette->panel,
+                           on ? g_palette->accent : g_palette->neutral,
+                           on ? g_palette->accent : g_palette->neutralBorder);
+    const int knobSize = (track.bottom - track.top) - 4;
+    RECT knob{on ? track.right - knobSize - 2 : track.left + 2, track.top + 2,
+              on ? track.right - 2 : track.left + 2 + knobSize, track.bottom - 2};
+    const COLORREF knobColor = on ? g_palette->accentText : g_palette->text;
+    ui::FillRoundedRect(dc, knob, knobSize / 2, knobColor, knobColor, 0.0f);
+}
+
+void LayoutSettingsWindow(SettingsState* state) {
+    RECT client{};
+    GetClientRect(state->dlg, &client);
+    state->layout = dchat::LayoutSettings(client.right, client.bottom);
+    const dchat::SettingsLayout& layout = state->layout;
+    MoveWindow(state->hostEdit, layout.hostField.left + 12, layout.hostField.top + 5,
+               (layout.hostField.right - layout.hostField.left) - 24,
+               (layout.hostField.bottom - layout.hostField.top) - 10, TRUE);
+    MoveWindow(state->portEdit, layout.portField.left + 12, layout.portField.top + 5,
+               (layout.portField.right - layout.portField.left) - 24,
+               (layout.portField.bottom - layout.portField.top) - 10, TRUE);
+    MoveWindow(GetDlgItem(state->dlg, IDS_OK), layout.okButton.left, layout.okButton.top,
+               layout.okButton.right - layout.okButton.left,
+               layout.okButton.bottom - layout.okButton.top, TRUE);
+    MoveWindow(GetDlgItem(state->dlg, IDS_CANCEL), layout.cancelButton.left,
+               layout.cancelButton.top, layout.cancelButton.right - layout.cancelButton.left,
+               layout.cancelButton.bottom - layout.cancelButton.top, TRUE);
+}
+
+void ApplySettingsAndClose(SettingsState* state) {
+    // 端口先校验：写进去一个非法值会让"连接"点了没反应，那种问题很难查
+    wchar_t buffer[32] = {0};
+    GetWindowTextW(state->portEdit, buffer, 32);
+    const int port = _wtoi(buffer);
+    if (port < 1 || port > 65535) {
+        MessageBoxW(state->dlg, L"端口要在 1 - 65535 之间", L"设置", MB_OK | MB_ICONINFORMATION);
+        SetFocus(state->portEdit);
+        return;
+    }
+    wchar_t host[256] = {0};
+    GetWindowTextW(state->hostEdit, host, 256);
+    if (host[0] == L'\0') {
+        MessageBoxW(state->dlg, L"服务器地址不能为空", L"设置", MB_OK | MB_ICONINFORMATION);
+        SetFocus(state->hostEdit);
+        return;
+    }
+
+    g_host = WideToUtf8(host);
+    g_port = port;
+    g_colorEnabled = state->colorEnabled;
+    g_voiceLimitSeconds = state->voiceLimit;
+    const ThemeMode previous = g_themeMode;
+    g_themeMode = state->themeMode;
+    if (previous != g_themeMode) {
+        ApplyThemeMode();
+    } else {
+        if (ui.hView) InvalidateRect(ui.hView, nullptr, TRUE);  // 彩色开关变了要重画气泡
+        if (ui.hwnd) InvalidateRect(ui.hwnd, nullptr, FALSE);
+    }
+    state->accepted = true;
+    UpdateStatus();
+    DestroyWindow(state->dlg);
+}
+
+LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* state = reinterpret_cast<SettingsState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+        case WM_CREATE: {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            state = static_cast<SettingsState*>(cs->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+            state->dlg = hwnd;
+
+            state->themeChoice = state->themeMode == ThemeMode::Dark
+                                     ? 0
+                                     : (state->themeMode == ThemeMode::Light ? 1 : 2);
+            for (int i = 0; i < 3; ++i) {
+                if (kVoiceLimitOptions[i] == state->voiceLimit) state->voiceChoice = i;
+            }
+
+            state->hostEdit = CreateWindowExW(
+                0, L"EDIT", Utf8ToWide(g_host).c_str(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 10, 10, hwnd,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_HOST)), nullptr, nullptr);
+            state->portEdit = CreateWindowExW(
+                0, L"EDIT", std::to_wstring(g_port).c_str(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER, 0, 0, 10, 10, hwnd,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_PORT)), nullptr, nullptr);
+            const HWND ok = CreateWindowW(L"BUTTON", L"完成",
+                                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0,
+                                          10, 10, hwnd,
+                                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_OK)),
+                                          nullptr, nullptr);
+            const HWND cancel = CreateWindowW(
+                L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
+                hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_CANCEL)), nullptr, nullptr);
+            // 两个编辑框：透明背景 + 实心画刷（和登录窗口同一套做法，避免重画残影）
+            state->fieldBrush = CreateSolidBrush(g_palette->bubbleOther);
+            SendMessageW(state->hostEdit, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
+            SendMessageW(state->portEdit, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
+            SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
+            SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
+            SetWindowLongPtrW(ok, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc));
+            SetWindowLongPtrW(cancel, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc));
+            SendMessageW(state->hostEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                         MAKELPARAM(4, 4));
+            SendMessageW(state->portEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                         MAKELPARAM(4, 4));
+            LayoutSettingsWindow(state);
+            return 0;
+        }
+        case WM_SIZE:
+            if (state) LayoutSettingsWindow(state);
+            return 0;
+        case WM_DESTROY:
+            if (state) {
+                if (state->fieldBrush) {
+                    DeleteObject(state->fieldBrush);
+                    state->fieldBrush = nullptr;
+                }
+                state->dlg = nullptr;
+            }
+            return 0;
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORSTATIC: {
+            HDC dc = reinterpret_cast<HDC>(wp);
+            SetTextColor(dc, g_palette->text);
+            SetBkColor(dc, g_palette->bubbleOther);
+            SetBkMode(dc, TRANSPARENT);
+            return reinterpret_cast<LRESULT>(state && state->fieldBrush
+                                                 ? state->fieldBrush
+                                                 : GetStockObject(NULL_BRUSH));
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            HBRUSH bg = CreateSolidBrush(g_palette->panel);
+            FillRect(dc, &client, bg);
+            DeleteObject(bg);
+            if (!state) {
+                EndPaint(hwnd, &ps);
+                return 0;
+            }
+            const dchat::SettingsLayout& layout = state->layout;
+
+            DrawTextIn(dc, L"设置", layout.title, ui.fontLarge, g_palette->text,
+                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            DrawTextIn(dc, L"✕", layout.closeButton, ui.font, g_palette->system,
+                       DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            HBRUSH line = CreateSolidBrush(g_palette->border);
+            FillRect(dc, &layout.separator, line);
+            DeleteObject(line);
+
+            auto section = [&](const wchar_t* text, int top) {
+                RECT rect{layout.title.left, top, layout.title.right, top + 22};
+                DrawTextIn(dc, text, rect, ui.fontSmall, g_palette->system,
+                           DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            };
+            auto label = [&](const wchar_t* text, const RECT& control) {
+                RECT rect{layout.title.left, control.top, layout.themeSegment.left - 16,
+                          control.bottom};
+                DrawTextIn(dc, text, rect, ui.font, g_palette->text,
+                           DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            };
+
+            section(L"外观", layout.themeSegment.top - 34);
+            label(L"主题", layout.themeSegment);
+            DrawSegment(dc, layout.themeSegment, kThemeChoiceLabels, 3, state->themeChoice, ui.font,
+                        state->themeHover);
+            label(L"彩色聊天", layout.colorToggle);
+            DrawToggle(dc, layout.colorToggle, state->colorEnabled);
+            DrawTextIn(dc, L"给昵称和气泡上色", layout.colorToggleLabel, ui.fontSmall,
+                       g_palette->system, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+            section(L"服务器", layout.hostField.top - 34);
+            label(L"地址", layout.hostField);
+            ui::DrawRoundedControl(dc, layout.hostField, 8, g_palette->panel,
+                                   g_palette->bubbleOther,
+                                   GetFocus() == state->hostEdit ? g_palette->accent
+                                                                 : g_palette->border);
+            label(L"端口", layout.portField);
+            ui::DrawRoundedControl(dc, layout.portField, 8, g_palette->panel,
+                                   g_palette->bubbleOther,
+                                   GetFocus() == state->portEdit ? g_palette->accent
+                                                                 : g_palette->border);
+
+            section(L"语音", layout.voiceSegment.top - 34);
+            label(L"最长时长", layout.voiceSegment);
+            DrawSegment(dc, layout.voiceSegment, kVoiceLimitLabels, 3, state->voiceChoice, ui.font,
+                        state->voiceHover);
+            DrawTextIn(dc, L"当前是未压缩 PCM，2 MB 上限大约 1 分钟", layout.voiceHint,
+                       ui.fontSmall, g_palette->system,
+                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_DRAWITEM:
+            DrawOwnerButton(reinterpret_cast<const DRAWITEMSTRUCT*>(lp));
+            return TRUE;
+        case WM_MOUSEMOVE: {
+            if (!state) return 0;
+            const int x = GET_X_LPARAM(lp);
+            const int y = GET_Y_LPARAM(lp);
+            const int themeHover = dchat::SegmentHitTest(state->layout.themeSegment, 3, x, y);
+            const int voiceHover = dchat::SegmentHitTest(state->layout.voiceSegment, 3, x, y);
+            if (themeHover != state->themeHover || voiceHover != state->voiceHover) {
+                state->themeHover = themeHover;
+                state->voiceHover = voiceHover;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+        case WM_LBUTTONDOWN: {
+            if (!state) return 0;
+            const int x = GET_X_LPARAM(lp);
+            const int y = GET_Y_LPARAM(lp);
+            if (PtInRect(&state->layout.closeButton, POINT{x, y})) {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            const int theme = dchat::SegmentHitTest(state->layout.themeSegment, 3, x, y);
+            if (theme >= 0) {
+                state->themeChoice = theme;
+                state->themeMode = theme == 0 ? ThemeMode::Dark
+                                              : (theme == 1 ? ThemeMode::Light : ThemeMode::System);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            const int voice = dchat::SegmentHitTest(state->layout.voiceSegment, 3, x, y);
+            if (voice >= 0) {
+                state->voiceChoice = voice;
+                state->voiceLimit = kVoiceLimitOptions[voice];
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            if (PtInRect(&state->layout.colorToggle, POINT{x, y})) {
+                state->colorEnabled = !state->colorEnabled;
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            return 0;
+        }
+        case WM_COMMAND:
+            if (!state) break;
+            if (LOWORD(wp) == IDS_OK) {
+                ApplySettingsAndClose(state);
+                return 0;
+            }
+            if (LOWORD(wp) == IDS_CANCEL) {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            return 0;
+        default:
+            break;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// 打开设置窗口（模态）。取消 / Esc / ✕ 都等于丢弃改动。
+void OpenSettings(HWND parent) {
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = SettingsProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hbrBackground = nullptr;  // 背景由 WM_PAINT 用主题色画
+        wc.lpszClassName = kSettingsClass;
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+
+    SettingsState state;
+    state.themeMode = g_themeMode;
+    state.colorEnabled = g_colorEnabled;
+    state.voiceLimit = g_voiceLimitSeconds;
+
+    RECT rc{0, 0, dchat::kSettingsWidth, dchat::kSettingsHeight};
+    AdjustWindowRectEx(&rc, kDlgStyle, FALSE, kDlgExStyle);
+    const int width = rc.right - rc.left;
+    const int height = rc.bottom - rc.top;
+    RECT parentRect{};
+    GetWindowRect(parent, &parentRect);
+    int x = parentRect.left + ((parentRect.right - parentRect.left) - width) / 2;
+    int y = parentRect.top + ((parentRect.bottom - parentRect.top) - height) / 2;
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    if (GetMonitorInfoW(MonitorFromWindow(parent, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        if (x < monitor.rcWork.left) x = monitor.rcWork.left;
+        if (y < monitor.rcWork.top) y = monitor.rcWork.top;
+        if (x + width > monitor.rcWork.right) x = monitor.rcWork.right - width;
+        if (y + height > monitor.rcWork.bottom) y = monitor.rcWork.bottom - height;
+    }
+
+    HWND dlg = CreateWindowExW(kDlgExStyle, kSettingsClass, L"设置", kDlgStyle, x, y, width, height,
+                               parent, nullptr, GetModuleHandleW(nullptr), &state);
+    if (!dlg) return;
+    EnableWindow(parent, FALSE);
+    ShowWindow(dlg, SW_SHOW);
+    SetFocus(state.hostEdit);
+
+    MSG msg;
+    while (IsWindow(dlg) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if ((msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN) &&
+            (msg.hwnd == dlg || IsChild(dlg, msg.hwnd))) {
+            if (msg.wParam == VK_ESCAPE) {
+                DestroyWindow(dlg);
+                continue;
+            }
+            if (msg.wParam == VK_RETURN) {
+                ApplySettingsAndClose(&state);
+                continue;
+            }
+        }
+        if (!IsDialogMessageW(dlg, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    if (IsWindow(dlg)) DestroyWindow(dlg);
+    EnableWindow(parent, TRUE);
+    SetForegroundWindow(parent);
+    SetFocus(ui.hInput);
+}
+
 // ---------------- 界面行为 ----------------
 void DoConnect(HWND hwnd) {
     if (IsConnected()) return;
@@ -3338,44 +3870,35 @@ void HideSuggestions();
 void Layout(HWND hwnd) {
     RECT rc{};
     GetClientRect(hwnd, &rc);
-    const int margin = 12, stripH = 32, gap = 8;
-    const int buttonW = 78, colorW = 96, themeW = 128, fileW = 96, voiceW = 76;
-    const int contentW = rc.right - margin * 2;
-    const int rightStack = buttonW * 2 + colorW + themeW + fileW + voiceW + gap * 5;
+    const int width = rc.right - rc.left;
+    const int height = rc.bottom - rc.top;
+    if (width <= 0 || height <= 0) return;
 
-    const int statusW = contentW - rightStack - gap;
-    MoveWindow(ui.hStatus, margin, margin + 6, statusW > 120 ? statusW : 120, stripH - 6, TRUE);
-    int x = rc.right - margin - rightStack;
-    MoveWindow(ui.hVoice, x, margin, voiceW, stripH, TRUE);
-    x += voiceW + gap;
-    MoveWindow(ui.hFileSend, x, margin, fileW, stripH, TRUE);
-    x += fileW + gap;
-    MoveWindow(ui.hColorToggle, x, margin, colorW, stripH, TRUE);
-    x += colorW + gap;
-    MoveWindow(ui.hThemeButton, x, margin, themeW, stripH, TRUE);
-    x += themeW + gap;
-    MoveWindow(ui.hConnect, x, margin, buttonW, stripH, TRUE);
-    x += buttonW + gap;
-    MoveWindow(ui.hDisconnect, x, margin, buttonW, stripH, TRUE);
+    LayoutWindowChrome(hwnd);  // 菜单栏 / 状态条 / 输入行的几何（ui_layout）
 
-    const int viewTop = margin + stripH + gap;
-    const int viewHeight = rc.bottom - viewTop - stripH - gap * 2 - margin;
-    MoveWindow(ui.hView, margin, viewTop, contentW, viewHeight > 60 ? viewHeight : 60, TRUE);
-    // 输入框：父窗口画胶囊背景，编辑框内嵌在里面（这样文字天然有内边距，圆角也不会被方形底色盖住）
-    const int pillLeft = margin;
-    const int pillTop = rc.bottom - margin - stripH;
-    const int pillWidth = contentW - buttonW - gap;
-    g_inputPill = RECT{pillLeft, pillTop, pillLeft + pillWidth, pillTop + stripH};
+    // 记录区：左右各留一点边距，上下紧贴菜单栏与状态条
+    const int viewTop = g_contentTop;
+    const int viewBottom = g_bottom.statusBar.top;
+    const int viewHeight = viewBottom - viewTop;
+    MoveWindow(ui.hView, 12, viewTop, width - 24, viewHeight > 60 ? viewHeight : 60, TRUE);
+
+    // 输入框：父窗口画胶囊背景，编辑框内嵌在里面
+    // （这样文字天然有内边距，圆角也不会被方形底色盖住）
+    g_inputPill = g_bottom.inputPill;
     const int innerPadX = dchat::kMessagePaddingX;
     const int innerPadY = 5;
-    MoveWindow(ui.hInput, pillLeft + innerPadX, pillTop + innerPadY,
-               pillWidth - innerPadX * 2, stripH - innerPadY * 2, TRUE);
-    MoveWindow(ui.hSend, rc.right - margin - buttonW, rc.bottom - margin - stripH, buttonW, stripH,
-               TRUE);
+    MoveWindow(ui.hInput, g_inputPill.left + innerPadX, g_inputPill.top + innerPadY,
+               (g_inputPill.right - g_inputPill.left) - innerPadX * 2,
+               (g_inputPill.bottom - g_inputPill.top) - innerPadY * 2, TRUE);
+    MoveWindow(ui.hSend, g_bottom.sendButton.left, g_bottom.sendButton.top,
+               g_bottom.sendButton.right - g_bottom.sendButton.left,
+               g_bottom.sendButton.bottom - g_bottom.sendButton.top, TRUE);
+
     // 候选浮层：贴在输入框正上方（高度随候选行数变化）
     const int suggestH = SuggestPanelHeight();
     if (ui.hSuggest && suggestH > 0) {
-        MoveWindow(ui.hSuggest, pillLeft, pillTop - 6 - suggestH, pillWidth, suggestH, TRUE);
+        MoveWindow(ui.hSuggest, g_inputPill.left, g_inputPill.top - 6 - suggestH,
+                   g_inputPill.right - g_inputPill.left, suggestH, TRUE);
     }
     InvalidateRect(hwnd, nullptr, FALSE);
 }
@@ -3624,9 +4147,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                        DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
 
-            ui.hStatus = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 10, 10,
-                                       hwnd, reinterpret_cast<HMENU>(IDC_STATUS), nullptr, nullptr);
-
             WNDCLASSEXW viewClass{};
             viewClass.cbSize = sizeof(viewClass);
             viewClass.style = CS_HREDRAW | CS_VREDRAW;
@@ -3659,49 +4179,29 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // 让文字与胶囊边缘留出内边距（否则文字会贴着圆角开始，看着不贴合）
             SendMessageW(ui.hInput, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
                          MAKELPARAM(dchat::kMessagePaddingX, dchat::kMessagePaddingX));
-            ui.hColorToggle = CreateWindowW(L"BUTTON", L"彩色聊天",
-                                            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, hwnd,
-                                            reinterpret_cast<HMENU>(IDC_COLOR), nullptr, nullptr);
-            ui.hFileSend = CreateWindowW(L"BUTTON", L"发送文件",
-                                         WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, hwnd,
-                                         reinterpret_cast<HMENU>(IDC_FILESEND), nullptr, nullptr);
-            ui.hVoice = CreateWindowW(L"BUTTON", L"录音", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0,
-                                      0, 10, 10, hwnd, reinterpret_cast<HMENU>(IDC_VOICE), nullptr,
-                                      nullptr);
-            ui.hThemeButton = CreateWindowW(L"BUTTON", ThemeLabel(g_themeMode),
-                                            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, hwnd,
-                                            reinterpret_cast<HMENU>(IDC_THEME), nullptr, nullptr);
-            ui.hConnect = CreateWindowW(L"BUTTON", L"连接", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0,
-                                        0, 10, 10, hwnd, reinterpret_cast<HMENU>(IDC_CONNECT),
-                                        nullptr, nullptr);
-            ui.hDisconnect = CreateWindowW(L"BUTTON", L"断开",
-                                           WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, hwnd,
-                                           reinterpret_cast<HMENU>(IDC_DISCONNECT), nullptr, nullptr);
+            // 整个界面只剩这一个真正的按钮：「发送」。
+            // 「连接/断开」「设置」「彩色聊天」「深浅色」「录音」「发送文件」全部收进了
+            // 菜单栏和「＋」——以前顶部一条挤 6 个按钮，偶尔改一次的设置和每次都用
+            // 的发消息混在一起，占掉一整条还把聊天挤矮。
             ui.hSend = CreateWindowW(L"BUTTON", L"发送", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0,
                                      10, 10, hwnd, reinterpret_cast<HMENU>(IDC_SEND), nullptr,
                                      nullptr);
 
-            HWND controls[] = {ui.hStatus, ui.hInput,      ui.hColorToggle, ui.hThemeButton,
-                               ui.hConnect, ui.hDisconnect, ui.hSend,        ui.hFileSend,
-                               ui.hVoice};
-            for (HWND control : controls) {
-                SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
-            }
+            SendMessageW(ui.hInput, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
+            SendMessageW(ui.hSend, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
             g_oldInputProc = reinterpret_cast<WNDPROC>(
                 SetWindowLongPtrW(ui.hInput, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(InputProc)));
-            g_oldButtonProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
-                ui.hSend, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc)));
-            HWND ownerDrawn[] = {ui.hColorToggle, ui.hThemeButton, ui.hConnect, ui.hDisconnect,
-                                 ui.hFileSend,     ui.hVoice};
-            for (HWND control : ownerDrawn) {
-                SetWindowLongPtrW(control, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc));
-            }
+            SetWindowLongPtrW(ui.hSend, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc));
             DragAcceptFiles(hwnd, TRUE);  // 允许把文件直接拖进窗口发送
 
             const std::string now = dchat::NowTimeString();
-            ViewAddItem(ItemKind::Notice, "欢迎使用dchat 客户端", now);
-            ViewAddItem(ItemKind::Notice, "先启动服务器（dchat_server.exe），再点「连接」", now);
+            ViewAddItem(ItemKind::Notice, "欢迎使用 dchat 客户端", now);
+            ViewAddItem(ItemKind::Notice, "先启动服务器（dchat_server.exe），再点菜单里的「连接」",
+                        now);
             ViewAddItem(ItemKind::Notice, "本机测试：127.0.0.1，端口 5555；@all 通知所有人", now);
+            ViewAddItem(ItemKind::Notice,
+                        "发文件和语音点输入框右边的「＋」；主题、彩色聊天、服务器地址点右上角齿轮",
+                        now);
 
             ApplyThemeMode();
             Layout(hwnd);
@@ -3734,35 +4234,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             switch (LOWORD(wp)) {
-                case IDC_CONNECT:
-                    DoConnect(hwnd);
-                    return 0;
-                case IDC_DISCONNECT:
-                    DoDisconnect(hwnd);
-                    return 0;
                 case IDC_SEND:
                     SendCurrentInput();
-                    return 0;
-                case IDC_FILESEND:
-                    DoSendFile(hwnd);
-                    return 0;
-                case IDC_VOICE:
-                    // 点一下开始录，再点一下结束并发送。
-                    // （面板上的按钮很难做"按住不放"，所以用点按两下这一套；
-                    //   状态栏会一直显示"录音中 0:03"，不会让人不知道在录。）
-                    if (g_recorder.IsRunning()) {
-                        StopVoiceRecordingAndSend();
-                    } else {
-                        StartVoiceRecording();
-                    }
-                    return 0;
-                case IDC_COLOR:
-                    g_colorEnabled = !g_colorEnabled;
-                    InvalidateRect(ui.hColorToggle, nullptr, TRUE);
-                    InvalidateRect(ui.hView, nullptr, TRUE);
-                    return 0;
-                case IDC_THEME:
-                    CycleThemeMode();
                     return 0;
                 default:
                     break;
@@ -3923,6 +4396,150 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        case WM_LBUTTONDOWN: {
+            // 点在哪一块：菜单项 / 齿轮 / 状态胶囊 / 「＋」/「＋」菜单。
+            // 这些都在父窗口里自绘，命中判断也在这里（几何来自 ui_layout）。
+            const int x = GET_X_LPARAM(lp);
+            const int y = GET_Y_LPARAM(lp);
+
+            // 点「＋」菜单外面：先收起菜单，这一次点击不再当成别的操作（避免误触）
+            if (g_plusMenuOpen) {
+                const dchat::PlusAction action = dchat::HitTestPlusMenu(g_plusMenu, x, y);
+                const bool insidePanel = dchat::InsidePlusMenu(g_plusMenu, x, y);
+                g_plusMenuOpen = false;
+                g_plusHover = -1;
+                InvalidateChrome(hwnd);
+                switch (action) {
+                    case dchat::PlusAction::SendFile:
+                        DoSendFile(hwnd);
+                        return 0;
+                    case dchat::PlusAction::RecordVoice:
+                        // 录音中这一项是"结束并发送"（面板按钮做不了"按住不放"，
+                        // 所以用点两下这一套；状态条一直显示录音计时）
+                        if (g_recorder.IsRunning()) {
+                            StopVoiceRecordingAndSend();
+                        } else {
+                            StartVoiceRecording();
+                        }
+                        return 0;
+                    case dchat::PlusAction::None:
+                        if (insidePanel) return 0;
+                        break;
+                }
+                SetFocus(ui.hInput);
+                return 0;
+            }
+
+            if (PtInRect(&g_bottom.plusButton, POINT{x, y})) {
+                g_plusMenuOpen = true;
+                g_plusHover = -1;
+                InvalidateChrome(hwnd);
+                return 0;
+            }
+            if (PtInRect(&g_gearRect, POINT{x, y})) {
+                OpenSettings(hwnd);
+                return 0;
+            }
+            if (g_chipRect.right > g_chipRect.left && PtInRect(&g_chipRect, POINT{x, y})) {
+                // 点状态胶囊：列出在线成员（以前这是顶栏的一个按钮）
+                if (IsConnected()) {
+                    std::string list;
+                    for (std::size_t i = 0; i < g_onlineNicks.size(); ++i) {
+                        if (i) list += "、";
+                        list += g_onlineNicks[i];
+                    }
+                    ViewAddItem(ItemKind::Notice,
+                                list.empty() ? "现在房间里没有别人"
+                                             : ("在线 " + std::to_string(g_onlineNicks.size()) +
+                                                " 人：" + list),
+                                dchat::NowTimeString());
+                } else {
+                    ViewAddItem(ItemKind::Notice, "还没连接。点菜单里的「连接」填服务器地址",
+                                dchat::NowTimeString());
+                }
+                return 0;
+            }
+            if (const dchat::MenuItem* item = dchat::HitTestMenu(g_menuItems, x, y)) {
+                switch (item->action) {
+                    case dchat::MenuAction::Connect:
+                        if (IsConnected()) {
+                            DoDisconnect(hwnd);
+                        } else {
+                            DoConnect(hwnd);
+                        }
+                        break;
+                    case dchat::MenuAction::Settings:
+                        OpenSettings(hwnd);
+                        break;
+                    case dchat::MenuAction::Help:
+                        ViewAddItem(ItemKind::Notice,
+                                    "用法：输入框里回车发送；发文件和语音点右边的「＋」；"
+                                    "主题 / 彩色聊天 / 服务器地址 / 语音时长在右上角齿轮里。"
+                                    "指令输入 /help，按 Tab 会补全。",
+                                    dchat::NowTimeString());
+                        break;
+                    case dchat::MenuAction::ToggleOnline:
+                        break;
+                }
+                Layout(hwnd);  // 「连接/断开」的文字要跟着状态变
+                UpdateStatus();
+                return 0;
+            }
+            if (y < dchat::kMenuBarHeight) return 0;  // 点菜单栏空白处：不做任何事
+            break;                                     // 其它地方交给默认处理
+        }
+        case WM_MOUSEMOVE: {
+            const int x = GET_X_LPARAM(lp);
+            const int y = GET_Y_LPARAM(lp);
+            int hover = -1;
+            for (std::size_t i = 0; i < g_menuItems.size(); ++i) {
+                if (PtInRect(&g_menuItems[i].rect, POINT{x, y})) {
+                    hover = static_cast<int>(i);
+                    break;
+                }
+            }
+            const int plusHover = (g_plusMenuOpen && g_plusMenu.valid)
+                                      ? (PtInRect(&g_plusMenu.fileItem, POINT{x, y})    ? 0
+                                         : PtInRect(&g_plusMenu.voiceItem, POINT{x, y}) ? 1
+                                                                                        : -1)
+                                      : -1;
+            const bool gearHover = PtInRect(&g_gearRect, POINT{x, y}) != 0;
+            const bool chipHover =
+                g_chipRect.right > g_chipRect.left && PtInRect(&g_chipRect, POINT{x, y}) != 0;
+            if (hover != g_menuHover || plusHover != g_plusHover || gearHover != g_gearHover ||
+                chipHover != g_chipHover) {
+                g_menuHover = hover;
+                g_plusHover = plusHover;
+                g_gearHover = gearHover;
+                g_chipHover = chipHover;
+                InvalidateChrome(hwnd);
+            }
+            if (y < dchat::kMenuBarHeight || g_plusMenuOpen) {
+                TRACKMOUSEEVENT track{};
+                track.cbSize = sizeof(track);
+                track.dwFlags = TME_LEAVE;
+                track.hwndTrack = hwnd;
+                TrackMouseEvent(&track);
+            }
+            break;
+        }
+        case WM_MOUSELEAVE:
+            if (g_menuHover != -1 || g_plusHover != -1 || g_gearHover || g_chipHover) {
+                g_menuHover = -1;
+                g_plusHover = -1;
+                g_gearHover = false;
+                g_chipHover = false;
+                InvalidateChrome(hwnd);
+            }
+            return 0;
+        case WM_KEYDOWN:
+            if (wp == VK_ESCAPE && g_plusMenuOpen) {  // Esc 收起「＋」菜单
+                g_plusMenuOpen = false;
+                g_plusHover = -1;
+                InvalidateChrome(hwnd);
+                return 0;
+            }
+            break;
         case WM_TIMER:
             if (wp == kRecordTimerId) {
                 if (!g_recorder.IsRunning()) {
@@ -3932,11 +4549,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 const int seconds = g_recorder.ElapsedSeconds();
                 UpdateStatus();
                 // 到点自动收尾并发送：录满上限还不停，用户会一直录到超限、
-                // 最后被拦下来——白录一场。
-                if (seconds >= dchat::kMaxVoiceSeconds) {
+                // 最后被拦下来——白录一场。上限取"设置里选的"和"字节数允许的"较小值。
+                const int limit = (std::min)(g_voiceLimitSeconds, dchat::kMaxVoiceSeconds);
+                if (seconds >= limit) {
                     ViewAddItem(ItemKind::Notice,
-                                "语音最长 " + dchat::FormatDuration(dchat::kMaxVoiceSeconds) +
-                                    "，已自动发送",
+                                "语音最长 " + dchat::FormatDuration(limit) + "，已自动发送",
                                 dchat::NowTimeString());
                     StopVoiceRecordingAndSend();
                 }
@@ -4005,12 +4622,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC dc = BeginPaint(hwnd, &ps);
-            // 记录区的边框由它自己绘制；输入框的胶囊背景在这里画（编辑框是透明的，只负责文字）
-            if (g_inputPill.right > g_inputPill.left) {
-                const int radius = (g_inputPill.bottom - g_inputPill.top) / 2;
-                ui::DrawRoundedControl(dc, g_inputPill, radius, g_palette->windowBg,
-                                       g_palette->bubbleOther, g_palette->border);
-            }
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            // 整个外壳（菜单栏 / 状态条 / 输入胶囊 / ＋ / 齿轮 / ＋菜单）都在这里画；
+            // 聊天记录由记录区子窗口自己画，这里不碰。
+            DrawWindowChrome(hwnd, dc, client);
             EndPaint(hwnd, &ps);
             return 0;
         }

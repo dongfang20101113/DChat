@@ -1,11 +1,14 @@
-protocol_tests 10 0.00371134
-render_tests 10 0.00370525
-rounded_tests 10 0.00401562
-bubble_tests 10 0.00466012
-image_preview_tests 10 0.00405797
-history_tests 10 0.00395469
-server_command_tests 9 0.00518458
-auth_tests 10 0.00811308
-file_transfer_tests 10 0.00408276
-server_rules_tests 7 0.00532924
+protocol_tests 23 0.000358796
+render_tests 23 0.000416709
+rounded_tests 23 0.000597561
+bubble_tests 23 0.000636939
+image_preview_tests 23 0.000476852
+history_tests 23 0.000365557
+server_command_tests 22 0.000444532
+auth_tests 23 0.00250446
+file_transfer_tests 23 0.000497883
+server_rules_tests 20 0.000477435
+crypto_tests 13 0.00128282
+voice_notes_tests 6 0.521711
+ui_layout_tests 2 0.00758745
 ---

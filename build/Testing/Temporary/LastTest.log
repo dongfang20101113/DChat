@@ -1,10 +1,10 @@
-Start testing: Sep 26 10:13 �й���׼ʱ��
+Start testing: Oct 02 19:35 �й���׼ʱ��
 ----------------------------------------------------------
-1/10 Testing: protocol_tests
-1/10 Test: protocol_tests
+1/13 Testing: protocol_tests
+1/13 Test: protocol_tests
 Command: "D:/codes/dchat/build/test_protocol.exe"
 Directory: D:/codes/dchat/build
-"protocol_tests" start time: Sep 26 10:13 �й���׼ʱ��
+"protocol_tests" start time: Oct 02 19:35 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat protocol tests ==
@@ -49,21 +49,53 @@ Output:
   ok   say message format
   ok   joined message format
   ok   error text is utf-8 chinese
+[6] text escaping
+  ok   no special chars -> unchanged
+  ok   newline -> backslash n
+  ok   crlf collapses to one newline
+  ok   lone cr is also a newline
+  ok   backslash is doubled
+  ok   literal backslash-n gets escaped (so it is NOT read as a newline)
+  ok   empty stays empty
+[7] text unescaping
+  ok   plain text unchanged
+  ok   backslash n -> newline
+  ok   doubled backslash -> one backslash
+  ok   unknown escape is preserved verbatim
+  ok   trailing lone backslash is preserved
+  ok   empty stays empty
+[8] escape round-trip
+  ok   escape -> unescape returns the original for all samples
+  ok   escaped text never contains a raw newline
+[9] line counting
+  ok   empty text is 0 lines
+  ok   single line
+  ok   two lines
+  ok   three lines
+  ok   escaped backslash followed by n is NOT a line break
+  ok   a literal backslash then a real newline is 2 lines
+  ok   trailing lone backslash does not crash
+  ok   text starting with a newline is 2 lines
+[10] escaping survives the wire format
+  ok   built line has no raw newline
+  ok   command survives
+  ok   text survives the round trip intact
+  ok   server can count 3 lines from the wire form
 
-36 checks, 0 failures
+63 checks, 0 failures
 <end of output>
-Test time =   0.04 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"protocol_tests" end time: Sep 26 10:13 �й���׼ʱ��
+"protocol_tests" end time: Oct 02 19:35 �й���׼ʱ��
 "protocol_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-2/10 Testing: render_tests
-2/10 Test: render_tests
+2/13 Testing: render_tests
+2/13 Test: render_tests
 Command: "D:/codes/dchat/build/test_render.exe"
 Directory: D:/codes/dchat/build
-"render_tests" start time: Sep 26 10:13 �й���׼ʱ��
+"render_tests" start time: Oct 02 19:35 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat render tests ==
@@ -127,18 +159,18 @@ Output:
 
 51 checks, 0 failures
 <end of output>
-Test time =   0.04 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"render_tests" end time: Sep 26 10:13 �й���׼ʱ��
+"render_tests" end time: Oct 02 19:35 �й���׼ʱ��
 "render_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-3/10 Testing: rounded_tests
-3/10 Test: rounded_tests
+3/13 Testing: rounded_tests
+3/13 Test: rounded_tests
 Command: "D:/codes/dchat/build/test_rounded.exe"
 Directory: D:/codes/dchat/build
-"rounded_tests" start time: Sep 26 10:13 �й���׼ʱ��
+"rounded_tests" start time: Oct 02 19:35 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == rounded control tests ==
@@ -163,18 +195,18 @@ Output:
 
 15 checks, 0 failures
 <end of output>
-Test time =   0.04 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"rounded_tests" end time: Sep 26 10:13 �й���׼ʱ��
+"rounded_tests" end time: Oct 02 19:35 �й���׼ʱ��
 "rounded_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-4/10 Testing: bubble_tests
-4/10 Test: bubble_tests
+4/13 Testing: bubble_tests
+4/13 Test: bubble_tests
 Command: "D:/codes/dchat/build/test_bubble.exe"
 Directory: D:/codes/dchat/build
-"bubble_tests" start time: Sep 26 10:13 �й���׼ʱ��
+"bubble_tests" start time: Oct 02 19:35 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat bubble tests ==
@@ -212,18 +244,18 @@ Output:
 
 26 checks, 0 failures
 <end of output>
-Test time =   0.05 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"bubble_tests" end time: Sep 26 10:13 �й���׼ʱ��
+"bubble_tests" end time: Oct 02 19:35 �й���׼ʱ��
 "bubble_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-5/10 Testing: image_preview_tests
-5/10 Test: image_preview_tests
+5/13 Testing: image_preview_tests
+5/13 Test: image_preview_tests
 Command: "D:/codes/dchat/build/test_image_preview.exe"
 Directory: D:/codes/dchat/build
-"image_preview_tests" start time: Sep 26 10:13 �й���׼ʱ��
+"image_preview_tests" start time: Oct 02 19:35 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat image preview tests ==
@@ -247,18 +279,18 @@ Output:
 
 14 checks, 0 failures
 <end of output>
-Test time =   0.04 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"image_preview_tests" end time: Sep 26 10:13 �й���׼ʱ��
+"image_preview_tests" end time: Oct 02 19:35 �й���׼ʱ��
 "image_preview_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-6/10 Testing: server_rules_tests
-6/10 Test: server_rules_tests
+6/13 Testing: server_rules_tests
+6/13 Test: server_rules_tests
 Command: "D:/codes/dchat/build/test_server_rules.exe"
 Directory: D:/codes/dchat/build
-"server_rules_tests" start time: Sep 26 10:13 �й���׼ʱ��
+"server_rules_tests" start time: Oct 02 19:35 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat server rules tests ==
@@ -267,8 +299,16 @@ Output:
   ok   documentsize 默认 64 MB
   ok   keepchathistory 默认关闭
   ok   maxservertemp 默认 1048 MB
-  ok   一共 4 条规则
-  ok   四条规则名都能识别（大小写不敏感）
+  ok   uploadrate 默认 0（不限制）
+  ok   downloadrate 默认 0（不限制）
+  ok   maxtextlen 默认 0（不限制）
+  ok   maxtextlines 默认 0（不限制）
+  ok   maxconns 默认 0（不限制）
+  ok   maxconnsperip 默认 0（不限制）
+  ok   loginfails 默认 0（不限制）
+  ok   handshaketimeout 默认 30 秒（不是 0）
+  ok   一共 12 条规则
+  ok   十二条规则名都能识别（大小写不敏感）
   ok   不认识的规则名返回非法
   ok   MB 转字节
 [2] set / add / remove
@@ -294,15 +334,15 @@ Output:
   ok   全部规则说明里四条都在
   ok   说明里带当前值
   ok   布尔规则显示 true/false
-  ok   发给客户端的 RULES 行格式正确
-  ok   关闭时最后一位是 0
+  ok   发给客户端的 RULES 行格式正确（新字段默认 0）
+  ok   关闭时第 3 位是 0
   ok   取值范围说明里有上限
   ok   布尔规则的范围说明
 [6] dchat-rules.txt 读写
   ok   序列化出来的文件以注释行开头
   ok   数值规则写进去了
   ok   布尔规则写进去了
-  ok   四条规则都能读回来
+  ok   十二条规则都能读回来（8 条 + 4 条加固）
   ok   写出去再读回来完全一致（往返正确）
   ok   只认有效行：注释 / 坏值 / 未知规则都被跳过
   ok   行尾注释不影响取值
@@ -313,7 +353,7 @@ Output:
   ok   空文件读到 0 条（保持原值）
   ok   传空指针不会崩
 [9] 规则元数据（Tab 补全用）
-  ok   四条规则各有一份元数据
+  ok   十二条规则各有一份元数据
   ok   每条规则都带一句灰色说明
   ok   元数据里的规则名和 AllRuleNames 顺序一致
   ok   只有 keepchathistory 是布尔规则
@@ -321,21 +361,81 @@ Output:
   ok   不认识的规则不是布尔规则
   ok   IsKnownRule 仍然认得这四条规则
   ok   IsKnownRule 不会把别的前缀当规则
+[10] 新增规则：set / add / remove 与范围
+  ok   uploadrate set 128
+  ok   uploadrate add 128 -> 256
+  ok   uploadrate remove 100 -> 156
+  ok   uploadrate 可以设回 0（不限制）
+  ok   downloadrate 负数被夹到 0
+  ok   会提示被夹到最小值
+  ok   downloadrate 上限 1048576 KB/s
+  ok   maxtextlen set 2000
+  ok   maxtextlines set 20
+  ok   对数值规则用 true/false 会被拒绝并说明原因
+  ok   Show 能读出当前值
+[11] RULES 下发行的向后兼容
+  ok   前 3 个字段仍是 documentsize/chatinterval/keepchathistory，位置不变
+  ok   新增字段按顺序追加在末尾
+  ok   一共 8 个字段（7 个空格）
+  ok   默认值的下发行
+[12] 新增规则的序列化 / 解析往返
+  ok   序列化含 uploadrate
+  ok   序列化含 maxtextlines
+  ok   往返能读回规则
+  ok   往返后 4 个新值都对
+  ok   解析时超上限被夹住
+  ok   maxtextlines 超上限被夹住
+  ok   带尾巴的坏值被跳过，不改动原值
+[13] 令牌桶限速器
+  ok   限速为 0 时永不等待
+  ok   开局桶是满的，64 KB 不用等
+  ok   再用掉 64 KB（桶刚好用尽）
+  ok   桶空了以后要等约 500 ms（128 KB/s 下 64 KB）
+  ok   一次要超过整桶容量时也能给出等待时间
+  ok   重新配置后桶又是满的
+[14] 公网加固规则：set / 范围 / 不下发给客户端
+  ok   maxconns set 200
+  ok   maxconnsperip set 8
+  ok   loginfails set 10
+  ok   handshaketimeout set 15
+  ok   handshaketimeout 可以设回 0（不限制）
+  ok   maxconns 上限 100000
+  ok   handshaketimeout 上限 600 秒
+  ok   加固规则不占用 RULES 下发行的字段（仍是 8 个字段）
+  ok   加固规则的值确实没出现在下发行里
+  ok   DescribeRule 能读出 maxconns
+  ok   loginfails 的说明里写清窗口是 300 秒
+[15] 防爆破追踪器（LoginFailTracker）
+  ok   limit=0 时永不封锁
+  ok   负的 limit 也当不限制
+  ok   还没有失败记录时不锁
+  ok   失败 1 次（未达上限）不锁
+  ok   失败 2 次（未达上限）不锁
+  ok   失败 3 次（达到上限）开始锁
+  ok   继续失败仍然锁着
+  ok   别的 IP 不受影响
+  ok   Clear 之后解锁
+  ok   空 IP 永远不锁
+  ok   空 IP 不进表
+  ok   正常 IP 会进表
+  ok   窗口没过期时 Sweep 不会误删
+  ok   Clear 会把记录删掉（不是只把计数归零）
+  ok   失败窗口固定 300 秒（5 分钟）
 
-52 checks, 0 failures
+114 checks, 0 failures
 <end of output>
-Test time =   0.04 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"server_rules_tests" end time: Sep 26 10:13 �й���׼ʱ��
+"server_rules_tests" end time: Oct 02 19:35 �й���׼ʱ��
 "server_rules_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-7/10 Testing: history_tests
-7/10 Test: history_tests
+7/13 Testing: history_tests
+7/13 Test: history_tests
 Command: "D:/codes/dchat/build/test_history.exe"
 Directory: D:/codes/dchat/build
-"history_tests" start time: Sep 26 10:13 �й���׼ʱ��
+"history_tests" start time: Oct 02 19:35 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat input history tests ==
@@ -375,18 +475,18 @@ Output:
 
 27 checks, 0 failures
 <end of output>
-Test time =   0.04 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"history_tests" end time: Sep 26 10:13 �й���׼ʱ��
+"history_tests" end time: Oct 02 19:35 �й���׼ʱ��
 "history_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-8/10 Testing: server_command_tests
-8/10 Test: server_command_tests
+8/13 Testing: server_command_tests
+8/13 Test: server_command_tests
 Command: "D:/codes/dchat/build/test_server_command.exe"
 Directory: D:/codes/dchat/build
-"server_command_tests" start time: Sep 26 10:13 �й���׼ʱ��
+"server_command_tests" start time: Oct 02 19:35 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat server command tests ==
@@ -610,18 +710,18 @@ Output:
 
 202 checks, 0 failures
 <end of output>
-Test time =   0.05 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"server_command_tests" end time: Sep 26 10:13 �й���׼ʱ��
+"server_command_tests" end time: Oct 02 19:35 �й���׼ʱ��
 "server_command_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-9/10 Testing: auth_tests
-9/10 Test: auth_tests
+9/13 Testing: auth_tests
+9/13 Test: auth_tests
 Command: "D:/codes/dchat/build/test_auth.exe"
 Directory: D:/codes/dchat/build
-"auth_tests" start time: Sep 26 10:13 �й���׼ʱ��
+"auth_tests" start time: Oct 02 19:35 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat auth tests ==
@@ -672,18 +772,18 @@ Output:
 
 39 checks, 0 failures
 <end of output>
-Test time =   0.08 sec
+Test time =   0.06 sec
 ----------------------------------------------------------
 Test Passed.
-"auth_tests" end time: Sep 26 10:13 �й���׼ʱ��
+"auth_tests" end time: Oct 02 19:35 �й���׼ʱ��
 "auth_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-10/10 Testing: file_transfer_tests
-10/10 Test: file_transfer_tests
+10/13 Testing: file_transfer_tests
+10/13 Test: file_transfer_tests
 Command: "D:/codes/dchat/build/test_file_transfer.exe"
 Directory: D:/codes/dchat/build
-"file_transfer_tests" start time: Sep 26 10:13 �й���׼ʱ��
+"file_transfer_tests" start time: Oct 02 19:35 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat file transfer tests ==
@@ -740,14 +840,326 @@ Output:
   ok   最坏情况的 FILE_DATA 不超过单行上限
   ok   而且留了 512 字节余量
   ok   FILE_FROM 也在上限内
+[6] FILE_SEND 的字段（按位置解析，错了整条被拒）
+  ok   普通文件：3 格，没有多余字段
+  ok   带缩略图：最后一格是 1
+  ok   语音：最后一格是 voice
+  ok   带种类时不发缩略图标记，仍是 4 格
+  ok   不会出现 5 格的写法
+[7] 种类的识别
+  ok   voice 是语音
+  ok   大小写不敏感（两端自己发的字符串，宽容一点）
+  ok   **缺这一格时不能当成语音**：老服务器不发它，那时按普通文件卡片显示才是对的
+  ok   普通文件不是语音
+  ok   贴纸不是语音（桌面端把它当普通文件卡片，可下载但不内联渲染）
+  ok   不做前缀匹配，只认完整取值
 
-47 checks, 0 failures
+58 checks, 0 failures
 <end of output>
-Test time =   0.04 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"file_transfer_tests" end time: Sep 26 10:13 �й���׼ʱ��
+"file_transfer_tests" end time: Oct 02 19:35 �й���׼ʱ��
 "file_transfer_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-End testing: Sep 26 10:13 �й���׼ʱ��
+11/13 Testing: crypto_tests
+11/13 Test: crypto_tests
+Command: "D:/codes/dchat/build/test_crypto.exe"
+Directory: D:/codes/dchat/build
+"crypto_tests" start time: Oct 02 19:35 �й���׼ʱ��
+Output:
+----------------------------------------------------------
+== dchat crypto tests ==
+[1] HKDF-SHA256 对照 RFC 5869 官方测试向量
+  ok   TC1: HKDF 计算成功
+  ok   TC1: OKM 与 RFC 5869 完全一致（42 字节）
+  ok   TC3: salt/info 为空时也能算
+  ok   TC3: OKM 与 RFC 5869 完全一致（空 salt/info）
+  ok   要 1 字节就给 1 字节
+  ok   要 64 字节就给 64 字节（跨两个 HMAC 块）
+  ok   长输出的前缀与短输出一致
+  ok   超过 RFC 上限（255*32）时拒绝
+  ok   要 0 字节时拒绝
+[2] AES-256-GCM 对照 NIST 官方测试向量
+  ok   TC13: 加密空明文成功
+  ok   TC13: 空明文只产生 16 字节标签
+  ok   TC13: 标签与 NIST 向量一致
+  ok   TC13: 能解回空明文
+  ok   TC14: 加密成功
+  ok   TC14: 输出 = 16 密文 + 16 标签
+  ok   TC14: 密文与 NIST 向量一致
+  ok   TC14: 标签与 NIST 向量一致
+  ok   TC14: 能解回原文
+[3] AES-GCM 必须能识破篡改
+  ok   加密成功
+  ok   正常情况下能解开
+  ok   密文被改一个字节 -> 认证失败（拒绝）
+  ok   密文被改一个字节 -> 认证失败（拒绝）
+  ok   密文被改一个字节 -> 认证失败（拒绝）
+  ok   换密钥 -> 拒绝
+  ok   换 nonce -> 拒绝
+  ok   16 字节密钥（AES-128）被拒绝
+  ok   16 字节 nonce 被拒绝
+  ok   比标签还短的密文被拒绝
+  ok   加密全部 256 种字节值
+  ok   二进制数据能原样还原
+[4] ECDH P-256
+  ok   生成 Alice 的密钥对
+  ok   生成 Bob 的密钥对
+  ok   公钥是 64 字节（X||Y）
+  ok   Bob 的公钥也是 64 字节
+  ok   两个人的公钥不一样
+  ok   私钥 blob 非空
+  ok   Alice 算出共享密钥
+  ok   Bob 算出共享密钥
+  ok   共享密钥是 32 字节
+  ok   ★ 两边算出的共享密钥完全相同（ECDH 的根本性质）
+  ok   和第三个人算出的密钥不同
+  ok   全 FF 的假公钥被拒绝
+  ok   长度不对的公钥被拒绝
+  ok   空公钥被拒绝
+[5] 会话密钥派生
+  ok   派生出的两个密钥都是 32 字节
+  ok   ★ 两个方向的密钥必须不同（否则 GCM nonce 会重用）
+  ok   同样的输入派生出同样的密钥（确定性）
+  ok   客户端随机数变了 -> 密钥完全不同（防重放）
+  ok   服务器随机数变了 -> 密钥完全不同
+  ok   共享密钥变了 -> 会话密钥完全不同
+[6] 随机数
+  ok   取 32 字节
+  ok   再取 32 字节
+  ok   两次取值不同
+  ok   连续取 8 次都不重复
+  ok   取 0 字节返回空
+  ok   64 字节不全为零（随机源不是坏的）
+[7] 会话加解密
+  ok   握手：两边共享密钥一致
+  ok   客户端会话启动（发 c2s，收 s2c）
+  ok   服务端会话启动（发 s2c，收 c2s）
+  ok   两个会话都处于激活状态
+  ok   客户端加密
+  ok   密文和明文不一样
+  ok   ★ 服务端解出原文（含中文和密码）
+  ok   服务端收计数 +1
+  ok   服务端加密回复
+  ok   ★ 客户端解出回复
+  ok   ★ 同样的明文连发两次，密文不同（nonce 没重用）
+  ok   发送计数为 2
+  ok   第 1 条能解开
+  ok   第 2 条能解开
+  ok   ★ 被篡改的行解不开（会话层也要拦住）
+  ok   没 Start 时会话是未激活的
+  ok   未激活时不能加密
+  ok   未激活时不能解密
+  ok   16 字节的密钥不能启动会话
+  ok   空密钥不能启动会话
+  ok   Reset 清干净了
+[8] 公钥指纹
+  ok   指纹非空
+  ok   同一个公钥的指纹稳定不变
+  ok   指纹长度是 47（AA:BB:... 共 16 组）
+  ok   指纹里有冒号分隔
+  ok   不同公钥的指纹不同
+[9] 跨语言一致性（与安卓端 Kotlin 实现比对）
+  ok   fixture 常量长度正确（标量 32 / 公钥 64）
+  ok   fixture 共享密钥是 32 字节
+  ok   从固定标量重建 Alice 的密钥对
+  ok   从固定标量重建 Bob 的密钥对
+  ok   重建后的公钥与输入一致
+  ok   标量与公钥错配时 CNG 仍会接受（这是它的真实行为，没有校验）
+  ok   错配对象仍能算共享密钥
+  ok   ★ 错配时 ECDH 用的仍是标量 d，结果正确（安全性不受影响）
+  ok   标量长度不对被拒绝
+  ok   公钥长度不对被拒绝
+  ok   Alice 算共享密钥
+  ok   Bob 算共享密钥
+  ok   ★ 共享密钥与 fixture 一致（这一条盯的就是 Windows 的小端序）
+  ok   ★ 反向算出来的也一致
+  ok   ★ 派生的 c2s 会话密钥与 fixture 一致
+  ok   ★ 派生的 s2c 会话密钥与 fixture 一致
+  ok   用固定会话密钥加密固定明文
+  ok   密文长度 = 明文长度 + 16 字节标签
+  ok   能解回原文
+  （固定明文用 c2s 密钥加密后是：2f7625a338ac207b7dc2762879944c1d17616a6dd541a2bdf591ae6c6581693aee9ebfb3）
+
+101 checks, 0 failures
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"crypto_tests" end time: Oct 02 19:35 �й���׼ʱ��
+"crypto_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+12/13 Testing: voice_notes_tests
+12/13 Test: voice_notes_tests
+Command: "D:/codes/dchat/build/test_voice_notes.exe"
+Directory: D:/codes/dchat/build
+"voice_notes_tests" start time: Oct 02 19:35 �й���׼ʱ��
+Output:
+----------------------------------------------------------
+== dchat voice notes tests ==
+[1] 音频扩展名识别
+  ok   wav
+  ok   m4a，大小写不敏感
+  ok   带路径、中文名也行
+  ok   安卓端可能录出来的容器都认
+  ok   txt 不是音频
+  ok   没有扩展名不算
+  ok   只有扩展名本身（没点）不算
+[2] 时长格式化
+  ok   个位数秒补零
+  ok   分钟进位
+  ok   整分钟
+  ok   0 秒
+  ok   时长未知（-1）时不显示 -1:-1
+[3] 上限是按码率算出来的，不是手写的
+  ok   16 kHz 16 位单声道 = 32 KB/s
+  ok   录满上限的字节数不超过文件上限（2080000 <= 2097152）
+[4] 语音能不能发
+  ok   正常录音可以发
+  ok   0 秒被拦
+  ok   刚好 1 秒可以发（边界要测两头）
+  ok   刚好到时长上限可以发
+  ok   超时长被拦
+  ok   刚好到大小上限可以发
+  ok   超大小被拦
+  ok   要说清上限是多少：语音文件最大 2.0 MB，这段有 2.0 MB
+  ok   不是音频格式被拦
+  ok   0 字节被拦
+  ok   字节数说成人话：8.8 KB
+[5] 自动下载的边界
+  ok   种类是 voice 就自动下，不看扩展名
+  ok   种类是 voice 时文件名再怪也自动下
+  ok   种类大小写不敏感
+  ok   普通文件不自动下
+  ok   贴纸在桌面端不自动下（没有内联渲染，下了也是堆垃圾）
+  ok   老服务器（没有种类这一格）时退回原有行为：图片自动下
+  ok   老服务器时视频仍不自动下
+[6] WAV 拼装
+  ok   总长度 = 44 字节头 + 数据
+  ok   以 RIFF 开头
+  ok   接着是 WAVE
+  ok   fmt 块
+  ok   data 块
+  ok   RIFF 长度字段 = 36 + 数据长度
+  ok   写测试文件
+  ok   读回来
+  ok   格式标记是 PCM
+  ok   采样率读对了
+  ok   1000 字节不足 1 秒，报 0
+[7] 端到端：3 秒录音 → 写盘 → 读回来
+  ok   合成 3 秒 PCM 的长度正确
+  ok   落盘
+  ok   读回来
+  ok   时长读出来是 3 秒（实际 3）
+  ok   这段录音可以直接发（大小 93.8 KB）
+  ok   PlaySound 能播这个 WAV
+[8] 读不存在的文件 / 非 WAV 文件
+  ok   读不存在的文件返回 false，而不是崩
+  ok   不是 RIFF 的文件也返回 false
+[9] 没有麦克风时给出的是一句人话
+  ok   没有录音设备时 Start 返回 false
+  ok   给了原因
+  ok   原因里明确提到麦克风：这台机器没有麦克风，发不了语音（可以听别人发的）
+  ok   状态没有变成录音中
+  ok   没录上任何时长
+  ok   取消一次没开始的录音不会崩
+[10] FILE_SEND 的字段数（服务器按位置解析，错了整条命令被拒）
+  ok   普通文件是 3 格：f123_1 6K+t6Z+zIDEud2F2 48000
+  ok   带缩略图是 4 格
+  ok   最后一格是缩略图标记：f123_1 6K+t6Z+zIDEud2F2 48000 1
+  ok   语音也是 4 格：f123_1 6K+t6Z+zIDEud2F2 48000 voice
+  ok   最后一格是 voice：f123_1 6K+t6Z+zIDEud2F2 48000 voice
+  ok   带种类时不发缩略图标记，仍是 4 格：f123_1 6K+t6Z+zIDEud2F2 48000 voice
+  ok   种类没被缩略图标记挤掉
+
+64 checks, 0 failures
+<end of output>
+Test time =   3.13 sec
+----------------------------------------------------------
+Test Passed.
+"voice_notes_tests" end time: Oct 02 19:36 �й���׼ʱ��
+"voice_notes_tests" time elapsed: 00:00:03
+----------------------------------------------------------
+
+13/13 Testing: ui_layout_tests
+13/13 Test: ui_layout_tests
+Command: "D:/codes/dchat/build/test_ui_layout.exe"
+Directory: D:/codes/dchat/build
+"ui_layout_tests" start time: Oct 02 19:36 �й���׼ʱ��
+Output:
+----------------------------------------------------------
+== dchat UI layout tests ==
+[1] 菜单栏
+  ok   三项：连接 / 设置 / 帮助
+  ok   没连上时第一项是「连接」
+  ok   第一项不出界
+  ok   菜单项不超出菜单栏高度
+  ok   菜单项从左到右依次排列、互不重叠
+  ok   每一项的正中间都能点中自己
+  ok   菜单项右侧的空白不命中任何菜单项
+  ok   连上后第一项变成「断开」
+  ok   仍然是三项，不是又多摆一个按钮
+[2] 齿轮与状态胶囊
+  ok   齿轮是正方形热区
+  ok   齿轮不越出右边界
+  ok   齿轮在菜单栏里
+  ok   状态胶囊在齿轮左边，不重叠
+  ok   两者确实不重叠
+  ok   胶囊在菜单栏里
+[3] 底部：状态条 + 输入行
+  ok   状态条横跨整个宽度、正好在输入行之上
+  ok   状态条高度对得上
+  ok   状态条在记录区下方
+  ok   输入胶囊不出界
+  ok   ＋ 不出界
+  ok   发送不出界
+  ok   胶囊和 ＋ 不重叠
+  ok   ＋ 和发送不重叠
+  ok   胶囊左边留了边距
+  ok   发送右边留了边距
+  ok   胶囊高度对得上
+  ok   ＋ 是正方形
+  ok   胶囊在窗口内
+  ok   胶囊在输入行里
+  ok   窗口收窄到最小尺寸时胶囊还有宽度（602）
+  ok   窄窗口下发送不出界
+[4] ＋ 菜单
+  ok   窗口够高时菜单有效
+  ok   菜单往上弹，不盖住 ＋ 按钮
+  ok   菜单不越过菜单栏
+  ok   两个菜单项都在面板里
+  ok   两个菜单项不重叠
+  ok   点第一项是「发送文件」
+  ok   点第二项是「录一段语音」
+  ok   点面板外的左边不算点中任何一项
+  ok   点中间在面板里
+  ok   点面板外就当作「点外面」（调用方据此收起菜单）
+  ok   窗口很矮时菜单要么不弹、要么不越过菜单栏
+[5] 设置窗口
+  ok   三段式选择器有足够宽度放下「跟随系统」四个字
+  ok   控件起点给左列标签留了位置（不会和中文标签叠在一起）
+  ok   彩色聊天的说明文字在开关右边，不重叠
+  ok   开关和说明不重叠
+  ok   地址/端口输入框都在客户区里
+  ok   语音提示文字在客户区里
+  ok   提示文字在底部按钮**上方**（不会被按钮压住）
+  ok   两个底部按钮都在客户区里
+  ok   两个底部按钮不重叠
+  ok   标题在选择器上方
+  ok   最左边是第 0 段
+  ok   最右边是第 2 段
+  ok   选择器外面不算点中
+
+55 checks, 0 failures
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"ui_layout_tests" end time: Oct 02 19:36 �й���׼ʱ��
+"ui_layout_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Oct 02 19:36 �й���׼ʱ��

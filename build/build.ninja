@@ -112,6 +112,15 @@ build CMakeFiles/dchat_protocol.dir/src/server_rules.cpp.obj: CXX_COMPILER__dcha
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_protocol.dir
 
+build CMakeFiles/dchat_protocol.dir/src/crypto.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/crypto.cpp || cmake_object_order_depends_target_dchat_protocol
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\dchat_protocol.dir\src\crypto.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\dchat_protocol.dir
+  OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
+  TARGET_SUPPORT_DIR = CMakeFiles\dchat_protocol.dir
+
 
 # =============================================================================
 # Link build statements for STATIC_LIBRARY target dchat_protocol
@@ -120,7 +129,7 @@ build CMakeFiles/dchat_protocol.dir/src/server_rules.cpp.obj: CXX_COMPILER__dcha
 #############################################
 # Link the static library libdchat_protocol.a
 
-build libdchat_protocol.a: CXX_STATIC_LIBRARY_LINKER__dchat_protocol_Release CMakeFiles/dchat_protocol.dir/src/protocol.cpp.obj CMakeFiles/dchat_protocol.dir/src/render.cpp.obj CMakeFiles/dchat_protocol.dir/src/input_history.cpp.obj CMakeFiles/dchat_protocol.dir/src/server_command.cpp.obj CMakeFiles/dchat_protocol.dir/src/auth.cpp.obj CMakeFiles/dchat_protocol.dir/src/file_transfer.cpp.obj CMakeFiles/dchat_protocol.dir/src/server_rules.cpp.obj
+build libdchat_protocol.a: CXX_STATIC_LIBRARY_LINKER__dchat_protocol_Release CMakeFiles/dchat_protocol.dir/src/protocol.cpp.obj CMakeFiles/dchat_protocol.dir/src/render.cpp.obj CMakeFiles/dchat_protocol.dir/src/input_history.cpp.obj CMakeFiles/dchat_protocol.dir/src/server_command.cpp.obj CMakeFiles/dchat_protocol.dir/src/auth.cpp.obj CMakeFiles/dchat_protocol.dir/src/file_transfer.cpp.obj CMakeFiles/dchat_protocol.dir/src/server_rules.cpp.obj CMakeFiles/dchat_protocol.dir/src/crypto.cpp.obj
   CONFIG = Release
   LANGUAGE_COMPILE_FLAGS = -O3 -DNDEBUG
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
@@ -205,6 +214,24 @@ build CMakeFiles/dchat_ui.dir/src/image_preview.cpp.obj: CXX_COMPILER__dchat_ui_
   OBJECT_FILE_DIR = CMakeFiles\dchat_ui.dir\src
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_ui.dir
 
+build CMakeFiles/dchat_ui.dir/src/voice_notes.cpp.obj: CXX_COMPILER__dchat_ui_unscanned_Release D$:/codes/dchat/src/voice_notes.cpp || cmake_object_order_depends_target_dchat_ui
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\dchat_ui.dir\src\voice_notes.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\dchat_ui.dir
+  OBJECT_FILE_DIR = CMakeFiles\dchat_ui.dir\src
+  TARGET_SUPPORT_DIR = CMakeFiles\dchat_ui.dir
+
+build CMakeFiles/dchat_ui.dir/src/ui_layout.cpp.obj: CXX_COMPILER__dchat_ui_unscanned_Release D$:/codes/dchat/src/ui_layout.cpp || cmake_object_order_depends_target_dchat_ui
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\dchat_ui.dir\src\ui_layout.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\dchat_ui.dir
+  OBJECT_FILE_DIR = CMakeFiles\dchat_ui.dir\src
+  TARGET_SUPPORT_DIR = CMakeFiles\dchat_ui.dir
+
 
 # =============================================================================
 # Link build statements for STATIC_LIBRARY target dchat_ui
@@ -213,7 +240,7 @@ build CMakeFiles/dchat_ui.dir/src/image_preview.cpp.obj: CXX_COMPILER__dchat_ui_
 #############################################
 # Link the static library libdchat_ui.a
 
-build libdchat_ui.a: CXX_STATIC_LIBRARY_LINKER__dchat_ui_Release CMakeFiles/dchat_ui.dir/src/rounded.cpp.obj CMakeFiles/dchat_ui.dir/src/bubble.cpp.obj CMakeFiles/dchat_ui.dir/src/image_preview.cpp.obj
+build libdchat_ui.a: CXX_STATIC_LIBRARY_LINKER__dchat_ui_Release CMakeFiles/dchat_ui.dir/src/rounded.cpp.obj CMakeFiles/dchat_ui.dir/src/bubble.cpp.obj CMakeFiles/dchat_ui.dir/src/image_preview.cpp.obj CMakeFiles/dchat_ui.dir/src/voice_notes.cpp.obj CMakeFiles/dchat_ui.dir/src/ui_layout.cpp.obj
   CONFIG = Release
   LANGUAGE_COMPILE_FLAGS = -O3 -DNDEBUG
   OBJECT_DIR = CMakeFiles\dchat_ui.dir
@@ -261,7 +288,7 @@ build dchat_client.exe: CXX_EXECUTABLE_LINKER__dchat_client_Release CMakeFiles/d
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG
   LINK_FLAGS = -mwindows -static -static-libgcc -static-libstdc++
-  LINK_LIBRARIES = libdchat_ui.a  libdchat_protocol.a  -lws2_32  -luser32  -lgdi32  -ldwmapi  -luxtheme  -lcomdlg32  -lshell32  -lgdiplus  -lole32  -lbcrypt  -luser32  -lgdi32  -lshell32  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  LINK_LIBRARIES = libdchat_ui.a  libdchat_protocol.a  -lws2_32  -luser32  -lgdi32  -ldwmapi  -luxtheme  -lcomdlg32  -lshell32  -lgdiplus  -lole32  -lwinmm  -lbcrypt  -luser32  -lgdi32  -lshell32  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\dchat_client.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
@@ -378,7 +405,7 @@ build test_rounded.exe: CXX_EXECUTABLE_LINKER__test_rounded_Release CMakeFiles/t
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG
   LINK_FLAGS = -static -static-libgcc -static-libstdc++
-  LINK_LIBRARIES = libdchat_ui.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  LINK_LIBRARIES = libdchat_ui.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lwinmm  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\test_rounded.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
@@ -417,7 +444,7 @@ build test_bubble.exe: CXX_EXECUTABLE_LINKER__test_bubble_Release CMakeFiles/tes
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG
   LINK_FLAGS = -static -static-libgcc -static-libstdc++
-  LINK_LIBRARIES = libdchat_ui.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  LINK_LIBRARIES = libdchat_ui.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lwinmm  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\test_bubble.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
@@ -456,7 +483,7 @@ build test_image_preview.exe: CXX_EXECUTABLE_LINKER__test_image_preview_Release 
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG
   LINK_FLAGS = -static -static-libgcc -static-libstdc++
-  LINK_LIBRARIES = libdchat_ui.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  LINK_LIBRARIES = libdchat_ui.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lwinmm  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\test_image_preview.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
@@ -464,6 +491,123 @@ build test_image_preview.exe: CXX_EXECUTABLE_LINKER__test_image_preview_Release 
   TARGET_IMPLIB = libtest_image_preview.dll.a
   TARGET_PDB = test_image_preview.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\test_image_preview.dir
+
+# =============================================================================
+# Object build statements for EXECUTABLE target test_voice_notes
+
+
+#############################################
+# Order-only phony target for test_voice_notes
+
+build cmake_object_order_depends_target_test_voice_notes: phony || cmake_object_order_depends_target_dchat_protocol cmake_object_order_depends_target_dchat_ui
+
+build CMakeFiles/test_voice_notes.dir/tests/test_voice_notes.cpp.obj: CXX_COMPILER__test_voice_notes_unscanned_Release D$:/codes/dchat/tests/test_voice_notes.cpp || cmake_object_order_depends_target_test_voice_notes
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\test_voice_notes.dir\tests\test_voice_notes.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\test_voice_notes.dir
+  OBJECT_FILE_DIR = CMakeFiles\test_voice_notes.dir\tests
+  TARGET_SUPPORT_DIR = CMakeFiles\test_voice_notes.dir
+
+
+# =============================================================================
+# Link build statements for EXECUTABLE target test_voice_notes
+
+
+#############################################
+# Link the executable test_voice_notes.exe
+
+build test_voice_notes.exe: CXX_EXECUTABLE_LINKER__test_voice_notes_Release CMakeFiles/test_voice_notes.dir/tests/test_voice_notes.cpp.obj | libdchat_ui.a libdchat_protocol.a || libdchat_protocol.a libdchat_ui.a
+  CONFIG = Release
+  FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
+  LINK_LIBRARIES = libdchat_ui.a  libdchat_protocol.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lwinmm  -lbcrypt  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  OBJECT_DIR = CMakeFiles\test_voice_notes.dir
+  POST_BUILD = cd .
+  PRE_LINK = cd .
+  TARGET_FILE = test_voice_notes.exe
+  TARGET_IMPLIB = libtest_voice_notes.dll.a
+  TARGET_PDB = test_voice_notes.exe.dbg
+  TARGET_SUPPORT_DIR = CMakeFiles\test_voice_notes.dir
+
+# =============================================================================
+# Object build statements for EXECUTABLE target test_ui_layout
+
+
+#############################################
+# Order-only phony target for test_ui_layout
+
+build cmake_object_order_depends_target_test_ui_layout: phony || cmake_object_order_depends_target_dchat_ui
+
+build CMakeFiles/test_ui_layout.dir/tests/test_ui_layout.cpp.obj: CXX_COMPILER__test_ui_layout_unscanned_Release D$:/codes/dchat/tests/test_ui_layout.cpp || cmake_object_order_depends_target_test_ui_layout
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\test_ui_layout.dir\tests\test_ui_layout.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\test_ui_layout.dir
+  OBJECT_FILE_DIR = CMakeFiles\test_ui_layout.dir\tests
+  TARGET_SUPPORT_DIR = CMakeFiles\test_ui_layout.dir
+
+
+# =============================================================================
+# Link build statements for EXECUTABLE target test_ui_layout
+
+
+#############################################
+# Link the executable test_ui_layout.exe
+
+build test_ui_layout.exe: CXX_EXECUTABLE_LINKER__test_ui_layout_Release CMakeFiles/test_ui_layout.dir/tests/test_ui_layout.cpp.obj | libdchat_ui.a || libdchat_ui.a
+  CONFIG = Release
+  FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
+  LINK_LIBRARIES = libdchat_ui.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lwinmm  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  OBJECT_DIR = CMakeFiles\test_ui_layout.dir
+  POST_BUILD = cd .
+  PRE_LINK = cd .
+  TARGET_FILE = test_ui_layout.exe
+  TARGET_IMPLIB = libtest_ui_layout.dll.a
+  TARGET_PDB = test_ui_layout.exe.dbg
+  TARGET_SUPPORT_DIR = CMakeFiles\test_ui_layout.dir
+
+# =============================================================================
+# Object build statements for EXECUTABLE target ui_mockup
+
+
+#############################################
+# Order-only phony target for ui_mockup
+
+build cmake_object_order_depends_target_ui_mockup: phony || cmake_object_order_depends_target_dchat_protocol cmake_object_order_depends_target_dchat_ui
+
+build CMakeFiles/ui_mockup.dir/tools/ui_mockup.cpp.obj: CXX_COMPILER__ui_mockup_unscanned_Release D$:/codes/dchat/tools/ui_mockup.cpp || cmake_object_order_depends_target_ui_mockup
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\ui_mockup.dir\tools\ui_mockup.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\ui_mockup.dir
+  OBJECT_FILE_DIR = CMakeFiles\ui_mockup.dir\tools
+  TARGET_SUPPORT_DIR = CMakeFiles\ui_mockup.dir
+
+
+# =============================================================================
+# Link build statements for EXECUTABLE target ui_mockup
+
+
+#############################################
+# Link the executable ui_mockup.exe
+
+build ui_mockup.exe: CXX_EXECUTABLE_LINKER__ui_mockup_Release CMakeFiles/ui_mockup.dir/tools/ui_mockup.cpp.obj | libdchat_ui.a libdchat_protocol.a || libdchat_protocol.a libdchat_ui.a
+  CONFIG = Release
+  FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
+  LINK_LIBRARIES = libdchat_ui.a  libdchat_protocol.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lwinmm  -lbcrypt  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  OBJECT_DIR = CMakeFiles\ui_mockup.dir
+  POST_BUILD = cd .
+  PRE_LINK = cd .
+  TARGET_FILE = ui_mockup.exe
+  TARGET_IMPLIB = libui_mockup.dll.a
+  TARGET_PDB = ui_mockup.exe.dbg
+  TARGET_SUPPORT_DIR = CMakeFiles\ui_mockup.dir
 
 # =============================================================================
 # Object build statements for EXECUTABLE target test_server_rules
@@ -660,6 +804,45 @@ build test_file_transfer.exe: CXX_EXECUTABLE_LINKER__test_file_transfer_Release 
   TARGET_PDB = test_file_transfer.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\test_file_transfer.dir
 
+# =============================================================================
+# Object build statements for EXECUTABLE target test_crypto
+
+
+#############################################
+# Order-only phony target for test_crypto
+
+build cmake_object_order_depends_target_test_crypto: phony || cmake_object_order_depends_target_dchat_protocol
+
+build CMakeFiles/test_crypto.dir/tests/test_crypto.cpp.obj: CXX_COMPILER__test_crypto_unscanned_Release D$:/codes/dchat/tests/test_crypto.cpp || cmake_object_order_depends_target_test_crypto
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\test_crypto.dir\tests\test_crypto.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\test_crypto.dir
+  OBJECT_FILE_DIR = CMakeFiles\test_crypto.dir\tests
+  TARGET_SUPPORT_DIR = CMakeFiles\test_crypto.dir
+
+
+# =============================================================================
+# Link build statements for EXECUTABLE target test_crypto
+
+
+#############################################
+# Link the executable test_crypto.exe
+
+build test_crypto.exe: CXX_EXECUTABLE_LINKER__test_crypto_Release CMakeFiles/test_crypto.dir/tests/test_crypto.cpp.obj | libdchat_protocol.a || libdchat_protocol.a
+  CONFIG = Release
+  FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
+  LINK_LIBRARIES = libdchat_protocol.a  -lbcrypt  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  OBJECT_DIR = CMakeFiles\test_crypto.dir
+  POST_BUILD = cd .
+  PRE_LINK = cd .
+  TARGET_FILE = test_crypto.exe
+  TARGET_IMPLIB = libtest_crypto.dll.a
+  TARGET_PDB = test_crypto.exe.dbg
+  TARGET_SUPPORT_DIR = CMakeFiles\test_crypto.dir
+
 
 #############################################
 # Utility command for test
@@ -710,6 +893,8 @@ build test_auth: phony test_auth.exe
 
 build test_bubble: phony test_bubble.exe
 
+build test_crypto: phony test_crypto.exe
+
 build test_file_transfer: phony test_file_transfer.exe
 
 build test_history: phony test_history.exe
@@ -726,6 +911,12 @@ build test_server_command: phony test_server_command.exe
 
 build test_server_rules: phony test_server_rules.exe
 
+build test_ui_layout: phony test_ui_layout.exe
+
+build test_voice_notes: phony test_voice_notes.exe
+
+build ui_mockup: phony ui_mockup.exe
+
 # =============================================================================
 # Folder targets.
 
@@ -734,7 +925,7 @@ build test_server_rules: phony test_server_rules.exe
 #############################################
 # Folder: D:/codes/dchat/build
 
-build all: phony libdchat_protocol.a dchat_server.exe libdchat_ui.a dchat_client.exe test_protocol.exe test_render.exe test_rounded.exe test_bubble.exe test_image_preview.exe test_server_rules.exe test_history.exe test_server_command.exe test_auth.exe test_file_transfer.exe
+build all: phony libdchat_protocol.a dchat_server.exe libdchat_ui.a dchat_client.exe test_protocol.exe test_render.exe test_rounded.exe test_bubble.exe test_image_preview.exe test_voice_notes.exe test_ui_layout.exe ui_mockup.exe test_server_rules.exe test_history.exe test_server_command.exe test_auth.exe test_file_transfer.exe test_crypto.exe
 
 # =============================================================================
 # Built-in targets
