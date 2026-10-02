@@ -91,21 +91,23 @@ BottomLayout LayoutBottom(HDC dc, HFONT font, int windowWidth, int windowHeight,
     return layout;
 }
 
-PlusMenuLayout LayoutPlusMenu(const BottomLayout& bottom, int contentTop) {
-    PlusMenuLayout menu;
-    const int itemHeight = 34;
-    const int panelHeight = itemHeight * 2 + 12;
-    const int panelWidth = 180;
-    const int panelTop = bottom.plusButton.top - 8 - panelHeight;
-    // 上方放不下就不弹（否则会盖住聊天记录的最上面几条，还看不出来自己在哪）
-    if (panelTop < contentTop + 4) return menu;
+RECT PlusMenuRect(const BottomLayout& bottom) {
+    // 面板放在「＋」上方，**下边界不压到「＋」按钮**（盖住按钮会让人以为菜单点不动了）。
+    // 面板是独立弹出窗口，不受父窗口布局约束，所以这里不需要"放不下就别弹"那套——
+    // 窗口再矮也能浮在上面（系统菜单就是这么做的）。
+    const int panelHeight = kPlusMenuItemHeight * 2 + 12;
+    const int bottomEdge = bottom.plusButton.top - 6;
+    return RECT{bottom.plusButton.right - kPlusMenuWidth, bottomEdge - panelHeight,
+                bottom.plusButton.right, bottomEdge};
+}
 
-    menu.panel = RECT{bottom.plusButton.right - panelWidth, panelTop, bottom.plusButton.right,
-                      panelTop + panelHeight};
+PlusMenuLayout LayoutPlusMenu(const BottomLayout& bottom) {
+    PlusMenuLayout menu;
+    menu.panel = PlusMenuRect(bottom);
     menu.fileItem = RECT{menu.panel.left + 6, menu.panel.top + 6, menu.panel.right - 6,
-                         menu.panel.top + 6 + itemHeight};
+                         menu.panel.top + 6 + kPlusMenuItemHeight};
     menu.voiceItem = RECT{menu.fileItem.left, menu.fileItem.bottom + 2, menu.fileItem.right,
-                          menu.fileItem.bottom + 2 + itemHeight};
+                          menu.fileItem.bottom + 2 + kPlusMenuItemHeight};
     menu.valid = true;
     return menu;
 }
@@ -176,6 +178,50 @@ int SegmentHitTest(const RECT& segment, int segments, int x, int y) {
 // ---------------------------------------------------------------------------
 // 图标
 // ---------------------------------------------------------------------------
+
+bool HasIconFont() {
+    // 探测一次就够：字体在程序运行期间不会凭空出现
+    static const bool available = [] {
+        HDC screen = GetDC(nullptr);
+        const int height = -MulDiv(12, GetDeviceCaps(screen, LOGPIXELSY), 72);
+        ReleaseDC(nullptr, screen);
+        HFONT font = CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                 OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                 DEFAULT_PITCH | FF_DONTCARE, kIconFontName);
+        if (!font) return false;
+        // 拿字形 U+E713 去问字体：取不到字形时 GDI 会回退到别的字体，
+        // 这时 GetGlyphIndicesW 会给出 0xFFFF（缺失）或者明显不同的字形
+        HDC dc = CreateCompatibleDC(nullptr);
+        HGDIOBJ old = SelectObject(dc, font);
+        wchar_t probe[2] = {kGlyphGear, 0};
+        WORD index = 0;
+        const DWORD result = GetGlyphIndicesW(dc, probe, 1, &index, GGI_MARK_NONEXISTING_GLYPHS);
+        SelectObject(dc, old);
+        DeleteDC(dc);
+        DeleteObject(font);
+        return result != GDI_ERROR && index != 0xFFFF;
+    }();
+    return available;
+}
+
+bool DrawGlyph(HDC dc, const RECT& box, wchar_t glyph, int fontHeight, COLORREF color) {
+    if (!HasIconFont()) return false;
+    HFONT font = CreateFontW(-fontHeight, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                             DEFAULT_PITCH | FF_DONTCARE, kIconFontName);
+    if (!font) return false;
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    const int oldMode = SetBkMode(dc, TRANSPARENT);
+    const COLORREF oldColor = SetTextColor(dc, color);
+    const wchar_t text[2] = {glyph, 0};
+    RECT target = box;
+    DrawTextW(dc, text, 1, &target, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SetTextColor(dc, oldColor);
+    SetBkMode(dc, oldMode);
+    SelectObject(dc, oldFont);
+    DeleteObject(font);
+    return true;
+}
 
 void DrawGearIcon(HDC dc, int centerX, int centerY, int radius, COLORREF color) {
     const int inner = radius - 4;

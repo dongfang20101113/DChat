@@ -571,6 +571,45 @@ build test_ui_layout.exe: CXX_EXECUTABLE_LINKER__test_ui_layout_Release CMakeFil
   TARGET_SUPPORT_DIR = CMakeFiles\test_ui_layout.dir
 
 # =============================================================================
+# Object build statements for EXECUTABLE target icon_probe
+
+
+#############################################
+# Order-only phony target for icon_probe
+
+build cmake_object_order_depends_target_icon_probe: phony || cmake_object_order_depends_target_dchat_ui
+
+build CMakeFiles/icon_probe.dir/tools/icon_probe.cpp.obj: CXX_COMPILER__icon_probe_unscanned_Release D$:/codes/dchat/tools/icon_probe.cpp || cmake_object_order_depends_target_icon_probe
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\icon_probe.dir\tools\icon_probe.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\icon_probe.dir
+  OBJECT_FILE_DIR = CMakeFiles\icon_probe.dir\tools
+  TARGET_SUPPORT_DIR = CMakeFiles\icon_probe.dir
+
+
+# =============================================================================
+# Link build statements for EXECUTABLE target icon_probe
+
+
+#############################################
+# Link the executable icon_probe.exe
+
+build icon_probe.exe: CXX_EXECUTABLE_LINKER__icon_probe_Release CMakeFiles/icon_probe.dir/tools/icon_probe.cpp.obj | libdchat_ui.a || libdchat_ui.a
+  CONFIG = Release
+  FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
+  LINK_LIBRARIES = libdchat_ui.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lwinmm  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  OBJECT_DIR = CMakeFiles\icon_probe.dir
+  POST_BUILD = cd .
+  PRE_LINK = cd .
+  TARGET_FILE = icon_probe.exe
+  TARGET_IMPLIB = libicon_probe.dll.a
+  TARGET_PDB = icon_probe.exe.dbg
+  TARGET_SUPPORT_DIR = CMakeFiles\icon_probe.dir
+
+# =============================================================================
 # Object build statements for EXECUTABLE target ui_mockup
 
 
@@ -889,6 +928,8 @@ build dchat_server: phony dchat_server.exe
 
 build dchat_ui: phony libdchat_ui.a
 
+build icon_probe: phony icon_probe.exe
+
 build test_auth: phony test_auth.exe
 
 build test_bubble: phony test_bubble.exe
@@ -925,7 +966,7 @@ build ui_mockup: phony ui_mockup.exe
 #############################################
 # Folder: D:/codes/dchat/build
 
-build all: phony libdchat_protocol.a dchat_server.exe libdchat_ui.a dchat_client.exe test_protocol.exe test_render.exe test_rounded.exe test_bubble.exe test_image_preview.exe test_voice_notes.exe test_ui_layout.exe ui_mockup.exe test_server_rules.exe test_history.exe test_server_command.exe test_auth.exe test_file_transfer.exe test_crypto.exe
+build all: phony libdchat_protocol.a dchat_server.exe libdchat_ui.a dchat_client.exe test_protocol.exe test_render.exe test_rounded.exe test_bubble.exe test_image_preview.exe test_voice_notes.exe test_ui_layout.exe icon_probe.exe ui_mockup.exe test_server_rules.exe test_history.exe test_server_command.exe test_auth.exe test_file_transfer.exe test_crypto.exe
 
 # =============================================================================
 # Built-in targets

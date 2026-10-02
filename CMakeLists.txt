@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.20)
 project(dchat LANGUAGES CXX)
 
 if(WIN32)
@@ -79,6 +79,9 @@ target_link_libraries(test_ui_layout PRIVATE dchat_ui)
 
 # 界面改版效果图：把提议的新布局离屏画成 PNG（复用真界面的配色/字号/圆角绘制）
 # 不是测试目标，只在改版讨论时用：build\ui_mockup.exe [输出目录]
+add_executable(icon_probe tools/icon_probe.cpp)
+target_link_libraries(icon_probe PRIVATE dchat_ui gdiplus gdi32 user32)
+
 add_executable(ui_mockup tools/ui_mockup.cpp)
 target_link_libraries(ui_mockup PRIVATE dchat_ui dchat_protocol gdiplus gdi32 user32)
 

@@ -62,7 +62,7 @@
   - **状态条 + 输入行**（底部）：状态条是**只读**的（连接 · 用户 · 在线人数 · 传输进度 · 录音计时），
     不是按钮；输入行只有「胶囊输入框 + ＋ + 发送」——**整个窗口只剩「发送」一个真按钮**，
     文件、语音都收进「＋」的弹出菜单里
-  - 几何全部在 `src/ui_layout.cpp`（纯计算，55 项单测盯着：不重叠、不越界、点得中、窗口变矮时的降级）
+  - 几何全部在 `src/ui_layout.cpp`（纯计算，57 项单测盯着：不重叠、不越界、点得中）
 - **设置窗口**（齿轮打开，模态、居中）：主题（深色/浅色/跟随系统三段式）、彩色聊天开关、
   服务器地址与端口、语音最长时长。**「完成」才生效，取消 / Esc 原样丢弃**
 - 右上角有「彩色聊天」开关（现在在**设置**里）：关掉后所有气泡统一成灰白配色（昵称也不再着色），便于截图或偏好单色的场景
@@ -341,7 +341,7 @@ alice 2f9c... 8b41... 12000
 ctest --test-dir build --output-on-failure
 ```
 
-也可以直接运行 `build\test_protocol.exe`（协议，63 项）、`build\test_render.exe`（显示规则，51 项）、`build\test_bubble.exe`（气泡布局，26 项）、`build\test_rounded.exe`（圆角绘制，15 项）、`build\test_history.exe`（输入历史，27 项）、`build\test_server_command.exe`（服务端指令与 Tab 补全，202 项）、`build\test_server_rules.exe`（服务器规则，114 项）、`build\test_auth.exe`（账号与密码，39 项）、`build\test_image_preview.exe`（图片/视频预览，14 项）、`build\test_file_transfer.exe`（文件传输公共部分与附件种类，58 项）、`build\test_crypto.exe`（传输加密，101 项）、`build\test_voice_notes.exe`（语音消息，64 项）和 `build\test_ui_layout.exe`（界面外壳几何，55 项）——合计 829 项。
+也可以直接运行 `build\test_protocol.exe`（协议，63 项）、`build\test_render.exe`（显示规则，51 项）、`build\test_bubble.exe`（气泡布局，26 项）、`build\test_rounded.exe`（圆角绘制，15 项）、`build\test_history.exe`（输入历史，27 项）、`build\test_server_command.exe`（服务端指令与 Tab 补全，202 项）、`build\test_server_rules.exe`（服务器规则，114 项）、`build\test_auth.exe`（账号与密码，39 项）、`build\test_image_preview.exe`（图片/视频预览，14 项）、`build\test_file_transfer.exe`（文件传输公共部分与附件种类，58 项）、`build\test_crypto.exe`（传输加密，101 项）、`build\test_voice_notes.exe`（语音消息，64 项）和 `build\test_ui_layout.exe`（界面外壳几何，57 项）——合计 831 项。
 
 `test_voice_notes` **刻意不碰麦克风**：录音设备在开发机 / CI 上经常没有（这台开发机就是 `waveInGetNumDevs() == 0`），写进测试只会让测试随机失败。它验的是判定纯函数、WAV 拼装与解析、以及**端到端**的"合成 PCM → 写 WAV → 读回来（时长对不对）→ `PlaySound` 能不能真放出来"；真正需要硬件的只有 `waveInOpen` 那一句，那句由人手在有麦克风的机器上点一次按钮验证。
 
@@ -373,10 +373,11 @@ ctest --test-dir build --output-on-failure
 | `src/file_transfer.h` / `file_transfer.cpp` | 文件传输的公共部分：Base64 编解码、文件名清理（挡路径穿越）、重名改 `(2)`、分块大小与上限、字节数格式化、**附件「种类」的拼装与识别**（`BuildFileSendRest` / `IsVoiceKind`） |
 | `tests/test_file_transfer.cpp` | 文件传输公共部分的单元测试（含 RFC 4648 标准向量、路径穿越、UTF-8 截断、**最坏情况下 `FILE_DATA` 一行不超协议上限**、`FILE_SEND` 的字段数与种类识别） |
 | `src/voice_notes.h` / `voice_notes.cpp` | 语音消息：录音（`waveIn`）、WAV 拼装与解析、播放（`PlaySound`），以及"这段录音能不能发"的判定。判定是纯函数、可单测；只有 `Start` 需要麦克风 |
-| `src/ui_layout.h` / `ui_layout.cpp` | **主窗口外壳的几何与图标**：菜单栏（连接/设置/帮助 + 状态胶囊 + 齿轮）、底部状态条与输入行、＋弹出菜单、设置窗口布局，以及齿轮/加号等不依赖字体的图标。纯计算 + GDI 绘制，55 项单测 |
+| `src/ui_layout.h` / `ui_layout.cpp` | **主窗口外壳的几何与图标**：菜单栏（连接/设置/帮助 + 状态胶囊 + 齿轮）、底部状态条与输入行、＋弹出菜单与设置窗口布局，以及图标（优先用 Windows 图标字体，取不到才手画）。纯计算 + GDI 绘制，57 项单测 |
 | `tests/test_ui_layout.cpp` | 外壳几何单测：菜单项排列与命中、齿轮与胶囊不重叠、窗口收窄后输入胶囊仍有宽度、＋菜单点外面收起、设置窗口控件不互相压住 |
 | `tools/ui_mockup.cpp` | **界面改版效果图**：把提议的布局离屏画成 PNG（复用真界面的配色/字号/圆角绘制），先看效果再动代码 |
-| `tools/ui-live-smoke.ps1` | **界面真机冒烟**：启动客户端、按客户区坐标发点击消息、截主界面与＋菜单，供人工复核 |
+| `tools/ui-live-smoke.ps1` | **界面真机冒烟**：启动客户端、按客户区坐标发点击消息、截主界面/＋弹出菜单/设置窗口，供人工复核 |
+| `tools/icon_probe.cpp` | **图标选型对照图**：把系统图标和图标字体字形画成一张 PNG（`build\icon-candidates.png`），挑图标时先看图再改代码 |
 | `tests/test_voice_notes.cpp` | 语音消息测试（判定边界、WAV 结构与往返、端到端落盘 + 真实播放、没有麦克风时的提示语）——**不碰麦克风**，没有录音设备的机器上也能全跑 |
 | `src/server.cpp` | 服务器：监听、每客户端一个线程、广播、在线名单、日志 |
 | `src/client.cpp` | 客户端：Win32 界面（连接窗口 + 登录 / 注册两个账号窗口）+ 接收线程（用 PostMessage 把消息投递到界面线程） |

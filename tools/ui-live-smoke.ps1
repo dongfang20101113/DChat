@@ -71,22 +71,40 @@ function ClickClient([IntPtr]$h, [int]$x, [int]$y) {
 
 Shoot "ui-new-main.png" $hwnd
 
-# 「＋」：右边界 - 12(边距) - 78(发送) - 8(间距) - 20(半径)
+# 坐标按 src/ui_layout.h 的算式推（**别手算状态条/输入行的高度**，
+# 我第一版把「＋」的 y 算高了 24 像素，点上去毫无反应，白白怀疑了半天代码）：
+#   statusTop = 客户区高 - 24(状态条) - 56(输入行)
+#   「＋」中心 y = statusTop + 24 + 28
+$statusTop = $ch - 24 - 56
 $plusX = $cw - 12 - 78 - 8 - 20
-$plusY = $ch - 24 - 28
+$plusY = $statusTop + 24 + 28
 Write-Host ("  点「＋」{0},{1}" -f $plusX, $plusY)
 ClickClient $hwnd $plusX $plusY
-Shoot "ui-new-plus-menu.png" $hwnd
+Shoot "ui-new-plus-menu-page.png" $hwnd   # 带菜单的主界面整页
 
-# 菜单面板：宽 180、右边界贴「＋」右边界；两项各 34 高
-$itemX = $plusX
-$itemY = $plusY - 8 - 34 * 2 - 12 + 6 + 17
-Write-Host ("  点面板里的第一项 {0},{1}" -f $itemX, $itemY)
-ClickClient $hwnd $itemX $itemY
+# 「＋」菜单是**独立弹出窗口**（类名 DchatPlusMenu），单独截它：确认两项都完整显示
+$menu = [SmokeWin]::ByClass("DchatPlusMenu")
+if ($menu -ne [IntPtr]::Zero) {
+    Shoot "ui-new-plus-menu-window.png" $menu
+    Write-Host "  ＋菜单：弹出窗口已出现 ✓"
+    # 收起菜单：**不要在这里点菜单项**——点「发送文件」会弹出模态的系统选文件对话框，
+    # 脚本会一直等它（实测卡死 5 分钟）。用 WM_KILLFOCUS 走"点别处就收起"这条路径。
+    $focus = [IntPtr]::Zero
+    [SmokeWin]::SendMessageW($menu, 0x0008, [IntPtr]$focus, [IntPtr]0) | Out-Null  # WM_KILLFOCUS
+    Start-Sleep -Milliseconds 500
+    $gone = [SmokeWin]::ByClass("DchatPlusMenu")
+    if ($gone -eq [IntPtr]::Zero) {
+        Write-Host "  点别处后菜单收起 ✓"
+    } else {
+        Write-Host "  点别处后菜单没收起 ✗"
+    }
+} else {
+    Write-Host "  ＋菜单：没弹出 ✗"
+}
 
-# 齿轮：菜单栏最右侧（齿轮宽 32、右边距 8）
+# 齿轮：菜单栏最右侧（齿轮宽 32、右边距 8、垂直从 2 起 32 高 -> 中心 y=18）
 Write-Host "  点齿轮"
-ClickClient $hwnd ($cw - 24) 17
+ClickClient $hwnd ($cw - 8 - 16) 18
 Start-Sleep -Milliseconds 1200
 $settings = [SmokeWin]::ByClass("DchatSettingsDlg")
 if ($settings -ne [IntPtr]::Zero) {

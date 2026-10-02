@@ -76,15 +76,21 @@ struct BottomLayout {
 BottomLayout LayoutBottom(HDC dc, HFONT font, int windowWidth, int windowHeight,
                           int contentTop);
 
-// 「＋」弹出来的小菜单（往上弹，贴在输入行上方）
+// 「＋」弹出来的小菜单（**独立弹出窗口**，往上弹、压在内容上）
+inline constexpr int kPlusMenuWidth = 180;
+inline constexpr int kPlusMenuItemHeight = 34;
+
 struct PlusMenuLayout {
     RECT panel{};
     RECT fileItem{};   // 发送文件
-    RECT voiceItem{};  // 录一段语音
-    bool valid = false;  // 窗口太矮放不下时为 false（那时不弹菜单）
+    RECT voiceItem{};  // 录一段语音（或"结束并发送"）
+    bool valid = false;
 };
 
-PlusMenuLayout LayoutPlusMenu(const BottomLayout& bottom, int contentTop);
+// 面板矩形（客户区坐标）：贴在「＋」上方，**下边界不压到按钮**
+RECT PlusMenuRect(const BottomLayout& bottom);
+
+PlusMenuLayout LayoutPlusMenu(const BottomLayout& bottom);
 
 enum class PlusAction { None, SendFile, RecordVoice };
 
@@ -125,17 +131,39 @@ SettingsLayout LayoutSettings(int clientWidth, int clientHeight);
 int SegmentHitTest(const RECT& segment, int segments, int x, int y);
 
 // ---------------------------------------------------------------------------
-// 图标与装饰（不依赖字体，缺字形也不会变方块）
+// 图标与装饰
+//
+// **用 Windows 自带的图标字体**（Segoe MDL2 Assets，Win10/11 都在），不自己画：
+//   - 手画的齿轮缩小到 16px 就糊成一团（试过，看着很廉价）；
+//   - 也不用 emoji 字体（Segoe UI Emoji 在某些系统上缺字形，会画成方块）。
+// 取不到图标字体时**自动退回手画的版本**——没有字体也不能变成空格子。
 // ---------------------------------------------------------------------------
 
-// 齿轮（设置）
+// 系统图标字体里的字形（都是单色，绘制时用主题色，深/浅主题都能上色）
+inline constexpr wchar_t kGlyphGear = L'\uE713';      // 设置
+inline constexpr wchar_t kGlyphMic = L'\uE720';       // 麦克风
+inline constexpr wchar_t kGlyphPlus = L'\uE710';      // 加号（细体）
+inline constexpr wchar_t kGlyphAttachment = L'\uE723';  // 回形针
+inline constexpr wchar_t kGlyphClose = L'\uE711';     // 关闭
+
+// 图标字体名；取不到时 DrawGlyph 返回 false，调用方自己画退路
+inline constexpr const wchar_t* kIconFontName = L"Segoe MDL2 Assets";
+
+// 在 box 里居中画一个图标字形。fontHeight 是**像素**（负值按 GDI 习惯取字符高度）。
+// 返回 false 表示这台机器没有图标字体（调用方应当画自己的退路图标）。
+bool DrawGlyph(HDC dc, const RECT& box, wchar_t glyph, int fontHeight, COLORREF color);
+
+// 图标字体到底能不能用（缓存一次探测结果）
+bool HasIconFont();
+
+// 手画的齿轮（图标字体不可用时的退路）
 void DrawGearIcon(HDC dc, int centerX, int centerY, int radius, COLORREF color);
 
-// 加号（附件入口）
+// 加号（也是退路；正常路径用 DrawGlyph）
 void DrawPlusIcon(HDC dc, int centerX, int centerY, int armLength, int thickness,
                   COLORREF color);
 
-// 汉堡（三横线，方案 B 用；留着以免以后想换回去）
+// 汉堡（三横线）
 void DrawHamburgerIcon(HDC dc, const RECT& box, COLORREF color);
 
 // 播放三角 / 暂停双竖线（语音气泡）

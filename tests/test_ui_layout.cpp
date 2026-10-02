@@ -143,11 +143,14 @@ int main() {
     {
         const dchat::BottomLayout bottom =
             dchat::LayoutBottom(dc, g_font, kWidth, kHeight, dchat::kMenuBarHeight);
-        const dchat::PlusMenuLayout menu =
-            dchat::LayoutPlusMenu(bottom, dchat::kMenuBarHeight);
-        check(menu.valid, "窗口够高时菜单有效");
+        const dchat::PlusMenuLayout menu = dchat::LayoutPlusMenu(bottom);
+        check(menu.valid, "菜单始终有效（它是独立弹出窗口，不受父窗口布局挤）");
         check(menu.panel.bottom <= bottom.plusButton.top, "菜单往上弹，不盖住 ＋ 按钮");
-        check(menu.panel.top >= dchat::kMenuBarHeight, "菜单不越过菜单栏");
+        // 这是**修过一个真 bug** 的地方：以前把面板挤在"聊天记录区"里，
+        // 窗口一矮面板就被压到状态条底下，看起来就是"语音那项被遮挡"。
+        // 现在面板是独立窗口，允许浮在状态条上方——但要保证它**不压住「＋」按钮本身**。
+        check(menu.panel.bottom > bottom.statusBar.top,
+              "面板可以浮在状态条上方（独立窗口，不再被父窗口布局剪切）");
         check(Inside(menu.panel, menu.fileItem) && Inside(menu.panel, menu.voiceItem),
               "两个菜单项都在面板里");
         check(!Overlaps(menu.fileItem, menu.voiceItem), "两个菜单项不重叠");
@@ -166,13 +169,15 @@ int main() {
         check(!dchat::InsidePlusMenu(menu, menu.panel.left - 5, fileY),
               "点面板外就当作「点外面」（调用方据此收起菜单）");
 
-        // 窗口太矮：宁可不弹，也不要盖住聊天记录还看不出来
-        const dchat::BottomLayout shortWindow =
-            dchat::LayoutBottom(dc, g_font, kWidth, 300, dchat::kMenuBarHeight);
-        const dchat::PlusMenuLayout shortMenu =
-            dchat::LayoutPlusMenu(shortWindow, dchat::kMenuBarHeight);
-        check(!shortMenu.valid || shortMenu.panel.top >= dchat::kMenuBarHeight,
-              "窗口很矮时菜单要么不弹、要么不越过菜单栏");
+        // 窗口很矮时**照样要能用**（以前会算出"无效"导致菜单打不开）：
+        // 面板是独立窗口，浮在哪都行，只要求不盖住「＋」按钮
+        for (int winH : {300, 420, 480}) {
+            const dchat::BottomLayout shortWindow =
+                dchat::LayoutBottom(dc, g_font, kWidth, winH, dchat::kMenuBarHeight);
+            const dchat::PlusMenuLayout shortMenu = dchat::LayoutPlusMenu(shortWindow);
+            check(shortMenu.valid && shortMenu.panel.bottom <= shortWindow.plusButton.top,
+                  "窗口高 " + std::to_string(winH) + " 时菜单仍然可用且不盖住「＋」");
+        }
     }
 
     std::printf("[5] 设置窗口\n");

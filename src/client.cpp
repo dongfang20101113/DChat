@@ -159,7 +159,6 @@ std::vector<dchat::MenuItem> g_menuItems;
 RECT g_gearRect{0, 0, 0, 0};
 RECT g_chipRect{0, 0, 0, 0};
 dchat::BottomLayout g_bottom;
-dchat::PlusMenuLayout g_plusMenu;
 int g_menuHover = -1;   // 鼠标悬停的菜单项下标
 int g_plusHover = -1;   // ＋ 菜单里悬停的项：0 发送文件 / 1 录语音 / -1 没有
 bool g_plusMenuOpen = false;
@@ -202,6 +201,11 @@ void DrawWindowChrome(HWND hwnd, HDC dc, const RECT& client);  // 定义在下�
 void OpenSettings(HWND parent);      // 定义在下面：打开设置窗口
 std::string StatusChipText();        // 定义在下面：菜单栏右侧胶囊上的字
 std::string BuildStatusLine();       // 定义在下面：状态条上的只读文字
+void DoSendFile(HWND hwnd);          // 定义在下面：选一个文件发出去
+void DoConnect(HWND hwnd);           // 定义在下面：连接
+void DoDisconnect(HWND hwnd);        // 定义在下面：断开
+void StartVoiceRecording();          // 定义在下面：开始录音
+void StopVoiceRecordingAndSend();    // 定义在下面：结束并发送
 
 // ---------------- 语音消息（阶段 4 桌面端） ----------------
 //
@@ -1365,8 +1369,6 @@ void LayoutWindowChrome(HWND hwnd) {
     g_bottom = dchat::LayoutBottom(dc, ui.font, rc.right, rc.bottom, g_contentTop);
     ReleaseDC(hwnd, dc);
 
-    g_plusMenu = dchat::LayoutPlusMenu(g_bottom, g_contentTop);
-    if (!g_plusMenu.valid) g_plusMenuOpen = false;
 }
 
 void DrawWindowChrome(HWND hwnd, HDC dc, const RECT& client) {
@@ -1405,8 +1407,12 @@ void DrawWindowChrome(HWND hwnd, HDC dc, const RECT& client) {
     if (g_gearHover) {
         ui::FillRoundedRect(dc, g_gearRect, 6, g_palette->hover, g_palette->hover, 0.0f);
     }
-    dchat::DrawGearIcon(dc, (g_gearRect.left + g_gearRect.right) / 2,
-                        (g_gearRect.top + g_gearRect.bottom) / 2, 8, g_palette->text);
+    // 齿轮用 **Windows 自带的图标字体**（Segoe MDL2 Assets）：手画的那个缩到 16px 就糊成
+    // 一团，看着很廉价。取不到字体时 DrawGlyph 返回 false，自动退回手画版本。
+    if (!dchat::DrawGlyph(dc, g_gearRect, dchat::kGlyphGear, 20, g_palette->text)) {
+        dchat::DrawGearIcon(dc, (g_gearRect.left + g_gearRect.right) / 2,
+                            (g_gearRect.top + g_gearRect.bottom) / 2, 8, g_palette->text);
+    }
 
     // ---- 状态条：只读信息，不是按钮 ----
     const RECT statusBar = g_bottom.statusBar;
@@ -1436,8 +1442,11 @@ void DrawWindowChrome(HWND hwnd, HDC dc, const RECT& client) {
                                     : g_palette->neutralBorder;
     ui::DrawRoundedControl(dc, plus, (plus.bottom - plus.top) / 2, g_palette->windowBg, plusFill,
                            plusBorder);
-    dchat::DrawPlusIcon(dc, (plus.left + plus.right) / 2, (plus.top + plus.bottom) / 2, 8, 2,
-                        g_plusMenuOpen ? g_palette->accentText : g_palette->text);
+    if (!dchat::DrawGlyph(dc, plus, dchat::kGlyphPlus, 18,
+                          g_plusMenuOpen ? g_palette->accentText : g_palette->text)) {
+        dchat::DrawPlusIcon(dc, (plus.left + plus.right) / 2, (plus.top + plus.bottom) / 2, 8, 2,
+                            g_plusMenuOpen ? g_palette->accentText : g_palette->text);
+    }
 
     // ---- 录音中：输入胶囊描一圈红边，说明"现在说话会被录进去" ----
     if (g_recorder.IsRunning()) {
@@ -1449,21 +1458,8 @@ void DrawWindowChrome(HWND hwnd, HDC dc, const RECT& client) {
                     g_palette->error, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
 
-    // ---- 「＋」弹出的菜单（往上弹，盖在记录区上）----
-    if (g_plusMenuOpen && g_plusMenu.valid) {
-        ui::DrawRoundedControl(dc, g_plusMenu.panel, 10, g_palette->windowBg, g_palette->neutral,
-                               g_palette->border);
-        auto item = [&](const RECT& rect, const wchar_t* label, int index) {
-            if (g_plusHover == index) {
-                ui::FillRoundedRect(dc, rect, 8, g_palette->hover, g_palette->hover, 0.0f);
-            }
-            RECT textRect{rect.left + 14, rect.top, rect.right, rect.bottom};
-            TextOutUtf8(dc, label, textRect, ui.font, g_palette->text,
-                        DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        };
-        item(g_plusMenu.fileItem, L"发送文件", 0);
-        item(g_plusMenu.voiceItem, g_recorder.IsRunning() ? L"结束并发送语音" : L"录一段语音", 1);
-    }
+    // 「＋」菜单是**独立弹出窗口**（见 ShowPlusMenuWindow / PlusMenuProc），
+    // 不在这里画：画在客户区里就得挤在"记录区"里，窗口一矮就会被状态条压住。
 }
 
 // ---------------- 连接状态 ----------------
@@ -2253,6 +2249,186 @@ void ToggleVoicePlayback(const std::string& fileId) {
         g_playingVoiceTotal = seconds;
     }
     if (ui.hView) InvalidateRect(ui.hView, nullptr, FALSE);
+}
+
+// ---------------- 「＋」弹出菜单 ----------------
+//
+// **做成独立的弹出窗口**，不是在主窗口客户区里画一块。
+// 试过画在客户区里：面板必须挤在"聊天记录区"里（下方是状态条、上方是菜单栏），
+// 窗口一矮就放不下，只能把面板压到状态条底下——看起来就是"菜单被遮挡"。
+// 弹出窗口没有这个约束，和系统菜单一样能盖在任意内容上。
+constexpr const wchar_t* kPlusMenuClass = L"DchatPlusMenu";
+HWND g_plusMenuWindow = nullptr;
+bool g_plusTrackMouse = false;
+
+RECT PlusMenuRectForWindow(HWND parent) {
+    RECT client{};
+    GetClientRect(parent, &client);
+    const dchat::BottomLayout bottom =
+        dchat::LayoutBottom(nullptr, nullptr, client.right, client.bottom, dchat::kMenuBarHeight);
+    return dchat::PlusMenuRect(bottom);
+}
+
+void DestroyPlusMenuWindow();
+
+// 菜单面板画在哪：整块面板 + 两项（纯几何，见 ui_layout.cpp 的单测）
+dchat::PlusMenuLayout PlusMenuLayoutNow() {
+    dchat::PlusMenuLayout layout;
+    const RECT panel = PlusMenuRectForWindow(ui.hwnd);
+    layout.panel = panel;
+    layout.fileItem = RECT{panel.left + 6, panel.top + 6, panel.right - 6, panel.top + 40};
+    layout.voiceItem = RECT{layout.fileItem.left, layout.fileItem.bottom + 2,
+                            layout.fileItem.right, layout.fileItem.bottom + 36};
+    layout.valid = true;
+    return layout;
+}
+
+LRESULT CALLBACK PlusMenuProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(wnd, &ps);
+            RECT client{};
+            GetClientRect(wnd, &client);
+            const dchat::PlusMenuLayout layout = PlusMenuLayoutNow();
+
+            // 面板
+            ui::DrawRoundedControl(dc, client, 10, g_palette->windowBg, g_palette->neutral,
+                                   g_palette->border);
+            // 两项（位置相对面板；这个窗口的客户区就是面板本身）
+            auto item = [&](const RECT& absolute, wchar_t glyph, const wchar_t* label, int index) {
+                RECT rect{absolute.left - layout.panel.left, absolute.top - layout.panel.top,
+                          absolute.right - layout.panel.left, absolute.bottom - layout.panel.top};
+                if (g_plusHover == index) {
+                    ui::FillRoundedRect(dc, rect, 8, g_palette->hover, g_palette->hover, 0.0f);
+                }
+                RECT iconRect{rect.left + 12, rect.top, rect.left + 12 + 20, rect.bottom};
+                if (!dchat::DrawGlyph(dc, iconRect, glyph, 16, g_palette->text)) {
+                    dchat::DrawPlusIcon(dc, iconRect.left + 10, (rect.top + rect.bottom) / 2, 6, 2,
+                                        g_palette->text);
+                }
+                RECT textRect{iconRect.right + 8, rect.top, rect.right - 10, rect.bottom};
+                RECT target = textRect;
+                HGDIOBJ oldFont = SelectObject(dc, ui.font);
+                const int oldMode = SetBkMode(dc, TRANSPARENT);
+                const COLORREF oldColor = SetTextColor(dc, g_palette->text);
+                DrawTextW(dc, label, -1, &target,
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                SetTextColor(dc, oldColor);
+                SetBkMode(dc, oldMode);
+                SelectObject(dc, oldFont);
+            };
+            item(layout.fileItem, dchat::kGlyphAttachment, L"发送文件", 0);
+            item(layout.voiceItem, dchat::kGlyphMic,
+                 g_recorder.IsRunning() ? L"结束并发送语音" : L"录一段语音", 1);
+            EndPaint(wnd, &ps);
+            return 0;
+        }
+        case WM_MOUSEMOVE: {
+            const dchat::PlusMenuLayout layout = PlusMenuLayoutNow();
+            const int x = GET_X_LPARAM(lp) + layout.panel.left;
+            const int y = GET_Y_LPARAM(lp) + layout.panel.top;
+            const int hover = PtInRect(&layout.fileItem, POINT{x, y})    ? 0
+                              : PtInRect(&layout.voiceItem, POINT{x, y}) ? 1
+                                                                         : -1;
+            if (hover != g_plusHover) {
+                g_plusHover = hover;
+                InvalidateRect(wnd, nullptr, FALSE);
+            }
+            if (!g_plusTrackMouse) {
+                TRACKMOUSEEVENT track{};
+                track.cbSize = sizeof(track);
+                track.dwFlags = TME_LEAVE;
+                track.hwndTrack = wnd;
+                TrackMouseEvent(&track);
+                g_plusTrackMouse = true;
+            }
+            return 0;
+        }
+        case WM_MOUSELEAVE:
+            g_plusTrackMouse = false;
+            if (g_plusHover != -1) {
+                g_plusHover = -1;
+                InvalidateRect(wnd, nullptr, FALSE);
+            }
+            return 0;
+        case WM_LBUTTONDOWN: {
+            const dchat::PlusMenuLayout layout = PlusMenuLayoutNow();
+            const int x = GET_X_LPARAM(lp) + layout.panel.left;
+            const int y = GET_Y_LPARAM(lp) + layout.panel.top;
+            const dchat::PlusAction action = dchat::HitTestPlusMenu(layout, x, y);
+            DestroyPlusMenuWindow();
+            if (ui.hwnd) InvalidateChrome(ui.hwnd);
+            // 菜单先关掉再执行动作（发文件要弹系统对话框，语音要开始录）
+            switch (action) {
+                case dchat::PlusAction::SendFile:
+                    DoSendFile(ui.hwnd);
+                    break;
+                case dchat::PlusAction::RecordVoice:
+                    if (g_recorder.IsRunning()) {
+                        StopVoiceRecordingAndSend();
+                    } else {
+                        StartVoiceRecording();
+                    }
+                    break;
+                case dchat::PlusAction::None:
+                    break;
+            }
+            return 0;
+        }
+        case WM_KILLFOCUS:  // 点到别处就收起（和系统菜单一样）
+            DestroyPlusMenuWindow();
+            if (ui.hwnd) InvalidateChrome(ui.hwnd);
+            return 0;
+        default:
+            break;
+    }
+    return DefWindowProcW(wnd, msg, wp, lp);
+}
+
+void DestroyPlusMenuWindow() {
+    if (g_plusMenuWindow) {
+        DestroyWindow(g_plusMenuWindow);
+        g_plusMenuWindow = nullptr;
+    }
+    g_plusMenuOpen = false;
+}
+
+void ShowPlusMenuWindow() {
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;  // 阴影让它明显"浮"在上面
+        wc.lpfnWndProc = PlusMenuProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hbrBackground = nullptr;
+        wc.lpszClassName = kPlusMenuClass;
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+    DestroyPlusMenuWindow();
+
+    const RECT panel = PlusMenuRectForWindow(ui.hwnd);
+    RECT screen{panel.left, panel.top, panel.right, panel.bottom};
+    ClientToScreen(ui.hwnd, reinterpret_cast<POINT*>(&screen.left));
+    ClientToScreen(ui.hwnd, reinterpret_cast<POINT*>(&screen.right));
+    // WS_EX_NOACTIVATE：不要抢走输入框的焦点（抢了的话点完菜单还得再点一次输入框）；
+    // WS_EX_TOOLWINDOW：不出现在任务栏和 Alt+Tab 里
+    g_plusMenuWindow = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST, kPlusMenuClass, L"", WS_POPUP,
+        screen.left, screen.top, screen.right - screen.left, screen.bottom - screen.top, ui.hwnd,
+        nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!g_plusMenuWindow) return;
+    g_plusMenuOpen = true;
+    g_plusHover = -1;
+    ShowWindow(g_plusMenuWindow, SW_SHOWNOACTIVATE);
+    SetWindowPos(g_plusMenuWindow, HWND_TOPMOST, screen.left, screen.top, screen.right - screen.left,
+                 screen.bottom - screen.top, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    if (ui.hwnd) InvalidateChrome(ui.hwnd);
 }
 
 // 处理服务器发来的文件相关消息
@@ -4397,43 +4573,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_LBUTTONDOWN: {
-            // 点在哪一块：菜单项 / 齿轮 / 状态胶囊 / 「＋」/「＋」菜单。
+            // 点在哪一块：菜单项 / 齿轮 / 状态胶囊 / 「＋」。
             // 这些都在父窗口里自绘，命中判断也在这里（几何来自 ui_layout）。
+            // 注意：「＋」菜单是**独立窗口**，它的点击由 PlusMenuProc 处理；
+            // 点到菜单以外时它自己会收到 WM_KILLFOCUS 并收起。
             const int x = GET_X_LPARAM(lp);
             const int y = GET_Y_LPARAM(lp);
 
-            // 点「＋」菜单外面：先收起菜单，这一次点击不再当成别的操作（避免误触）
-            if (g_plusMenuOpen) {
-                const dchat::PlusAction action = dchat::HitTestPlusMenu(g_plusMenu, x, y);
-                const bool insidePanel = dchat::InsidePlusMenu(g_plusMenu, x, y);
-                g_plusMenuOpen = false;
-                g_plusHover = -1;
-                InvalidateChrome(hwnd);
-                switch (action) {
-                    case dchat::PlusAction::SendFile:
-                        DoSendFile(hwnd);
-                        return 0;
-                    case dchat::PlusAction::RecordVoice:
-                        // 录音中这一项是"结束并发送"（面板按钮做不了"按住不放"，
-                        // 所以用点两下这一套；状态条一直显示录音计时）
-                        if (g_recorder.IsRunning()) {
-                            StopVoiceRecordingAndSend();
-                        } else {
-                            StartVoiceRecording();
-                        }
-                        return 0;
-                    case dchat::PlusAction::None:
-                        if (insidePanel) return 0;
-                        break;
-                }
-                SetFocus(ui.hInput);
-                return 0;
-            }
-
             if (PtInRect(&g_bottom.plusButton, POINT{x, y})) {
-                g_plusMenuOpen = true;
-                g_plusHover = -1;
-                InvalidateChrome(hwnd);
+                if (g_plusMenuOpen) {
+                    DestroyPlusMenuWindow();
+                    InvalidateChrome(hwnd);
+                } else {
+                    ShowPlusMenuWindow();
+                }
                 return 0;
             }
             if (PtInRect(&g_gearRect, POINT{x, y})) {
@@ -4498,23 +4651,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     break;
                 }
             }
-            const int plusHover = (g_plusMenuOpen && g_plusMenu.valid)
-                                      ? (PtInRect(&g_plusMenu.fileItem, POINT{x, y})    ? 0
-                                         : PtInRect(&g_plusMenu.voiceItem, POINT{x, y}) ? 1
-                                                                                        : -1)
-                                      : -1;
             const bool gearHover = PtInRect(&g_gearRect, POINT{x, y}) != 0;
             const bool chipHover =
                 g_chipRect.right > g_chipRect.left && PtInRect(&g_chipRect, POINT{x, y}) != 0;
-            if (hover != g_menuHover || plusHover != g_plusHover || gearHover != g_gearHover ||
-                chipHover != g_chipHover) {
+            if (hover != g_menuHover || gearHover != g_gearHover || chipHover != g_chipHover) {
                 g_menuHover = hover;
-                g_plusHover = plusHover;
                 g_gearHover = gearHover;
                 g_chipHover = chipHover;
                 InvalidateChrome(hwnd);
             }
-            if (y < dchat::kMenuBarHeight || g_plusMenuOpen) {
+            if (y < dchat::kMenuBarHeight) {
                 TRACKMOUSEEVENT track{};
                 track.cbSize = sizeof(track);
                 track.dwFlags = TME_LEAVE;
@@ -4524,9 +4670,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         }
         case WM_MOUSELEAVE:
-            if (g_menuHover != -1 || g_plusHover != -1 || g_gearHover || g_chipHover) {
+            if (g_menuHover != -1 || g_gearHover || g_chipHover) {
                 g_menuHover = -1;
-                g_plusHover = -1;
                 g_gearHover = false;
                 g_chipHover = false;
                 InvalidateChrome(hwnd);

@@ -9,6 +9,7 @@ D:/codes/dchat/build/CMakeFiles/test_bubble.dir
 D:/codes/dchat/build/CMakeFiles/test_image_preview.dir
 D:/codes/dchat/build/CMakeFiles/test_voice_notes.dir
 D:/codes/dchat/build/CMakeFiles/test_ui_layout.dir
+D:/codes/dchat/build/CMakeFiles/icon_probe.dir
 D:/codes/dchat/build/CMakeFiles/ui_mockup.dir
 D:/codes/dchat/build/CMakeFiles/test_server_rules.dir
 D:/codes/dchat/build/CMakeFiles/test_history.dir
