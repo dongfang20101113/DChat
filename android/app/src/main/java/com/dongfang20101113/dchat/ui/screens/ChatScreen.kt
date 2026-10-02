@@ -1,4 +1,4 @@
-package com.dongfang20101113.dchat.ui.screens
+﻿package com.dongfang20101113.dchat.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -6,6 +6,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -47,11 +50,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.changedToDown
-import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -411,16 +413,13 @@ private fun ChatPane(
                     .navigationBarsPadding()
                     .padding(horizontal = 12.dp, vertical = 10.dp)
                     .pointerInput(Unit) {
-                        // 松手就发。用 awaitPointerEventScope 而不是 detectTapGestures：
-                        // 这里要的是"这个区域里任何一次抬手"，不是在某个组件上点一下。
-                        awaitPointerEventScope {
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                if (event.changes.any { it.changedToUp() }) {
-                                    voice.onReleaseMic()
-                                    return@awaitPointerEventScope
-                                }
-                            }
+                        // 松手就发。这一条**接的是按住麦克风那一次的抬手**：
+                        // 手指还按着的时候，录音条才刚出现，所以这里等的是这一轮手势
+                        // 结束（抬手或取消），而不是"有人点了这一条"。
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false)
+                            waitForUpOrCancellation()
+                            voice.onReleaseMic()
                         }
                     },
                 verticalAlignment = Alignment.CenterVertically,
@@ -488,27 +487,33 @@ private fun ChatPane(
                 // 麦克风：按住就录、松手就发。
                 //
                 // 刻意**不用 `clickable`**：这里要的是"按下"和"抬手"两个时刻，
-                // 一次点击表达不了"按住 3 秒"。也不能只用 `awaitRelease()` 之类的
-                // 组合手势——它们在"手指移出按钮范围"时就不再算数了，而按住说话
-                // 恰恰经常一边说一边把手指挪开一点。所以自己看指针事件。
+                // 一次点击表达不了"按住 3 秒"。
+                //
+                // `awaitFirstDown()` 默认走 Initial 阶段并要求事件未被消费，
+                // 比自己去读 `awaitPointerEvent()` 再判断 `changedToDown()` 稳：
+                // 后者在事件已被上层消费时**永远等不到**（表现为"按了没反应"）。
+                //
+                // 语义层另外挂一个 `onClick`：TalkBack 用户没法"按住"，
+                // 点一下开始 / 再点一下结束是这类按钮的标准兜底。
                 Box(
                     modifier = Modifier
                         .size(48.dp)                    // 不小于 48dp 的触控目标
-                        .semantics { contentDescription = "按住说话" }
+                        .semantics {
+                            contentDescription = "按住说话"
+                            onClick {
+                                if (recording) voice.onReleaseMic() else voice.onPressMic()
+                                true
+                            }
+                        }
                         .pointerInput(state.recording) {
                             if (state.recording) return@pointerInput
-                            awaitPointerEventScope {
-                                // ① 等按下
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    if (event.changes.any { it.changedToDown() }) break
-                                }
+                            awaitEachGesture {
+                                // ① 按下 → 开始录
+                                awaitFirstDown()
                                 voice.onPressMic()
-                                // ② 等抬手（中途手指移出按钮范围也算抬手，这正是我们要的）
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    if (event.changes.any { it.changedToUp() }) break
-                                }
+                                // ② 抬手（或手势被取消）→ 结束。**中途手指滑出去也算**，
+                                //    按住说话时经常一边说一边把手指挪开一点。
+                                waitForUpOrCancellation()
                                 voice.onReleaseMic()
                             }
                         },
@@ -584,3 +589,4 @@ private fun MemberPane(modifier: Modifier, state: ChatState, metrics: ChatMetric
         }
     }
 }
+

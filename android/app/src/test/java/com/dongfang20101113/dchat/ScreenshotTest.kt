@@ -1,4 +1,4 @@
-package com.dongfang20101113.dchat
+﻿package com.dongfang20101113.dchat
 
 import android.graphics.Bitmap
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,6 +21,8 @@ import com.dongfang20101113.dchat.ui.screens.AuthScreen
 import com.dongfang20101113.dchat.ui.screens.ChatScreen
 import com.dongfang20101113.dchat.ui.screens.ConnectScreen
 import com.dongfang20101113.dchat.ui.theme.DchatTheme
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -345,6 +347,42 @@ class ScreenshotTest {
         }
     }
 
+    /**
+     * 麦克风按钮在界面里**存在、且带着「按住说话」的语义**。
+     *
+     * ## 这里为什么只验"在不在"，不验"按住之后会怎样"
+     *
+     * 试过了，验不了：Robolectric 这套离屏环境里，**原始 `MotionEvent` 送不到 Compose**。
+     * 实测在麦克风节点上 `performTouchInput { down(center) }`（节点位置已确认在屏幕内、
+     * 尺寸 144×144 正常）之后，`awaitFirstDown()` 一次都没被唤醒；同一个节点
+     * `performClick()` 也走的是触摸注入，同样没反应。这不是被测代码的问题，
+     * 是这套环境的边界——所以手势那一段只能靠真机，别在这里造一个"看起来在测"的假测试。
+     *
+     * 看代码的时候请把这条一起看：手势实现用的是 `awaitEachGesture { awaitFirstDown();
+     * waitForUpOrCancellation() }`，而"松手之后发不发、太短怎么办"由
+     * `VoiceRecordingFlow`（纯逻辑，17 项单测）兜着。
+     */
+    @Test
+    @Config(qualifiers = "zh-rCN-w393dp-h851dp-xxhdpi")
+    fun `麦克风按钮存在且带无障碍语义`() {
+        val state = sampleState()
+        composeRule.setContent {
+            DchatTheme(darkTheme = true) {
+                Surface(Modifier.fillMaxSize()) {
+                    ChatScreen(
+                        state = state,
+                        onSend = {}, onDownload = {}, onSendFile = {},
+                        onMarkRead = {}, onDisconnect = {},
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithContentDescription("按住说话").assertExists()
+    }
+
+
     // ------------------------------------------------------------------
     // 应用图标
     // ------------------------------------------------------------------
@@ -399,3 +437,6 @@ class ScreenshotTest {
         File(outDir, "icon-monochrome.png").outputStream().use { mono.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 }
+
+
+

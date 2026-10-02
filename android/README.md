@@ -1,4 +1,4 @@
-# dchat Android 客户端
+﻿# dchat Android 客户端
 
 [`D:\codes\dchat`](../) 的安卓界面客户端。用 **Kotlin + Jetpack Compose** 写，复用桌面端同一套线协议，
 **纯客户端**——服务端仍然是那个 C++ 的 `dchat_server.exe`，不用改一行。
@@ -76,7 +76,7 @@ $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.9.10-hotspot'
 $env:ANDROID_HOME = 'D:\codes\tools\android-sdk'
 cd D:\codes\dchat\android
 
-.\gradlew.bat test            # 跑全部单测（309 项）
+.\gradlew.bat test            # 跑全部单测（310 项）
 .\gradlew.bat assembleDebug   # 产出 app\build\outputs\apk\debug\app-debug.apk
 .\gradlew.bat assembleRelease # 产出已签名的 app-release.apk（签名配置见文末）
 ```
@@ -215,7 +215,7 @@ app/src/main/java/com/dongfang20101113/dchat/
 .\gradlew.bat test
 ```
 
-**309 项，覆盖 18 个测试类：**
+**310 项，覆盖 18 个测试类：**
 
 | 测试类 | 项数 | 覆盖什么 |
 | --- | --- | --- |
@@ -229,7 +229,7 @@ app/src/main/java/com/dongfang20101113/dchat/
 | `DchatProtocolTest` | 18 | 行协议：命令名允许下划线、协议注入防护、昵称按码点计数、超长行不切坏字符 |
 | `VoiceMessageTest` | 17 | 语音的时长/格式/大小边界、`mp4` 必须被接受（安卓录音就是这个容器） |
 | `VoiceRecordingFlowTest` | 17 | **「按住说话」整条流程**：太短丢掉并删文件、超 2 MB / 超 5 分钟被拦、文件没落盘不发、重复按下不录第二条、取消不留文件 |
-| `ScreenshotTest` | 16 | 多尺寸离屏渲染出 PNG（界面、输入限制条、emoji、贴纸、语音气泡、应用图标） |
+| `ScreenshotTest` | 17 | 多尺寸离屏渲染出 PNG（界面、输入限制条、emoji、贴纸、语音气泡、应用图标） |
 | `ServerLineTest` | 15 | 全部服务器命令解析，**含未写进 README 的** |
 | `EmojiPaletteTest` | 13 | emoji 计数按 Unicode 码点（一个 emoji 算 1 个字符）、插入位置 |
 | `VoicePlaybackTest` | 10 | 播放取舍：同一条再点是暂停、暂停后再点是从头还是续播、切歌、时长未知时不乱猜 |
@@ -293,6 +293,7 @@ app/src/main/java/com/dongfang20101113/dchat/
 | 8 | 测试类被 JUnit 拒绝：`should be void` | `fun x() = runBlocking { ... }` 的最后一个表达式返回了 `Boolean`，方法签名就不是 void 了 |
 | 9 | 想拿录音时长，`MediaRecorder.duration` 不存在 | 它**根本没有**这个属性。只能 `stop()` 之后再从文件里读（`MediaMetadataRetriever.METADATA_KEY_DURATION`），读不到就用墙钟时间兜底——直接信容器报的 0 会把一段正常录音判成"空的" |
 | 10 | Kotlin 里 `java.io.File.setLength(n)` 报 `Unresolved reference` | 变量名撞了：局部变量 `file` 和扩展接收者同名时，Kotlin 会把它解析成"对 `file` 调 `length`"。换个变量名，或用 `RandomAccessFile(file, "rw").use { it.setLength(n) }` |
+| 11 | Robolectric 里**手势测不了** | 原始 `MotionEvent` 送不到 Compose：节点位置和尺寸都正常（144×144、在屏幕内），但 `performTouchInput { down(center) }` 之后 `awaitFirstDown()` 一次都不醒；`performClick()` 同样走触摸注入，也没反应。这不是被测代码的问题。**手势只能真机验**，逻辑部分抽成纯函数单测（`VoiceRecordingFlow`）。别在这里造"看起来在测"的假测试 |
 
 ---
 
@@ -466,3 +467,4 @@ cd android
 > ⚠️ **协议表在 README 里是不全的**：实际还有 `ANNOUNCE`（`/say` 公告走的命令）、`RULES`（服务器下发规则）、
 > `FILE_THUMB` / `FILE_THUMB_GET` / `FILE_THUMB_DATA` / `FILE_THUMB_END`（缩略图）这 6 个命令
 > 没有写进文档。本客户端是按**服务端源码**实现的，不是照 README 猜的。
+
