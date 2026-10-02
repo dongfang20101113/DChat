@@ -1,4 +1,4 @@
-﻿package com.dongfang20101113.dchat.ui.screens
+package com.dongfang20101113.dchat.ui.screens
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,11 +23,13 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.Icon
@@ -45,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.dongfang20101113.dchat.protocol.EmojiPalette
 import com.dongfang20101113.dchat.protocol.countTextLines
 import com.dongfang20101113.dchat.protocol.escapeText
 import com.dongfang20101113.dchat.protocol.nickColorIndex
@@ -269,6 +272,40 @@ private fun ChatPane(
             }
         }
 
+        // emoji 选择器的开关。
+        // 刻意声明在**条件块外面**：写在 `if (showEmoji)` 里面的话，
+        // 每次切换都会丢掉 remember 的状态，开关会自己弹回去。
+        var showEmoji by remember { mutableStateOf(false) }
+
+        // ---- emoji 选择器 ----
+        // emoji 就是普通 Unicode 字符，直接插进文本即可——服务端的
+        // maxtextlen 按 Unicode 码点计数，一个 emoji 算 1 个（见 EmojiPaletteTest）。
+        if (showEmoji) {
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(colors.bubbleOther)
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                items(EmojiPalette.all, key = { it }) { emoji ->
+                    Text(
+                        text = emoji,
+                        fontSize = (metrics.messageFontSp + 8).sp,
+                        modifier = Modifier
+                            .clickable {
+                                // 插到末尾。TextField 的光标位置要改用 TextFieldValue
+                                // 才能拿到，那样改动面更大；先按"追加"来，
+                                // 对聊天输入这个场景够用，也不会让用户困惑。
+                                val (next, _) = EmojiPalette.insert(draft, emoji, draft.length)
+                                draft = next
+                            }
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                    )
+                }
+            }
+        }
+
         // ---- 输入栏 ----
         Row(
             modifier = Modifier
@@ -279,6 +316,13 @@ private fun ChatPane(
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
+            IconButton(onClick = { showEmoji = !showEmoji }) {
+                Icon(
+                    Icons.Filled.EmojiEmotions,
+                    contentDescription = if (showEmoji) "收起表情" else "表情",
+                    tint = if (showEmoji) colors.accent else colors.system,
+                )
+            }
             IconButton(onClick = onPickFile) {
                 Icon(Icons.Filled.AttachFile, contentDescription = "发送文件", tint = colors.accent)
             }

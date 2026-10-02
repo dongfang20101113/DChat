@@ -8,7 +8,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
 import com.dongfang20101113.dchat.protocol.ServerLine
 import com.dongfang20101113.dchat.protocol.base64Encode
 import com.dongfang20101113.dchat.ui.ChatState
@@ -193,6 +195,36 @@ class ScreenshotTest {
                 // 3 行 > 2 行，字符数也超了
                 initialDraft = "第一行内容比较长\n第二行内容也比较长\n第三行",
             )
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 阶段 3：emoji 选择器
+    // ------------------------------------------------------------------
+
+    @Test
+    @Config(qualifiers = "zh-rCN-w393dp-h851dp-xxhdpi")
+    fun `emoji 选择器展开后的样子`() {
+        val state = sampleState()
+        composeRule.setContent {
+            DchatTheme(darkTheme = true) {
+                Surface(Modifier.fillMaxSize()) {
+                    ChatScreen(
+                        state = state,
+                        onSend = {}, onDownload = {}, onSendFile = {},
+                        onMarkRead = {}, onDisconnect = {},
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+        // 真的去点那个按钮，而不是靠测试钩子——这样连"按钮在不在、点得动吗"一起验了
+        composeRule.onNodeWithContentDescription("表情").performClick()
+        composeRule.waitForIdle()
+
+        val bitmap = composeRule.onRoot().captureToImage().asAndroidBitmap()
+        File(outDir, "emoji-picker.png").outputStream().use {
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
         }
     }
 
