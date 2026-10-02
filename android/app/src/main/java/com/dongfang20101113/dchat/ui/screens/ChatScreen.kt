@@ -56,6 +56,7 @@ import com.dongfang20101113.dchat.protocol.utf8CharCount
 import com.dongfang20101113.dchat.ui.ChatItem
 import com.dongfang20101113.dchat.ui.ChatState
 import com.dongfang20101113.dchat.ui.components.FileCardRow
+import com.dongfang20101113.dchat.ui.components.StickerRow
 import com.dongfang20101113.dchat.ui.components.NoticeRow
 import com.dongfang20101113.dchat.ui.components.SayRow
 import com.dongfang20101113.dchat.ui.layout.ChatMetrics
@@ -228,7 +229,14 @@ private fun ChatPane(
                 when (item) {
                     is ChatItem.SayItem -> SayRow(item, metrics)
                     is ChatItem.NoticeItem -> NoticeRow(item, metrics)
-                    is ChatItem.FileItem -> FileCardRow(item, metrics) { onDownload(item.fileId) }
+                    is ChatItem.FileItem ->
+                        // 贴纸内联画成大图；普通文件仍是"点一下才下载"的卡片。
+                        // 两者走的是同一个传输通道，区别只在这里。
+                        if (item.isSticker) {
+                            StickerRow(item, metrics) { onDownload(item.fileId) }
+                        } else {
+                            FileCardRow(item, metrics) { onDownload(item.fileId) }
+                        }
                 }
             }
         }

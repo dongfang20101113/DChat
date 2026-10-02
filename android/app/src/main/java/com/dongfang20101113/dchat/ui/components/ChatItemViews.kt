@@ -1,5 +1,6 @@
 package com.dongfang20101113.dchat.ui.components
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -8,20 +9,25 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dongfang20101113.dchat.protocol.nickColorIndex
 import com.dongfang20101113.dchat.ui.ChatItem
+import com.dongfang20101113.dchat.ui.FileState
 import com.dongfang20101113.dchat.ui.layout.ChatMetrics
 import com.dongfang20101113.dchat.ui.layout.MessageAlign
 import com.dongfang20101113.dchat.ui.layout.announceMaxWidthDp
@@ -166,6 +172,71 @@ fun NoticeRow(item: ChatItem.NoticeItem, metrics: ChatMetrics) {
                 color = colors.time,
                 fontSize = metrics.noticeFontSp.sp,
                 modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 贴纸：下载完成后**内联画成大图**，而不是显示成文件卡片。
+ *
+ * 贴纸和普通文件走的是**完全相同**的传输（同一个文件通道），区别只在这里——
+ * 用户看到的应该是"一张表情"，而不是"一个要下载的文件"。
+ */
+@Composable
+fun StickerRow(item: ChatItem.FileItem, metrics: ChatMetrics, onRetry: () -> Unit) {
+    val colors = LocalDchatColors.current
+
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = metrics.rowGapDp.dp / 3),
+        horizontalAlignment = Alignment.Start,
+    ) {
+        if (item.fromNick.isNotEmpty()) {
+            Text(
+                text = item.fromNick,
+                color = colors.nickColor(nickColorIndex(item.fromNick)),
+                fontSize = (metrics.noticeFontSp + 1).sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+        }
+
+        // 从磁盘读图。用 remember 缓存：每次重组都解码一遍会明显卡顿。
+        // key 里带上 state，这样"下载完成"之后会重新读一次。
+        val bitmap = remember(item.savedPath, item.state) {
+            item.savedPath?.let { path ->
+                runCatching { android.graphics.BitmapFactory.decodeFile(path) }.getOrNull()
+            }
+        }
+
+        when {
+            bitmap != null -> Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = item.fileName,
+                // Fit 而不是默认的 FillBounds：贴纸不该被拉变形
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .widthIn(max = metrics.bubbleMaxWidthDp.dp)
+                    .heightIn(max = 180.dp),
+            )
+
+            item.state == FileState.FAILED -> Box(
+                modifier = Modifier
+                    .clickable(onClick = onRetry)
+                    .background(colors.error.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    text = "贴纸没下下来（${item.note ?: "原因不明"}），点一下重试",
+                    color = colors.error,
+                    fontSize = metrics.noticeFontSp.sp,
+                )
+            }
+
+            else -> Text(
+                text = "贴纸下载中…",
+                color = colors.system,
+                fontSize = metrics.noticeFontSp.sp,
             )
         }
     }
