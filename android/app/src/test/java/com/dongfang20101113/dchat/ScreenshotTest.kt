@@ -229,6 +229,61 @@ class ScreenshotTest {
     }
 
     // ------------------------------------------------------------------
+    // 阶段 3：贴纸内联渲染
+    // ------------------------------------------------------------------
+
+    @Test
+    @Config(qualifiers = "zh-rCN-w393dp-h851dp-xxhdpi")
+    fun `贴纸内联渲染`() {
+        // 必须造一张**真实的 PNG 落到磁盘**：savedPath 指向不存在的文件时，
+        // BitmapFactory 解不出东西，渲染出来的只会是"下载中"的占位——
+        // 那样截出来的图看着正常，其实什么都没验证到。
+        val dir = File(System.getProperty("java.io.tmpdir"), "dchat-shot").apply { mkdirs() }
+        val stickerFile = File(dir, "sticker.png")
+        val sticker = Bitmap.createBitmap(160, 160, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(sticker)
+        canvas.drawColor(0xFFFFD54F.toInt())                                   // 暖黄底
+        canvas.drawCircle(80f, 80f, 52f, android.graphics.Paint().apply {
+            color = 0xFF202020.toInt(); isAntiAlias = true
+        })
+        canvas.drawCircle(62f, 68f, 9f, android.graphics.Paint().apply { color = 0xFFFFD54F.toInt() })
+        canvas.drawCircle(98f, 68f, 9f, android.graphics.Paint().apply { color = 0xFFFFD54F.toInt() })
+        stickerFile.outputStream().use { sticker.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        sticker.recycle()
+
+        // 一条贴纸 + 一条**普通文件**，对照着看：两者走同一个传输通道，
+        // 只有渲染分支不同，截图里必须一眼能看出区别。
+        var state = sampleState()
+        val stickerName = base64Encode("开心.png".toByteArray(Charsets.UTF_8))
+        state = state.reduce(
+            ServerLine.parse("FILE_OFFER 21:06 小明 S1 $stickerName 4096 0 1", "我"),
+            "21:06",
+        )
+        state = state.copy(
+            items = state.items.map { item ->
+                if (item is com.dongfang20101113.dchat.ui.ChatItem.FileItem &&
+                    item.fileId == "S1"
+                ) {
+                    // 模拟"已经自动下载完了"
+                    item.copy(
+                        state = com.dongfang20101113.dchat.ui.FileState.DONE,
+                        savedPath = stickerFile.absolutePath,
+                    )
+                } else {
+                    item
+                }
+            },
+        )
+
+        shoot("sticker-inline.png", true, 393, 851) {
+            ChatScreen(
+                state = state,
+                onSend = {}, onDownload = {}, onSendFile = {}, onMarkRead = {}, onDisconnect = {},
+            )
+        }
+    }
+
+    // ------------------------------------------------------------------
     // 应用图标
     // ------------------------------------------------------------------
 
