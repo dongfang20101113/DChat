@@ -19,7 +19,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -57,7 +59,17 @@ class ServerInteropTest {
     // 服务端起停脚手架
     // ------------------------------------------------------------------
 
-    private class Server(val process: Process, val port: Int, val dir: File)
+    private class Server(
+        val process: Process,
+        val port: Int,
+        val dir: File,
+        /** 服务端的输出。有些结论（比如"通道确实加密了"）只能从它这里看出来。 */
+        val output: StringBuilder,
+    ) {
+        fun logContains(needle: String): Boolean = synchronized(output) {
+            output.contains(needle)
+        }
+    }
 
     private fun startServer(rulesText: String? = null): Server {
         val port = ServerSocket(0).use { it.localPort }
@@ -76,8 +88,21 @@ class ServerInteropTest {
             .redirectErrorStream(true)
             .start()
 
+        // 持续读服务端输出。不读的话管道写满会把服务端卡住，
+        // 而且有些断言（"通道确实建立了"）必须看它才能下。
+        val output = StringBuilder()
+        Thread {
+            try {
+                process.inputStream.bufferedReader(Charsets.UTF_8).forEachLine { line ->
+                    synchronized(output) { output.appendLine(line) }
+                }
+            } catch (_: Exception) {
+                // 进程结束时流会断，正常
+            }
+        }.apply { isDaemon = true }.start()
+
         assertTrue("服务端 10 秒内没有开始监听 $port", waitForPort(port, 10_000))
-        return Server(process, port, tmp)
+        return Server(process, port, tmp, output)
     }
 
     private fun stopServer(server: Server) {
@@ -90,6 +115,7 @@ class ServerInteropTest {
     private fun withServerAndConnection(
         collectImmediately: Boolean = true,
         rulesText: String? = null,
+        encrypt: Boolean = true,
         body: suspend (DchatConnection, Server, Job?) -> Unit,
     ) = runBlocking {
         assumeTrue("没找到 dchat_server.exe，跳过互操作测试", serverExe.isFile)
@@ -98,7 +124,7 @@ class ServerInteropTest {
         val conn = DchatConnection(scope)
         var collector: Job? = null
         try {
-            assertTrue("连不上服务端", conn.connect("127.0.0.1", server.port))
+            assertTrue("连不上服务端", conn.connect("127.0.0.1", server.port, encrypt))
             if (collectImmediately) {
                 collector = scope.launch { conn.lines.collect { received.add(it) } }
             }
@@ -324,6 +350,92 @@ class ServerInteropTest {
             conn.send(makeMessage(escapeText("y".repeat(30))))
             val ok = awaitRaw(5_000) { it.command == "SAY" && it.rest.contains("yyy") }
             assertNotNull("边界值 30 字符被误拦了", ok)
+        }
+
+    // ------------------------------------------------------------------
+    // 6. ★ 端到端加密
+    // ------------------------------------------------------------------
+
+    /**
+     * **加密层的第一个完整端到端证据**：安卓端的握手实现 + 真实的 C++ 服务端，
+     * 全程密文跑通注册 → 登录 → 发消息 → 收回显。
+     *
+     * ## 怎么证明"确实是密文"，而不是"握了个手然后继续明文"
+     *
+     * 客户端这边是透明的（加密解密都在 `DchatConnection` 内部），所以光看
+     * "消息能发出去"说明不了任何事——明文也能发出去。真正的判据是**服务端日志**：
+     *
+     * - 只有真的建立了加密通道，服务端才会写 `encrypted channel established`
+     * - 如果客户端在握手后发了明文，服务端会写 `plaintext after handshake` 并**断开**，
+     *   那后面的注册登录根本不可能成功
+     *
+     * 所以下面既断言前者出现，也断言后者没出现。
+     */
+    @Test
+    fun `★ 端到端加密：安卓端与真实 C++ 服务端全程密文`() =
+        withServerAndConnection { conn, server, _ ->
+            // 握手在 connect() 内部就做完了。WELCOME 是在握手期间读到的，
+            // 那时收集器还没起——所以它必须靠 lineChannel 缓冲下来（Channel 不挑订阅时机）。
+            assertTrue("握手应当已经完成，连接应当是加密的", conn.encrypted)
+            val fingerprint = conn.serverFingerprint
+            assertNotNull("握手成功就必须拿到服务器公钥指纹（TOFU 要用）", fingerprint)
+            assertTrue(
+                "指纹格式应当像 AA:BB:...，实际 $fingerprint",
+                fingerprint!!.matches(Regex("^([0-9A-F]{2}:){15}[0-9A-F]{2}$")),
+            )
+
+            // 握手期间读到的 WELCOME 必须被保留下来，不能丢掉
+            assertNotNull("握手期间读到的 WELCOME 不能丢", awaitRaw(5_000) { it.command == "WELCOME" })
+
+            conn.send(makeRegister("加密测试", "test123456"))
+            assertNotNull("注册没回应", awaitRaw(5_000) { it.command == "SYS" || it.command == "ERROR" })
+            conn.send(makeLogin("加密测试", "test123456"))
+            assertNotNull("★ 登录失败——说明密文没解开", awaitRaw(5_000) { it.command == "LOGGEDIN" })
+
+            val text = "这条消息是加密传输的，含中文和 emoji 🎉"
+            conn.send(makeMessage(escapeText(text)))
+            val echo = awaitRaw(5_000) { it.command == "SAY" }
+            assertNotNull("★ 没有收到消息回显——密文往返有问题", echo)
+            assertEquals(text, (ServerLine.parse(echo!!, "加密测试") as ServerLine.Say).info.text)
+
+            // ★ 决定性证据
+            assertTrue(
+                "服务端日志里没有 \"encrypted channel established\" —— " +
+                    "说明握手根本没成，上面那些成功其实都是明文在跑",
+                server.logContains("encrypted channel established"),
+            )
+            assertFalse(
+                "服务端日志出现了降级告警，说明有明文混进了加密通道",
+                server.logContains("plaintext after handshake"),
+            )
+        }
+
+    /**
+     * 向后兼容：客户端**主动关掉加密**时，老流程必须照常工作。
+     *
+     * 这条保证的是"新客户端能连老服务器"——反过来（老客户端连新服务器）
+     * 由服务端的协商逻辑保证：老客户端不发 HELLO，服务端就一直用明文。
+     */
+    @Test
+    fun `关闭加密时仍走明文（老服务器兼容路径）`() =
+        withServerAndConnection(encrypt = false) { conn, server, _ ->
+            assertFalse("明确关掉加密时不该建立加密会话", conn.encrypted)
+            assertNull("没有握手就不该有指纹", conn.serverFingerprint)
+
+            assertNotNull("明文模式下也要能收到 WELCOME", awaitRaw(5_000) { it.command == "WELCOME" })
+
+            conn.send(makeRegister("明文测试", "test123456"))
+            assertNotNull("注册没回应", awaitRaw(5_000) { it.command == "SYS" || it.command == "ERROR" })
+            conn.send(makeLogin("明文测试", "test123456"))
+            assertNotNull("明文模式登录失败", awaitRaw(5_000) { it.command == "LOGGEDIN" })
+
+            conn.send(makeMessage("明文也能用"))
+            assertNotNull("明文模式收不到回显", awaitRaw(5_000) { it.command == "SAY" })
+
+            assertFalse(
+                "没握手就不该出现加密通道的日志",
+                server.logContains("encrypted channel established"),
+            )
         }
 
     // ------------------------------------------------------------------

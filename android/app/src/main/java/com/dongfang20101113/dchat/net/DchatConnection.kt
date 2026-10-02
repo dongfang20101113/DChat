@@ -1,8 +1,15 @@
 package com.dongfang20101113.dchat.net
 
+import com.dongfang20101113.dchat.protocol.CryptoSession
+import com.dongfang20101113.dchat.protocol.DchatCrypto
 import com.dongfang20101113.dchat.protocol.LineBuffer
 import com.dongfang20101113.dchat.protocol.MAX_LINE_BYTES
+import com.dongfang20101113.dchat.protocol.Message
+import com.dongfang20101113.dchat.protocol.base64Decode
+import com.dongfang20101113.dchat.protocol.base64Encode
+import com.dongfang20101113.dchat.protocol.buildLine
 import com.dongfang20101113.dchat.protocol.makePing
+import com.dongfang20101113.dchat.protocol.parseLine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -77,6 +84,26 @@ class DchatConnection(private val scope: CoroutineScope) {
     /** 是"用户自己点的断开"还是"意外掉线"——两者在界面上的表现必须不同。 */
     @Volatile private var userRequestedDisconnect = false
 
+    /**
+     * 加密会话。握手上成功后才非空；在此之前收发都是明文。
+     *
+     * 老服务器不认识 `HELLO`，握手会自然失败，这里就一直是 null——
+     * 也就是保持明文，不会因为客户端多问了一句就连不上。
+     */
+    @Volatile private var crypto: CryptoSession? = null
+
+    /**
+     * 服务器公钥指纹。
+     *
+     * 给 TOFU 用：客户端应当把这个值记住，下次连同一台服务器时比对，
+     * 变了就说明可能有人在中间（也可能是服务器换了密钥，两者都该让用户知道）。
+     */
+    @Volatile var serverFingerprint: String? = null
+        private set
+
+    /** 当前这条连接是否已加密。 */
+    val encrypted: Boolean get() = crypto != null
+
     private val _state = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val state: StateFlow<ConnectionState> = _state.asStateFlow()
 
@@ -91,7 +118,7 @@ class DchatConnection(private val scope: CoroutineScope) {
     /**
      * 连接服务器。成功返回 true；失败把原因写进 [ConnectionState.Failed]。
      */
-    suspend fun connect(host: String, port: Int): Boolean = withContext(Dispatchers.IO) {
+    suspend fun connect(host: String, port: Int, encrypt: Boolean = true): Boolean = withContext(Dispatchers.IO) {
         // 先清掉旧连接；disconnect() 会把 userRequestedDisconnect 置位，所以下面要重置
         disconnect()
         userRequestedDisconnect = false
@@ -108,6 +135,12 @@ class DchatConnection(private val scope: CoroutineScope) {
             socket = sock
             input = sock.getInputStream()
             output = sock.getOutputStream()
+
+            // ---- 加密握手必须在这里、**启动接收循环之前**同步做完 ----
+            // 握手期间要同步读几行（WELCOME / HELLO_OK）。如果接收协程已经在跑，
+            // 两边会抢同一个输入流，读到的行会随机分给其中一边——极难排查。
+            if (encrypt) performHandshake(sock)
+
             _state.value = ConnectionState.Connected(host, port)
 
             receiveJob = scope.launch(Dispatchers.IO) { receiveLoop(sock) }
@@ -120,14 +153,113 @@ class DchatConnection(private val scope: CoroutineScope) {
         }
     }
 
-    /** 发一行（自动补 `\n`）。返回是否发送成功。 */
+    /**
+     * 同步完成加密握手。
+     *
+     * - 服务器支持：派生会话密钥并激活 [crypto]
+     * - 服务器不支持（回 `ERROR`）：**保持明文**——这是协商的自然降级，
+     *   老服务器不会因为客户端多问了一句就连不上
+     * - 服务器不回话：超时后按明文继续
+     *
+     * 握手期间读到的其它行（比如 `WELCOME`）会被送回 [lineChannel]，
+     * 不会被丢掉。
+     */
+    private fun performHandshake(sock: Socket) {
+        val pair = DchatCrypto.generateKeyPair()
+        val clientNonce = DchatCrypto.randomBytes(DchatCrypto.HANDSHAKE_NONCE_BYTES)
+        val hello = buildLine(
+            "HELLO",
+            "${DchatCrypto.CRYPTO_VERSION} ${base64Encode(pair.publicKey)} ${base64Encode(clientNonce)}",
+        )
+        if (!writeRawLine(sock, hello)) return
+
+        val previousTimeout = sock.soTimeout
+        sock.soTimeout = HANDSHAKE_TIMEOUT_MS
+        try {
+            val buffer = LineBuffer()
+            val chunk = ByteArray(512)
+            val deadline = System.currentTimeMillis() + HANDSHAKE_TIMEOUT_MS
+
+            while (System.currentTimeMillis() < deadline) {
+                val line = buffer.popLine()
+                if (line == null) {
+                    val read = try {
+                        (input ?: return).read(chunk)
+                    } catch (_: SocketTimeoutException) {
+                        continue
+                    }
+                    if (read <= 0) return
+                    buffer.append(chunk, 0, read)
+                    if (buffer.bad) return
+                    continue
+                }
+
+                when (val command = parseLine(line).command) {
+                    "HELLO_OK" -> {
+                        startCrypto(parseLine(line), pair, clientNonce)
+                        return
+                    }
+                    // 服务器不认识 HELLO：说明是老版本，保持明文继续
+                    "ERROR" -> {
+                        lineChannel.trySend(line)
+                        return
+                    }
+                    // WELCOME 之类：不能让它在握手期间丢掉
+                    else -> {
+                        if (command.isNotEmpty()) lineChannel.trySend(line)
+                    }
+                }
+            }
+        } finally {
+            sock.soTimeout = previousTimeout
+        }
+    }
+
+    /** 用 HELLO_OK 里的服务器公钥和随机数把会话密钥算出来并激活加密。 */
+    private fun startCrypto(helloOk: Message, pair: DchatCrypto.EcdhKeyPair, clientNonce: ByteArray) {
+        val words = helloOk.rest.split(' ').filter { it.isNotEmpty() }
+        if (words.size < 2) return
+
+        val serverPublic = runCatching { base64Decode(words[0]) }.getOrNull() ?: return
+        val serverNonce = runCatching { base64Decode(words[1]) }.getOrNull() ?: return
+        if (serverPublic.size != DchatCrypto.P256_PUBLIC_KEY_BYTES) return
+        if (serverNonce.size != DchatCrypto.HANDSHAKE_NONCE_BYTES) return
+
+        val shared = runCatching {
+            DchatCrypto.computeSharedSecret(pair.privateKey, serverPublic)
+        }.getOrNull() ?: return
+
+        val keys = DchatCrypto.deriveSessionKeys(shared, clientNonce, serverNonce)
+        if (!keys.valid) return
+
+        // 客户端发用 c2s、收用 s2c（服务端正好相反）
+        crypto = CryptoSession(keys.clientToServer, keys.serverToClient)
+        serverFingerprint = DchatCrypto.publicKeyFingerprint(serverPublic)
+    }
+
+    private fun writeRawLine(sock: Socket, line: String): Boolean = try {
+        val stream = sock.getOutputStream()
+        stream.write(line.toByteArray(Charsets.UTF_8))
+        stream.write('\n'.code)
+        stream.flush()
+        true
+    } catch (_: Exception) {
+        false
+    }
+
+    /** 发一行（自动补 `\n`）。返回是否发送成功。加密已启用时自动包成 `ENC <base64>`。 */
     suspend fun send(line: String): Boolean {
         if (line.isEmpty()) return false
         val out = output ?: return false
         return withContext(Dispatchers.IO) {
             sendMutex.withLock {
                 try {
-                    out.write(line.toByteArray(Charsets.UTF_8))
+                    // 加密必须在锁内做：CryptoSession 的 nonce 计数器不是线程安全的，
+                    // 两个协程同时加密就可能撞上同一个 nonce —— GCM 下这是致命的。
+                    val payload = crypto?.let { session ->
+                        buildLine("ENC", base64Encode(session.encrypt(line.toByteArray(Charsets.UTF_8))))
+                    } ?: line
+                    out.write(payload.toByteArray(Charsets.UTF_8))
                     out.write('\n'.code)
                     out.flush()
                     true
@@ -150,6 +282,8 @@ class DchatConnection(private val scope: CoroutineScope) {
         heartbeatJob?.cancel()
         receiveJob = null
         heartbeatJob = null
+        crypto = null
+        serverFingerprint = null
         cleanup()
         _state.value = ConnectionState.Disconnected
     }
@@ -185,7 +319,32 @@ class DchatConnection(private val scope: CoroutineScope) {
                 }
                 while (true) {
                     val line = buffer.popLine() ?: break
-                    lineChannel.send(line)
+                    val session = crypto
+                    if (session == null) {
+                        lineChannel.send(line)
+                        continue
+                    }
+
+                    // 加密已启用：每一行都必须是 `ENC <base64>`。
+                    // ⚠️ 收到明文就必须断开，不能"宽容地当明文处理"——
+                    // 否则攻击者在加密通道里发明文指令就能绕过加密（降级攻击）。
+                    val outer = parseLine(line)
+                    if (outer.command != "ENC") {
+                        reason = "加密已启用，服务器却发来了明文指令（${outer.command}）"
+                        break
+                    }
+                    val sealed = runCatching { base64Decode(outer.rest) }.getOrNull()
+                    if (sealed == null) {
+                        reason = "收到无法解析的 ENC 行"
+                        break
+                    }
+                    val plain = session.decrypt(sealed)
+                    if (plain == null) {
+                        // 认证失败 = 被篡改 / 密钥不对 / 顺序错乱。绝不能继续用这条连接。
+                        reason = "解密失败（数据可能被篡改）"
+                        break
+                    }
+                    lineChannel.send(String(plain, Charsets.UTF_8))
                 }
             }
         } catch (e: CancellationException) {
@@ -257,5 +416,14 @@ class DchatConnection(private val scope: CoroutineScope) {
 
         /** 心跳间隔：桌面端是 45 秒，这里保持一致。 */
         const val HEARTBEAT_INTERVAL_MS: Long = 45_000L
+
+        /**
+         * 加密握手的超时（毫秒）。
+         *
+         * 超时后按**明文**继续——老服务器不认识 `HELLO`，可能既不回 `HELLO_OK`
+         * 也不回 `ERROR`（比如它把这行当成了普通聊天内容）。宁可退回明文可用，
+         * 也不要让用户卡在连不上。
+         */
+        const val HANDSHAKE_TIMEOUT_MS: Int = 3_000
     }
 }
