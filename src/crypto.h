@@ -54,6 +54,14 @@ inline constexpr std::size_t kHandshakeNonceBytes = 16;
 /** 握手协议版本。将来改流程就加这个数，双方对不上就退回明文。 */
 inline constexpr int kCryptoVersion = 1;
 
+/**
+ * 握手超时（毫秒）。超时后按**明文**继续。
+ *
+ * 老服务器可能既不回 `HELLO_OK` 也不回 `ERROR`（比如把这行当成了普通聊天内容），
+ * 宁可退回明文可用，也不要让用户卡在连不上。
+ */
+inline constexpr int kHandshakeTimeoutMs = 3000;
+
 /** HKDF 的 info 字符串（分方向）。 */
 inline constexpr const char* kHkdfInfoClientToServer = "dchat-v1-c2s";
 inline constexpr const char* kHkdfInfoServerToClient = "dchat-v1-s2c";

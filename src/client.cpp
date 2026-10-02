@@ -1,4 +1,4 @@
-// 聊天客户端：Win32 图形界面 + Winsock。
+﻿// 聊天客户端：Win32 图形界面 + Winsock。
 // 界面特点：
 // - 微信式气泡记录区（自绘子窗口）：自己的消息靠右、别人的靠左、系统提示居中
 // - 所有按钮/开关都是 GDI+ 抗锯齿的圆角自绘控件
@@ -42,6 +42,7 @@
 #include "image_preview.h"
 #include "input_history.h"
 #include "protocol.h"
+#include "crypto.h"
 #include "render.h"
 #include "resource.h"
 #include "rounded.h"
@@ -1129,10 +1130,31 @@ void UpdateStatus() {
 }
 
 // ---------------- 网络 ----------------
+// 与服务端之间的加密会话。握手成功前 active() 为假，收发都是明文——
+// 老服务器不认识 HELLO，握手会自然失败，也就一直走明文，不会因此连不上。
+dchat::CryptoSession g_crypto;
+// 服务器公钥指纹（TOFU 用：应当记住它，下次变了就警告）
+std::string g_serverFingerprint;
+
 bool SendRawLine(const std::string& line) {
     std::lock_guard<std::mutex> lock(g_sendMutex);
     if (g_sock == INVALID_SOCKET) return false;
-    const std::string data = line + "\n";
+
+    // ⚠️ 加密必须在 g_sendMutex **锁内**做：界面线程、心跳线程、接收线程
+    // 都会调用这里，而 CryptoSession 的 nonce 计数器不是线程安全的——
+    // 两个线程同时加密就可能撞上同一个 nonce，在 GCM 下是致命的。
+    std::string data;
+    if (g_crypto.active()) {
+        std::string sealed;
+        if (!g_crypto.Encrypt(line, &sealed)) return false;
+        data = dchat::BuildLine("ENC", dchat::Base64Encode(
+                                           reinterpret_cast<const unsigned char*>(sealed.data()),
+                                           sealed.size())) +
+               "\n";
+    } else {
+        data = line + "\n";
+    }
+
     std::size_t sent = 0;
     while (sent < data.size()) {
         const int n = ::send(g_sock, data.data() + sent, static_cast<int>(data.size() - sent), 0);
@@ -1140,6 +1162,91 @@ bool SendRawLine(const std::string& line) {
         sent += static_cast<std::size_t>(n);
     }
     return true;
+}
+
+/** 握手期间同步读一行（最多等 timeoutMs）。用 select 控制超时，不阻塞太久。 */
+bool ReadHandshakeLine(SOCKET sock, dchat::LineBuffer* buffer, std::string* out, int timeoutMs) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    char chunk[512];
+    for (;;) {
+        if (buffer->PopLine(out)) return true;
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) return false;
+
+        const auto remainMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+        fd_set readSet;
+        FD_ZERO(&readSet);
+        FD_SET(sock, &readSet);
+        timeval tv{};
+        tv.tv_sec = static_cast<long>(remainMs / 1000);
+        tv.tv_usec = static_cast<long>((remainMs % 1000) * 1000);
+        if (::select(0, &readSet, nullptr, nullptr, &tv) <= 0) return false;
+
+        const int received = ::recv(sock, chunk, static_cast<int>(sizeof(chunk)), 0);
+        if (received <= 0) return false;
+        buffer->Append(chunk, static_cast<std::size_t>(received));
+        if (buffer->bad()) return false;
+    }
+}
+
+/**
+ * 与服务端做加密握手。成功返回 true 并激活 [g_crypto]。
+ *
+ * **必须在启动接收线程之前调用**：握手期间要同步读几行（WELCOME / HELLO_OK），
+ * 如果接收线程已经在跑，两边会抢同一个 socket，读到的行会随机分给其中一边。
+ *
+ * 服务端不支持（回 ERROR）或超时都返回 false，调用方继续用明文。
+ */
+bool DoCryptoHandshake(SOCKET sock) {
+    dchat::EcdhKeyPair keyPair;
+    if (!dchat::GenerateEcdhKeyPair(&keyPair)) return false;
+    std::vector<unsigned char> clientNonce;
+    if (!dchat::RandomBytes(dchat::kHandshakeNonceBytes, &clientNonce)) return false;
+
+    const std::string hello = dchat::BuildLine(
+        "HELLO", std::to_string(dchat::kCryptoVersion) + " " +
+                     dchat::Base64Encode(keyPair.publicKey.data(), keyPair.publicKey.size()) + " " +
+                     dchat::Base64Encode(clientNonce.data(), clientNonce.size()));
+    if (!SendRawLine(hello)) return false;  // 此时还没加密，发出去就是明文
+
+    dchat::LineBuffer buffer;
+    std::string line;
+    for (;;) {
+        if (!ReadHandshakeLine(sock, &buffer, &line, dchat::kHandshakeTimeoutMs)) return false;
+        const dchat::Message msg = dchat::ParseLine(line);
+        if (msg.command == "HELLO_OK") {
+            const std::vector<std::string> words = msg.Words();
+            if (words.size() < 2) return false;
+            std::vector<unsigned char> serverPublic;
+            std::vector<unsigned char> serverNonce;
+            if (!dchat::Base64Decode(words[0], &serverPublic) ||
+                serverPublic.size() != dchat::kP256PublicKeyBytes) {
+                return false;
+            }
+            if (!dchat::Base64Decode(words[1], &serverNonce) ||
+                serverNonce.size() != dchat::kHandshakeNonceBytes) {
+                return false;
+            }
+            std::vector<unsigned char> shared;
+            if (!dchat::ComputeSharedSecret(keyPair, serverPublic, &shared)) return false;
+            const dchat::SessionKeys keys =
+                dchat::DeriveSessionKeys(shared, clientNonce, serverNonce);
+            if (!keys.valid()) return false;
+            // 客户端发用 c2s、收用 s2c（服务端正好相反）
+            if (!g_crypto.Start(keys.clientToServer, keys.serverToClient)) return false;
+            g_serverFingerprint = dchat::PublicKeyFingerprint(serverPublic);
+            return true;
+        }
+        // 服务器不认识 HELLO：老版本，保持明文
+        if (msg.command == "ERROR") return false;
+        // 其它行（比如 WELCOME）不能丢，照常交给界面
+        auto* payload = new std::string(line);
+        if (!PostMessageW(ui.hwnd, WM_APP_LINE, 0, reinterpret_cast<LPARAM>(payload))) {
+            delete payload;
+        }
+    }
 }
 
 void RecvLoop(SOCKET sock) {
@@ -1151,12 +1258,36 @@ void RecvLoop(SOCKET sock) {
         buffer.Append(chunk.data(), static_cast<std::size_t>(received));
         if (buffer.bad()) break;
         std::string line;
+        bool protocolError = false;
         while (buffer.PopLine(&line)) {
-            auto* payload = new std::string(line);
+            std::string effective = line;
+            if (g_crypto.active()) {
+                // 加密启用后每一行都必须是 `ENC <base64>`。
+                // ⚠️ 收到明文必须断开，不能宽容地当明文处理——否则攻击者
+                // 在加密通道里发明文指令就能绕过加密（降级攻击）。
+                const dchat::Message outer = dchat::ParseLine(line);
+                if (outer.command != "ENC") {
+                    protocolError = true;
+                    break;
+                }
+                std::vector<unsigned char> sealed;
+                if (!dchat::Base64Decode(outer.rest, &sealed)) {
+                    protocolError = true;
+                    break;
+                }
+                const std::string sealedText(sealed.begin(), sealed.end());
+                if (!g_crypto.Decrypt(sealedText, &effective)) {
+                    // 认证失败 = 被篡改 / 密钥不对 / 顺序错乱。绝不能继续用这条连接。
+                    protocolError = true;
+                    break;
+                }
+            }
+            auto* payload = new std::string(effective);
             if (!PostMessageW(ui.hwnd, WM_APP_LINE, 0, reinterpret_cast<LPARAM>(payload))) {
                 delete payload;
             }
         }
+        if (protocolError) break;
     }
     PostMessageW(ui.hwnd, WM_APP_CLOSED, 0, 0);
 }
@@ -1233,6 +1364,12 @@ bool ConnectToServer(const std::string& host, int port, std::string* error) {
     WSAIoctl(sock, SIO_KEEPALIVE_VALS, &keepAliveSettings, sizeof(keepAliveSettings), nullptr, 0,
              &returned, nullptr, nullptr);
     g_sock = sock;
+    g_crypto.Reset();
+    g_serverFingerprint.clear();
+    // 加密握手必须在启动接收线程**之前**同步做完：握手期间要自己读几行，
+    // 如果接收线程已经在跑，两边会抢同一个 socket（原因见 DoCryptoHandshake 注释）。
+    // 失败（老服务器）就保持明文，不影响连接。
+    DoCryptoHandshake(sock);
     g_running = true;
     g_recvThread = std::thread(RecvLoop, sock);
     // 心跳：每 45 秒发一次 PING，让中途的 NAT / 路由别把这条空闲连接回收掉
