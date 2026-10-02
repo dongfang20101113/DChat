@@ -20,6 +20,7 @@
 
 #include "protocol.h"
 #include "auth.h"
+#include "crypto.h"
 #include "file_transfer.h"
 #include "server_rules.h"
 #include "server_command.h"
@@ -315,6 +316,9 @@ struct Client {
     dchat::RateLimiter uploadLimiter;
     dchat::RateLimiter downloadLimiter;
 
+    // 传输加密。握手完成后 active() 为真，之后收发都走密文。
+    dchat::CryptoSession crypto;
+
     // 按限速器睡够时间。返回 false 表示 socket 已经不可用，调用方应当中止传输。
     void Throttle(dchat::RateLimiter* limiter, std::size_t bytes, int rateKbps) {
         if (!limiter) return;
@@ -328,8 +332,26 @@ struct Client {
 
     bool SendLine(const std::string& line) {
         if (sock == INVALID_SOCKET) return false;
-        const std::string data = line + "\n";
+
+        // ⚠️ 加密必须在 sendMutex **锁内**做。
+        // SendLine 会被广播线程和本连接自己的线程并发调用，而 CryptoSession 的
+        // nonce 计数器不是线程安全的——两个线程同时加密就可能用同一个 nonce，
+        // 在 GCM 下这是**致命**的（明文可被恢复、认证失效）。
+        // 放在锁内之后，加密和发送成为一个原子操作，nonce 顺序也就确定了。
         std::lock_guard<std::mutex> lock(sendMutex);
+
+        std::string data;
+        if (crypto.active()) {
+            std::string sealed;
+            if (!crypto.Encrypt(line, &sealed)) return false;
+            data = dchat::BuildLine(
+                       "ENC", dchat::Base64Encode(reinterpret_cast<const unsigned char*>(sealed.data()),
+                                                  sealed.size())) +
+                   "\n";
+        } else {
+            data = line + "\n";
+        }
+
         std::size_t sent = 0;
         while (sent < data.size()) {
             const int n = ::send(sock, data.data() + sent, static_cast<int>(data.size() - sent), 0);
@@ -913,6 +935,83 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
     if (msg.command.empty()) return true;
 
     // ---- 登录 / 注册 ----
+    // ---- 传输加密握手 ----
+    //
+    // HELLO 必须在**没有加密**的时候发（这是协商本身）。流程：
+    //     C -> S  HELLO <版本> <客户端公钥B64> <客户端随机数B64>
+    //     S -> C  HELLO_OK <服务器公钥B64> <服务器随机数B64>     ← 明文
+    //     ---- 双方各自算出两把会话密钥，此后每一行都包成 ENC <base64> ----
+    //
+    // 老客户端永远不发 HELLO，服务器就一直用明文——**不会因为它们不支持加密就连不上**。
+    if (msg.command == "HELLO") {
+        if (client->crypto.active()) {
+            client->SendLine(Timed("ERROR", "这条连接已经启用加密了"));
+            return true;
+        }
+        const std::vector<std::string> words = msg.Words();
+        if (words.size() < 3) {
+            client->SendLine(Timed("ERROR", "用法：HELLO <版本> <公钥> <随机数>"));
+            return true;
+        }
+        if (std::atoi(words[0].c_str()) != dchat::kCryptoVersion) {
+            client->SendLine(Timed("ERROR", "不支持的加密版本：" + words[0]));
+            return true;
+        }
+
+        std::vector<unsigned char> peerPublic;
+        std::vector<unsigned char> peerNonce;
+        if (!dchat::Base64Decode(words[1], &peerPublic) ||
+            peerPublic.size() != dchat::kP256PublicKeyBytes) {
+            client->SendLine(Timed("ERROR", "客户端公钥格式不对"));
+            return true;
+        }
+        if (!dchat::Base64Decode(words[2], &peerNonce) ||
+            peerNonce.size() != dchat::kHandshakeNonceBytes) {
+            client->SendLine(Timed("ERROR", "客户端随机数格式不对"));
+            return true;
+        }
+
+        dchat::EcdhKeyPair serverKey;
+        if (!dchat::GenerateEcdhKeyPair(&serverKey)) {
+            client->SendLine(Timed("ERROR", "服务器无法生成密钥"));
+            return true;
+        }
+        std::vector<unsigned char> shared;
+        if (!dchat::ComputeSharedSecret(serverKey, peerPublic, &shared)) {
+            // 公钥不是曲线上的合法点（可能有人在瞎试），拒绝但不断开
+            client->SendLine(Timed("ERROR", "客户端公钥不是合法的 P-256 点"));
+            Log("crypto handshake rejected (bad public key): " + client->address);
+            return true;
+        }
+
+        std::vector<unsigned char> serverNonce;
+        if (!dchat::RandomBytes(dchat::kHandshakeNonceBytes, &serverNonce)) {
+            client->SendLine(Timed("ERROR", "服务器随机数生成失败"));
+            return true;
+        }
+        const dchat::SessionKeys keys =
+            dchat::DeriveSessionKeys(shared, peerNonce, serverNonce);
+        if (!keys.valid()) {
+            client->SendLine(Timed("ERROR", "会话密钥派生失败"));
+            return true;
+        }
+
+        // HELLO_OK 必须**明文**发出去——此时加密还没启用
+        const std::string body =
+            dchat::Base64Encode(serverKey.publicKey.data(), serverKey.publicKey.size()) + " " +
+            dchat::Base64Encode(serverNonce.data(), serverNonce.size());
+        if (!client->SendLine(dchat::BuildLine("HELLO_OK", body))) return false;
+
+        // 服务端发用 s2c、收用 c2s（客户端正好相反）
+        if (!client->crypto.Start(keys.serverToClient, keys.clientToServer)) {
+            client->SendLine(Timed("ERROR", "会话启动失败"));
+            return true;
+        }
+        Log("encrypted channel established with " + client->address +
+            "（指纹 " + dchat::PublicKeyFingerprint(serverKey.publicKey) + "）");
+        return true;
+    }
+
     if (msg.command == "LOGIN" || msg.command == "REGISTER") {
         const std::vector<std::string> words = msg.Words();
         if (!client->nick.empty()) {  // 已经登录过：不重复加入、不重复广播
@@ -1363,7 +1462,35 @@ void ClientLoop(std::shared_ptr<Client> client) {
         }
         std::string line;
         while (buffer.PopLine(&line)) {
-            if (!HandleLine(client, line)) {
+            // 加密启用后，收到的每一行都必须是 `ENC <base64>`，先解密再交给 HandleLine。
+            std::string effective = line;
+            if (client->crypto.active()) {
+                const dchat::Message outer = dchat::ParseLine(line);
+                if (outer.command != "ENC") {
+                    // ⚠️ 这里必须**直接断开**，不能"宽容地当明文处理"：
+                    // 否则攻击者只要在加密通道里发明文指令就能绕过加密
+                    // （这叫降级攻击，是加密协议最经典的坑之一）。
+                    client->SendLine(Timed("ERROR", "加密已启用，拒绝明文指令"));
+                    Log("plaintext after handshake, disconnecting: " + client->address + " -> " +
+                        outer.command);
+                    keepGoing = false;
+                    break;
+                }
+                std::vector<unsigned char> sealed;
+                if (!dchat::Base64Decode(outer.rest, &sealed)) {
+                    client->SendLine(Timed("ERROR", "ENC 行不是合法的 Base64"));
+                    keepGoing = false;
+                    break;
+                }
+                const std::string sealedText(sealed.begin(), sealed.end());
+                if (!client->crypto.Decrypt(sealedText, &effective)) {
+                    // 认证失败 = 被篡改 / 密钥不对 / 计数器错乱。绝不能继续用这条连接。
+                    Log("decrypt failed, disconnecting: " + client->address);
+                    keepGoing = false;
+                    break;
+                }
+            }
+            if (!HandleLine(client, effective)) {
                 keepGoing = false;
                 break;
             }
