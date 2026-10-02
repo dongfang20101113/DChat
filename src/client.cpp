@@ -1280,7 +1280,22 @@ void DrawOwnerCheckbox(const DRAWITEMSTRUCT* item, bool checked, HFONT font) {
                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 }
 
-WNDPROC g_oldButtonProc = nullptr;
+// 子类化控件时，**按窗口**记住它原来的窗口过程。
+//
+// 以前这里是一个全局 `WNDPROC g_oldButtonProc`，所有按钮共用：
+//   - 每个按钮都往里覆盖写，谁都可能拿到别人的（甚至拿到 ButtonProc 自己，那就死递归）；
+//   - 更糟的是**漏写一次就全都不画**——改版时我把保存那一步弄丢了，结果是
+//     `CallWindowProcW(nullptr, ...)` 什么都不做：所有按钮（连接、登录、设置里的
+//     完成/取消）全部不显示，而且因为没画完，窗口一直处于"待重画"状态空转。
+// 换成按窗口记一条，SubclassControl 负责捕获旧过程，谁也不会串。
+std::map<HWND, WNDPROC> g_originalProc;
+
+void SubclassControl(HWND control, WNDPROC replacement) {
+    if (!control) return;
+    const WNDPROC previous = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrW(control, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(replacement)));
+    g_originalProc[control] = previous;
+}
 
 LRESULT CALLBACK ButtonProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
@@ -1300,10 +1315,20 @@ LRESULT CALLBACK ButtonProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_hover[hwnd] = false;
             InvalidateRect(hwnd, nullptr, TRUE);
             break;
+        case WM_NCDESTROY: {
+            const auto it = g_originalProc.find(hwnd);
+            const WNDPROC previous = it == g_originalProc.end() ? nullptr : it->second;
+            if (it != g_originalProc.end()) g_originalProc.erase(it);
+            g_hover.erase(hwnd);
+            return previous ? CallWindowProcW(previous, hwnd, msg, wp, lp)
+                            : DefWindowProcW(hwnd, msg, wp, lp);
+        }
         default:
             break;
     }
-    return CallWindowProcW(g_oldButtonProc, hwnd, msg, wp, lp);
+    const auto it = g_originalProc.find(hwnd);
+    if (it == g_originalProc.end() || !it->second) return DefWindowProcW(hwnd, msg, wp, lp);
+    return CallWindowProcW(it->second, hwnd, msg, wp, lp);
 }
 
 // ---------------- 主窗口外壳 ----------------
@@ -2837,7 +2862,7 @@ LRESULT CALLBACK ConnectDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             for (HWND button : buttons) {
                 SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
                 // 复用主窗口按钮那套自绘 + 悬停/按下反馈
-                SetWindowLongPtrW(button, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc));
+                SubclassControl(button, ButtonProc);
             }
             return 0;
         }
@@ -3190,7 +3215,7 @@ LRESULT CALLBACK AuthDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             const HWND buttons[4] = {ok, cancel, sw, show};
             for (HWND button : buttons) {
                 SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
-                SetWindowLongPtrW(button, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc));
+                SubclassControl(button, ButtonProc);
             }
             LayoutAuthWindow(state);
             ApplyPasswordMask(hwnd, state->edits + 1, state->fieldRect + 1, 2,
@@ -3661,8 +3686,8 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SendMessageW(state->portEdit, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
             SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
             SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
-            SetWindowLongPtrW(ok, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc));
-            SetWindowLongPtrW(cancel, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc));
+            SubclassControl(ok, ButtonProc);
+            SubclassControl(cancel, ButtonProc);
             SendMessageW(state->hostEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
                          MAKELPARAM(4, 4));
             SendMessageW(state->portEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
@@ -4367,7 +4392,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SendMessageW(ui.hSend, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
             g_oldInputProc = reinterpret_cast<WNDPROC>(
                 SetWindowLongPtrW(ui.hInput, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(InputProc)));
-            SetWindowLongPtrW(ui.hSend, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc));
+            SubclassControl(ui.hSend, ButtonProc);
             DragAcceptFiles(hwnd, TRUE);  // 允许把文件直接拖进窗口发送
 
             const std::string now = dchat::NowTimeString();

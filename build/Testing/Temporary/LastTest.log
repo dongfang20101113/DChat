@@ -1,10 +1,10 @@
-Start testing: Oct 02 19:48 中国标准时间
+Start testing: Oct 02 20:38 中国标准时间
 ----------------------------------------------------------
 1/13 Testing: protocol_tests
 1/13 Test: protocol_tests
 Command: "D:/codes/dchat/build/test_protocol.exe"
 Directory: D:/codes/dchat/build
-"protocol_tests" start time: Oct 02 19:48 中国标准时间
+"protocol_tests" start time: Oct 02 20:38 中国标准时间
 Output:
 ----------------------------------------------------------
 == dchat protocol tests ==
@@ -87,7 +87,7 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"protocol_tests" end time: Oct 02 19:48 中国标准时间
+"protocol_tests" end time: Oct 02 20:38 中国标准时间
 "protocol_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -95,7 +95,7 @@ Test Passed.
 2/13 Test: render_tests
 Command: "D:/codes/dchat/build/test_render.exe"
 Directory: D:/codes/dchat/build
-"render_tests" start time: Oct 02 19:48 中国标准时间
+"render_tests" start time: Oct 02 20:38 中国标准时间
 Output:
 ----------------------------------------------------------
 == dchat render tests ==
@@ -162,7 +162,7 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"render_tests" end time: Oct 02 19:48 中国标准时间
+"render_tests" end time: Oct 02 20:38 中国标准时间
 "render_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -170,7 +170,7 @@ Test Passed.
 3/13 Test: rounded_tests
 Command: "D:/codes/dchat/build/test_rounded.exe"
 Directory: D:/codes/dchat/build
-"rounded_tests" start time: Oct 02 19:48 中国标准时间
+"rounded_tests" start time: Oct 02 20:38 中国标准时间
 Output:
 ----------------------------------------------------------
 == rounded control tests ==
@@ -198,7 +198,7 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"rounded_tests" end time: Oct 02 19:48 中国标准时间
+"rounded_tests" end time: Oct 02 20:38 中国标准时间
 "rounded_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -206,7 +206,7 @@ Test Passed.
 4/13 Test: bubble_tests
 Command: "D:/codes/dchat/build/test_bubble.exe"
 Directory: D:/codes/dchat/build
-"bubble_tests" start time: Oct 02 19:48 中国标准时间
+"bubble_tests" start time: Oct 02 20:38 中国标准时间
 Output:
 ----------------------------------------------------------
 == dchat bubble tests ==
@@ -244,10 +244,10 @@ Output:
 
 26 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.05 sec
 ----------------------------------------------------------
 Test Passed.
-"bubble_tests" end time: Oct 02 19:48 中国标准时间
+"bubble_tests" end time: Oct 02 20:38 中国标准时间
 "bubble_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -255,7 +255,7 @@ Test Passed.
 5/13 Test: image_preview_tests
 Command: "D:/codes/dchat/build/test_image_preview.exe"
 Directory: D:/codes/dchat/build
-"image_preview_tests" start time: Oct 02 19:48 中国标准时间
+"image_preview_tests" start time: Oct 02 20:38 中国标准时间
 Output:
 ----------------------------------------------------------
 == dchat image preview tests ==
@@ -279,10 +279,10 @@ Output:
 
 14 checks, 0 failures
 <end of output>
-Test time =   0.02 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"image_preview_tests" end time: Oct 02 19:48 中国标准时间
+"image_preview_tests" end time: Oct 02 20:38 中国标准时间
 "image_preview_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -290,7 +290,7 @@ Test Passed.
 6/13 Test: server_rules_tests
 Command: "D:/codes/dchat/build/test_server_rules.exe"
 Directory: D:/codes/dchat/build
-"server_rules_tests" start time: Oct 02 19:48 中国标准时间
+"server_rules_tests" start time: Oct 02 20:38 中国标准时间
 Output:
 ----------------------------------------------------------
 == dchat server rules tests ==
@@ -427,7 +427,7 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"server_rules_tests" end time: Oct 02 19:48 中国标准时间
+"server_rules_tests" end time: Oct 02 20:38 中国标准时间
 "server_rules_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -435,7 +435,7 @@ Test Passed.
 7/13 Test: history_tests
 Command: "D:/codes/dchat/build/test_history.exe"
 Directory: D:/codes/dchat/build
-"history_tests" start time: Oct 02 19:48 中国标准时间
+"history_tests" start time: Oct 02 20:38 中国标准时间
 Output:
 ----------------------------------------------------------
 == dchat input history tests ==
@@ -478,7 +478,7 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"history_tests" end time: Oct 02 19:48 中国标准时间
+"history_tests" end time: Oct 02 20:38 中国标准时间
 "history_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -486,7 +486,7 @@ Test Passed.
 8/13 Test: server_command_tests
 Command: "D:/codes/dchat/build/test_server_command.exe"
 Directory: D:/codes/dchat/build
-"server_command_tests" start time: Oct 02 19:48 中国标准时间
+"server_command_tests" start time: Oct 02 20:38 中国标准时间
 Output:
 ----------------------------------------------------------
 == dchat server command tests ==
@@ -713,7 +713,7 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"server_command_tests" end time: Oct 02 19:48 中国标准时间
+"server_command_tests" end time: Oct 02 20:38 中国标准时间
 "server_command_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -721,7 +721,7 @@ Test Passed.
 9/13 Test: auth_tests
 Command: "D:/codes/dchat/build/test_auth.exe"
 Directory: D:/codes/dchat/build
-"auth_tests" start time: Oct 02 19:48 中国标准时间
+"auth_tests" start time: Oct 02 20:38 中国标准时间
 Output:
 ----------------------------------------------------------
 == dchat auth tests ==
@@ -775,7 +775,7 @@ Output:
 Test time =   0.06 sec
 ----------------------------------------------------------
 Test Passed.
-"auth_tests" end time: Oct 02 19:48 中国标准时间
+"auth_tests" end time: Oct 02 20:38 中国标准时间
 "auth_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -783,7 +783,7 @@ Test Passed.
 10/13 Test: file_transfer_tests
 Command: "D:/codes/dchat/build/test_file_transfer.exe"
 Directory: D:/codes/dchat/build
-"file_transfer_tests" start time: Oct 02 19:48 中国标准时间
+"file_transfer_tests" start time: Oct 02 20:38 中国标准时间
 Output:
 ----------------------------------------------------------
 == dchat file transfer tests ==
@@ -859,7 +859,7 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"file_transfer_tests" end time: Oct 02 19:48 中国标准时间
+"file_transfer_tests" end time: Oct 02 20:38 中国标准时间
 "file_transfer_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -867,7 +867,7 @@ Test Passed.
 11/13 Test: crypto_tests
 Command: "D:/codes/dchat/build/test_crypto.exe"
 Directory: D:/codes/dchat/build
-"crypto_tests" start time: Oct 02 19:48 中国标准时间
+"crypto_tests" start time: Oct 02 20:38 中国标准时间
 Output:
 ----------------------------------------------------------
 == dchat crypto tests ==
@@ -988,7 +988,7 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"crypto_tests" end time: Oct 02 19:48 中国标准时间
+"crypto_tests" end time: Oct 02 20:38 中国标准时间
 "crypto_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -996,7 +996,7 @@ Test Passed.
 12/13 Test: voice_notes_tests
 Command: "D:/codes/dchat/build/test_voice_notes.exe"
 Directory: D:/codes/dchat/build
-"voice_notes_tests" start time: Oct 02 19:48 中国标准时间
+"voice_notes_tests" start time: Oct 02 20:38 中国标准时间
 Output:
 ----------------------------------------------------------
 == dchat voice notes tests ==
@@ -1077,10 +1077,10 @@ Output:
 
 64 checks, 0 failures
 <end of output>
-Test time =   3.08 sec
+Test time =   3.11 sec
 ----------------------------------------------------------
 Test Passed.
-"voice_notes_tests" end time: Oct 02 19:48 中国标准时间
+"voice_notes_tests" end time: Oct 02 20:38 中国标准时间
 "voice_notes_tests" time elapsed: 00:00:03
 ----------------------------------------------------------
 
@@ -1088,7 +1088,7 @@ Test Passed.
 13/13 Test: ui_layout_tests
 Command: "D:/codes/dchat/build/test_ui_layout.exe"
 Directory: D:/codes/dchat/build
-"ui_layout_tests" start time: Oct 02 19:48 中国标准时间
+"ui_layout_tests" start time: Oct 02 20:38 中国标准时间
 Output:
 ----------------------------------------------------------
 == dchat UI layout tests ==
@@ -1157,11 +1157,11 @@ Output:
 
 57 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.02 sec
 ----------------------------------------------------------
 Test Passed.
-"ui_layout_tests" end time: Oct 02 19:48 中国标准时间
+"ui_layout_tests" end time: Oct 02 20:38 中国标准时间
 "ui_layout_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-End testing: Oct 02 19:48 中国标准时间
+End testing: Oct 02 20:38 中国标准时间
