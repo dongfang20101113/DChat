@@ -74,11 +74,22 @@ sealed interface ServerLine {
         val size: Long,
         val hasThumbnail: Boolean,
         /**
-         * 这是不是一张**贴纸**（聊天里内联画成大图，而不是文件卡片）。
+         * 这是**贴纸**（聊天里内联画成大图，而不是文件卡片）。
          *
-         * 默认 `false`：老服务器不会发这个标记，那时按普通文件处理才是对的。
+         * 保留这个属性是为了兼容已经在用的代码；它的值由 [kind] 推出来，
+         * 所以**只有 [kind] 是真相来源**，不要再单独去解析标记字段。
          */
         val isSticker: Boolean = false,
+        /**
+         * 附件的**种类**：普通文件 / 贴纸 / 语音消息。
+         *
+         * 三种附件走**完全相同**的传输通道，区别只在客户端收到后怎么显示、
+         * 以及要不要自动下载。种类用同一格字段表达（见 [VoiceMessage.parseKind]），
+         * 所以不会出现"既是贴纸又是语音"这种组合。
+         *
+         * 默认 [AttachmentKind.FILE]：老服务器不会发这一格。
+         */
+        val kind: AttachmentKind = AttachmentKind.FILE,
     ) : ServerLine
 
     /** `FILE_BEGIN <文件ID> <文件名B64> <字节数>` —— 下载开始。 */
@@ -204,6 +215,9 @@ sealed interface ServerLine {
             val words = splitWords(afterTime)
             if (words.size < 4) return Unknown("FILE_OFFER $rest")
             val size = words[3].toLongOrNull() ?: return Unknown("FILE_OFFER $rest")
+            // 附件的"种类"是**第 6 个字段**（这里的 words 已经剥掉时间前缀了，
+            // 所以下标比整行少 1）。缺字段就是老服务器，按普通文件处理。
+            val kind = VoiceMessage.parseKind(words.getOrNull(5))
             return FileOffer(
                 time = time,
                 nick = words[0],
@@ -211,9 +225,9 @@ sealed interface ServerLine {
                 fileName = base64DecodeToString(words[2]) ?: words[2],
                 size = size,
                 hasThumbnail = words.size >= 5 && words[4] == "1",
-                // 贴纸标记是**第 6 个字段**（这里的 words 已经剥掉时间前缀了，
-                // 所以下标比整行少 1）。缺字段就是老服务器，按普通文件处理。
-                isSticker = StickerProtocol.isStickerFlag(words.getOrNull(5)),
+                // isSticker 由 kind 推出来，保证两者永不自相矛盾
+                isSticker = kind == AttachmentKind.STICKER,
+                kind = kind,
             )
         }
 
