@@ -223,6 +223,50 @@ bool GenerateEcdhKeyPair(EcdhKeyPair* out) {
     return true;
 }
 
+bool ImportEcdhKeyPair(const std::vector<unsigned char>& privateScalar,
+                       const std::vector<unsigned char>& publicKey, EcdhKeyPair* out) {
+    if (!out) return false;
+    out->privateBlob.clear();
+    out->publicKey.clear();
+    if (privateScalar.size() != kP256CoordinateBytes) return false;
+    if (publicKey.size() != kP256PublicKeyBytes) return false;
+
+    // ECCPRIVATE_BLOB 的布局：header(8) + X(32) + Y(32) + d(32)
+    std::vector<unsigned char> blob(sizeof(BCRYPT_ECCKEY_BLOB) + kP256PublicKeyBytes +
+                                        kP256CoordinateBytes,
+                                    0);
+    auto* header = reinterpret_cast<BCRYPT_ECCKEY_BLOB*>(blob.data());
+    header->dwMagic = kEcdhPrivateP256Magic;
+    header->cbKey = kP256CoordinateBytes;
+    std::copy(publicKey.begin(), publicKey.end(), blob.begin() + sizeof(BCRYPT_ECCKEY_BLOB));
+    std::copy(privateScalar.begin(), privateScalar.end(),
+              blob.begin() + sizeof(BCRYPT_ECCKEY_BLOB) + kP256PublicKeyBytes);
+
+    AlgHandle alg;
+    if (!alg.Open(BCRYPT_ECDH_P256_ALGORITHM)) return false;
+
+    KeyHandle key;
+    if (!NT_SUCCESS(BCryptImportKeyPair(alg.handle, nullptr, BCRYPT_ECCPRIVATE_BLOB, &key.handle,
+                                        blob.data(), static_cast<ULONG>(blob.size()), 0))) {
+        return false;
+    }
+
+    // ⚠️ 实测结论（踩过才知道）：CNG 对 ECC 私钥 blob 是**原样存取**——
+    // 既不校验标量和公钥是否对应，也不会用标量重算公钥；导出回来的就是传进去的那份。
+    // 所以这里**没法**替调用方校验，错配是静默的。
+    //
+    // 好消息是真正影响安全的那部分是对的：ComputeSharedSecret 用的是 blob 里的标量 d，
+    // 传一对不匹配的进去，ECDH 结果仍然对应 d（这一点由 test_crypto 的 fixture 用例钉住）。
+    // 影响仅限于 out->publicKey 会是调用方给的那份，可能对不上 d。
+    //
+    // 因此这个函数的契约是：**调用方必须传一对真正匹配的标量和公钥**。
+    // 它只有两个用途——测试里的固定向量、以及将来从文件读回服务器身份密钥，
+    // 两处的信息来源都是可信的。
+    out->privateBlob = blob;
+    out->publicKey = publicKey;
+    return true;
+}
+
 bool ComputeSharedSecret(const EcdhKeyPair& mine, const std::vector<unsigned char>& peerPublicKey,
                          std::vector<unsigned char>* out) {
     if (!out) return false;

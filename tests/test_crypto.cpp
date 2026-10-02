@@ -447,6 +447,93 @@ int main() {
         check(dchat::PublicKeyFingerprint(other.publicKey) != fp1, "不同公钥的指纹不同");
     }
 
+    // ==================================================================
+    // 9. 跨语言 fixture：与安卓端 Kotlin 实现比对
+    // ==================================================================
+    //
+    // 这几个常量是**两端共用**的：C++ 这边算出来的必须和 Kotlin 那边一模一样。
+    //
+    // 为什么必须做这件事：HKDF 和 AES-GCM 都有官方测试向量，两边各自对照标准就够了；
+    // 但 **ECDH 的共享密钥没有"标准字节序"**——Windows 的 BCRYPT_KDF_RAW_SECRET
+    // 返回小端序，JCE 的 KeyAgreement 返回大端序。这是唯一一处"两边都符合各自的
+    // 文档、却互相不兼容"的地方，而且错了不会报错，只表现为握手成功但解出乱码。
+    // 只有把同一组密钥对喂给两边、比对算出来的字节，才能真正把它钉死。
+    {
+        std::printf("[9] 跨语言一致性（与安卓端 Kotlin 实现比对）\n");
+
+        // 这组值由 C++ 端一次性生成后固化；Kotlin 端测试用的是同一组
+        const Bytes da = FromHex("c274a98a7fb6866815c220592086e6e77193a14f4882f4e700abc318f047ad2b");
+        const Bytes pa = FromHex(
+            "351019adfbe32c216d4cc85dbb22f1a5182aafac8afd0d6246f9348a3ece0f75"
+            "a514a55e3bc4e1ffb7d1ba1eed914d55d8e49564fef85e576fc2037c0e8064bd");
+        const Bytes db = FromHex("056a3eeba3d6eed350c0ebbafb2f8de42222e2c810ebc9059b968fb6ba974901");
+        const Bytes pb = FromHex(
+            "b0015cb22a2972152ea6ce50209814a7864351411c30d3030f8d254668a14249"
+            "ab882f5ee692aaea4463f01193ff86f8a34eab739da333a5bb1309c59d8fe05f");
+        const Bytes expectedShared =
+            FromHex("9b2046ee642c42f8242e39db624254743e6d8201b7c023ccb73df93faeb609a9");
+        const Bytes expectedC2s =
+            FromHex("93ba6edd5072fc8ee83bfe3d222ae964a329c20ed90cd71104c00627ab6b6cf8");
+        const Bytes expectedS2c =
+            FromHex("0c740c2f5b839a8d775241feb5e49284fc96493c3764f0baf4a3836c02f5be86");
+
+        check(da.size() == 32 && pa.size() == 64 && db.size() == 32 && pb.size() == 64,
+              "fixture 常量长度正确（标量 32 / 公钥 64）");
+        check(expectedShared.size() == 32, "fixture 共享密钥是 32 字节");
+
+        dchat::EcdhKeyPair alice, bob;
+        check(dchat::ImportEcdhKeyPair(da, pa, &alice), "从固定标量重建 Alice 的密钥对");
+        check(dchat::ImportEcdhKeyPair(db, pb, &bob), "从固定标量重建 Bob 的密钥对");
+        check(alice.publicKey == pa, "重建后的公钥与输入一致");
+
+        // 实测结论：CNG 对 ECC 私钥 blob 是原样存取，**不会**校验标量和公钥是否对应，
+        // 所以错配是能导入成功的。这里把这个真实行为钉住（免得以后有人以为有校验），
+        // 同时验证真正影响安全的部分：ECDH 用的仍然是标量 d。
+        {
+            dchat::EcdhKeyPair mismatched;
+            check(dchat::ImportEcdhKeyPair(da, pb, &mismatched),
+                  "标量与公钥错配时 CNG 仍会接受（这是它的真实行为，没有校验）");
+            Bytes fromMismatched;
+            check(dchat::ComputeSharedSecret(mismatched, bob.publicKey, &fromMismatched),
+                  "错配对象仍能算共享密钥");
+            check(fromMismatched == expectedShared,
+                  "★ 错配时 ECDH 用的仍是标量 d，结果正确（安全性不受影响）");
+        }
+        dchat::EcdhKeyPair wrong;
+        check(!dchat::ImportEcdhKeyPair(Bytes(31, 1), pa, &wrong), "标量长度不对被拒绝");
+        check(!dchat::ImportEcdhKeyPair(da, Bytes(63, 1), &wrong), "公钥长度不对被拒绝");
+
+        Bytes sharedA, sharedB;
+        check(dchat::ComputeSharedSecret(alice, bob.publicKey, &sharedA), "Alice 算共享密钥");
+        check(dchat::ComputeSharedSecret(bob, alice.publicKey, &sharedB), "Bob 算共享密钥");
+        check(sharedA == expectedShared,
+              "★ 共享密钥与 fixture 一致（这一条盯的就是 Windows 的小端序）");
+        check(sharedB == expectedShared, "★ 反向算出来的也一致");
+
+        const Bytes clientNonce = FromHex("000102030405060708090a0b0c0d0e0f");
+        const Bytes serverNonce = FromHex("101112131415161718191a1b1c1d1e1f");
+        const dchat::SessionKeys keys = dchat::DeriveSessionKeys(sharedA, clientNonce, serverNonce);
+        check(keys.clientToServer == expectedC2s, "★ 派生的 c2s 会话密钥与 fixture 一致");
+        check(keys.serverToClient == expectedS2c, "★ 派生的 s2c 会话密钥与 fixture 一致");
+
+        // 用固定会话密钥加密固定明文。AEAD 的密文由算法完全决定，
+        // 所以 Kotlin 端拿同样的输入必须得到同样的字节。
+        // 这里只断言"长度正确 + 能解回原文"；逐字节比对放在 Kotlin 那边的测试里做
+        // （那边会硬编码这段密文，两边对不上就红）。
+        const std::string sample = "dchat cross-language";
+        std::string sealed;
+        check(dchat::AesGcmEncrypt(keys.clientToServer, Bytes(12, 0), sample, &sealed),
+              "用固定会话密钥加密固定明文");
+        check(sealed.size() == sample.size() + dchat::kGcmTagBytes,
+              "密文长度 = 明文长度 + 16 字节标签");
+
+        std::string opened;
+        check(dchat::AesGcmDecrypt(keys.clientToServer, Bytes(12, 0), sealed, &opened) &&
+                  opened == sample,
+              "能解回原文");
+        std::printf("  （固定明文用 c2s 密钥加密后是：%s）\n", ToHex(sealed).c_str());
+    }
+
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

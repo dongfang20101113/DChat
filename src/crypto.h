@@ -82,6 +82,19 @@ bool RandomBytes(std::size_t count, std::vector<unsigned char>* out);
 bool GenerateEcdhKeyPair(EcdhKeyPair* out);
 
 /**
+ * 从裸的私钥标量（32 字节大端）和对应公钥（64 字节 X||Y）重建密钥对。
+ *
+ * 用途：① 测试里用固定的密钥对做跨语言比对；② 将来把服务器身份密钥存文件再读回来。
+ *
+ * ⚠️ **调用方必须保证标量和公钥真的匹配**。实测 Windows CNG 对 ECC 私钥 blob
+ * 是原样存取，既不校验也不重算公钥，所以这里没法替调用方把这一关。
+ * 错配的后果仅限于 [EcdhKeyPair::publicKey] 可能对不上私钥；
+ * ECDH 计算本身用的仍是标量，结果是对的。
+ */
+bool ImportEcdhKeyPair(const std::vector<unsigned char>& privateScalar,
+                       const std::vector<unsigned char>& publicKey, EcdhKeyPair* out);
+
+/**
  * 用自己的私钥和对方的公钥（64 字节 X||Y）算出共享密钥。
  *
  * 公钥长度不对、或者不是曲线上的合法点，都返回 false。
