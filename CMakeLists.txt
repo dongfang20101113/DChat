@@ -73,6 +73,11 @@ target_link_libraries(test_image_preview PRIVATE dchat_ui)
 add_executable(test_voice_notes tests/test_voice_notes.cpp)
 target_link_libraries(test_voice_notes PRIVATE dchat_ui dchat_protocol)
 
+# 界面改版效果图：把提议的新布局离屏画成 PNG（复用真界面的配色/字号/圆角绘制）
+# 不是测试目标，只在改版讨论时用：build\ui_mockup.exe [输出目录]
+add_executable(ui_mockup tools/ui_mockup.cpp)
+target_link_libraries(ui_mockup PRIVATE dchat_ui dchat_protocol gdiplus gdi32 user32)
+
 # 服务器规则（/chatrule）单元测试
 add_executable(test_server_rules tests/test_server_rules.cpp)
 target_link_libraries(test_server_rules PRIVATE dchat_protocol)
