@@ -303,6 +303,7 @@ std::string Timed(const std::string& command, const std::string& rest = std::str
 struct Client {
     SOCKET sock = INVALID_SOCKET;
     std::string nick;     // 空表示还没设置昵称
+    std::string ip;       // 裸 IP（不含端口），公网加固按它做单 IP 限流
     std::string address;  // 例如 127.0.0.1:51234
     std::mutex sendMutex;
     // 正在上传的文件（收齐后由服务器暂存，别人点击下载时才发出去）
@@ -341,6 +342,10 @@ struct Client {
 
 std::mutex g_clientsMutex;
 std::vector<std::shared_ptr<Client>> g_clients;
+
+// 防爆破：按 IP 统计登录失败次数（规则 loginfails）。
+// 放在全局是因为它要跨连接生效——攻击者换个连接接着试也得被拦住。
+dchat::LoginFailTracker g_loginFails;
 
 // ---- 黑名单：昵称 -> 解封时间点 ----
 struct BanEntry {
@@ -846,6 +851,8 @@ void BanMaintenanceLoop() {
                 Log("stored file expired: " + line);
             }
         }
+        // 登录失败记录也会过期，顺手清掉，免得长期运行时那张表无限增长
+        g_loginFails.Sweep();
     }
 }
 
@@ -929,6 +936,18 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             return true;
         }
 
+        // ---- 防爆破（规则 loginfails）----
+        // 放在密码比对**之前**：被锁的 IP 连"用户名存不存在"都问不出来，
+        // 否则攻击者仍能靠错误信息的差别枚举账号。
+        if (msg.command == "LOGIN") {
+            const int failLimit = CurrentRules().loginFailLimit;
+            if (g_loginFails.IsBlocked(client->ip, failLimit)) {
+                client->SendLine(Timed("ERROR", "登录失败次数过多，请过几分钟再试"));
+                Log("login blocked (too many failures from " + client->ip + ")");
+                return true;
+            }
+        }
+
         if (msg.command == "REGISTER") {
             if (UserExists(name, nullptr)) {
                 client->SendLine(Timed("ERROR", "用户名已存在，请到「登录」界面直接登录"));
@@ -951,14 +970,17 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             if (!UserExists(name, &user)) {
                 client->SendLine(Timed("ERROR", "用户名不存在，请先注册（点「没有账号？注册新账号」）"));
                 Log("login failed (no such user): " + name);
+                g_loginFails.NoteFailure(client->ip);  // 探测账号也算一次失败
                 return true;
             }
             if (!dchat::CheckPassword(user, words[1])) {
                 client->SendLine(Timed("ERROR", "密码错误"));
                 Log("login failed (wrong password): " + name);
+                g_loginFails.NoteFailure(client->ip);
                 return true;
             }
             Log("login ok: " + name);
+            g_loginFails.Clear(client->ip);  // 登录成功立刻清零，免得本人打错几次把自己锁了
         }
         return CompleteLogin(client, name);
     }
@@ -1302,12 +1324,38 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
 void ClientLoop(std::shared_ptr<Client> client) {
     client->SendLine(Timed("WELCOME", kServerName));
 
+    // ---- 握手超时（规则 handshaketimeout）----
+    // 连上以后迟迟不登录的连接最讨厌：白占一个线程和一份内存，开几千个就能把服务器拖垮。
+    // 用 SO_RCVTIMEO 让 recv 超时返回；**登录成功后立刻撤掉这个限制**，
+    // 否则正常用户挂机不说话也会被踢。
+    bool handshakeTimeoutActive = false;
+    const int handshakeSec = CurrentRules().handshakeTimeoutSec;
+    if (handshakeSec > 0) {
+        DWORD timeoutMs = static_cast<DWORD>(handshakeSec) * 1000;
+        if (::setsockopt(client->sock, SOL_SOCKET, SO_RCVTIMEO,
+                         reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs)) == 0) {
+            handshakeTimeoutActive = true;
+        }
+    }
+
     dchat::LineBuffer buffer;
     std::vector<char> chunk(2048);
     bool keepGoing = true;
     while (keepGoing) {
         const int received = ::recv(client->sock, chunk.data(), static_cast<int>(chunk.size()), 0);
-        if (received <= 0) break;
+        if (received == SOCKET_ERROR) {
+            if (::WSAGetLastError() == WSAETIMEDOUT) {
+                if (client->nick.empty()) {
+                    client->SendLine(Timed("ERROR", "太久没有登录，连接已关闭"));
+                    Log("handshake timeout: " + client->address);
+                    break;
+                }
+                continue;  // 已经登录了：这次只是没数据，继续等
+            }
+            break;
+        }
+        if (received == 0) break;  // 对端正常关闭
+
         buffer.Append(chunk.data(), static_cast<std::size_t>(received));
         if (buffer.bad()) {
             client->SendLine(Timed("ERROR", "单行数据过长，连接已关闭"));
@@ -1319,6 +1367,14 @@ void ClientLoop(std::shared_ptr<Client> client) {
                 keepGoing = false;
                 break;
             }
+        }
+
+        // 登录成功就撤掉握手超时（设回 0 = 永不超时，恢复原来的行为）
+        if (handshakeTimeoutActive && !client->nick.empty()) {
+            DWORD zero = 0;
+            ::setsockopt(client->sock, SOL_SOCKET, SO_RCVTIMEO,
+                         reinterpret_cast<const char*>(&zero), sizeof(zero));
+            handshakeTimeoutActive = false;
         }
     }
 
@@ -1402,7 +1458,9 @@ int main(int argc, char** argv) {
     Log("rules file: " + g_rulesPath + "（/chatrule 改完会自动写回）");
     Log("管理员指令：/ban <昵称> <时长>  /kick <昵称>  /unban <昵称>  /bans  /op <昵称>  /say <公告>");
     Log("查在线地址：/ip <昵称>（仅控制台）    改密码：/changepassword 或简写 /cp");
-    Log("服务器规则：/chatrule（仅控制台）—— chatinterval / documentsize / keepchathistory / maxservertemp");
+    Log("服务器规则：/chatrule（仅控制台）—— 聊天类：chatinterval / documentsize / keepchathistory / maxservertemp");
+    Log("                                        限速与文本：uploadrate / downloadrate / maxtextlen / maxtextlines");
+    Log("                                        公网加固：maxconns / maxconnsperip / loginfails / handshaketimeout");
     Log("给别的账号改密码：/changepassword <昵称> <新密码>（聊天框里玩家只能改自己的）");
     Log("完整帮助：/help");
     // 启动时把本机地址列出来，方便告诉别人用哪个地址连
@@ -1429,10 +1487,52 @@ int main(int argc, char** argv) {
 
         char host[64] = {0};
         inet_ntop(AF_INET, &peer.sin_addr, host, sizeof(host));
+        const std::string ip(host);
+
+        // ---- 公网加固：连接数限制（规则 maxconns / maxconnsperip）----
+        // 必须在 accept 之后判断——accept 之前看不到对端地址。
+        // 超限时**先告诉对方原因再关**，否则客户端只会看到"莫名其妙连不上"，
+        // 既难排查也容易被当成服务器坏了。
+        {
+            const dchat::ServerRules limits = CurrentRules();
+            std::string reason;
+
+            if (limits.maxConnections > 0) {
+                std::lock_guard<std::mutex> lock(g_clientsMutex);
+                if (static_cast<int>(g_clients.size()) >= limits.maxConnections) {
+                    reason = "服务器连接数已满（上限 " +
+                             std::to_string(limits.maxConnections) + "），请稍后再试";
+                }
+            }
+            if (reason.empty() && limits.maxConnectionsPerIp > 0) {
+                std::lock_guard<std::mutex> lock(g_clientsMutex);
+                int sameIp = 0;
+                for (const std::shared_ptr<Client>& existing : g_clients) {
+                    if (existing->ip == ip) ++sameIp;
+                }
+                if (sameIp >= limits.maxConnectionsPerIp) {
+                    reason = "同一地址的连接数已达上限（" +
+                             std::to_string(limits.maxConnectionsPerIp) + "）";
+                }
+            }
+
+            if (!reason.empty()) {
+                // 直接发一行 ERROR 再关，不走 Client 对象（它还没进列表）
+                const std::string line =
+                    dchat::BuildLine("ERROR", dchat::NowTimeString() + " " + reason);
+                const std::string payload = line + "\n";
+                ::send(sock, payload.data(), static_cast<int>(payload.size()), 0);
+                ::shutdown(sock, SD_BOTH);
+                ::closesocket(sock);
+                Log("rejected connection from " + ip + ": " + reason);
+                continue;
+            }
+        }
 
         auto client = std::make_shared<Client>();
         client->sock = sock;
-        client->address = std::string(host) + ":" + std::to_string(ntohs(peer.sin_port));
+        client->ip = ip;
+        client->address = ip + ":" + std::to_string(ntohs(peer.sin_port));
         {
             std::lock_guard<std::mutex> lock(g_clientsMutex);
             g_clients.push_back(client);

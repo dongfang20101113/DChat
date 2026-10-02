@@ -212,7 +212,7 @@ alice 2f9c... 8b41... 12000
 | `/ops` | 列出当前管理员名单（`/oplist` 也行；控制台里直接敲 `ops` 也可以） |
 | `/help` | 显示指令帮助 |
 
-八条服务器规则的默认值与作用（都能用 `/chatrule` 改，**只能控制台**）：
+十二条服务器规则的默认值与作用（都能用 `/chatrule` 改，**只能控制台**）：
 
 规则**存在服务器端的 `dchat-rules.txt`** 里（一行一条 `规则名 值`，`#` 开头是注释，可以直接用记事本改；启动时读取，**改文件要重启才生效**）。用 `/chatrule` 改的话**会立刻写回这个文件**，重启服务器依然生效；文件位置可以用 `--rules <路径>` 指定。
 
@@ -226,6 +226,23 @@ alice 2f9c... 8b41... 12000
 | `downloadrate` | `0` KB/s | **单个客户端下载限速**；`0` = 不限制。公网服务器建议设 256 左右 |
 | `maxtextlen` | `0` 字符 | **单条消息最大字符数**（按 Unicode 码点算，一个汉字算 1 个）；`0` = 不限制。超了只回给本人一条 `ERROR`，不广播 |
 | `maxtextlines` | `0` 行 | **单条消息最大行数**；`0` = 不限制 |
+| `maxconns` | `0` 个 | **同时连接总数上限**；`0` = 不限制。公网建议 200。不设的话任何人都能开几千个连接把线程耗光 |
+| `maxconnsperip` | `0` 个 | **同一 IP 的同时连接数上限**；`0` = 不限制。公网建议 8 |
+| `loginfails` | `0` 次 | **同一 IP 在 5 分钟内允许的登录失败次数**；`0` = 不限制。公网建议 10。超了就在剩余窗口内**直接拒绝登录（连密码都不比对）**，登录成功立刻清零 |
+| `handshaketimeout` | `30` 秒 | **连上后必须在多少秒内登录**；`0` = 不限制。登录成功后这个限制立刻撤销，所以挂机不会被踢 |
+
+**加固这 4 条刻意不通过 `RULES` 行下发给客户端**——它们是服务端的资源保护策略，客户端知道也没用，不下发还能保持客户端契约不变（`RULES` 行仍然是 8 个字段）。
+
+### 公网部署建议
+
+| 项 | 建议 |
+| --- | --- |
+| 绑定地址 | `--bind 0.0.0.0`（默认，监听所有网卡）；只想让内网访问就 `--bind 192.168.x.x` |
+| 端口映射 | 在路由器上把这个 TCP 端口映射到本机，并在 Windows 防火墙放行 |
+| 没有公网 IP | 运营商是 CGNAT 的话，直接用内网穿透工具（Tailscale / ZeroTier 等）比折腾端口映射省事 |
+| 四个加固规则 | **公网服务器一定要设**：`/chatrule maxconns set 200`、`maxconnsperip set 8`、`loginfails set 10`、`handshaketimeout set 30` |
+
+> ⚠️ **目前传输还是明文的**——密码在链路上没有加密保护。加密层（ECDH + AES-256-GCM）在计划中，尚未实现。
 
 **关于限速的实现方式**：用的是**每客户端一个令牌桶**（桶容量等于 1 秒的量，允许 1 秒的突发），超额时服务端**阻塞等待**形成背压——发送方只是变慢，**不丢包也不断连**。这比"超速就断开"友好得多。
 
@@ -569,7 +586,7 @@ Once the server is running you can manage the room from its console; admins gran
 | `/ops` | List the current admins (`/oplist` works too; typing `ops` in the console is fine as well) |
 | `/help` | Show the command help |
 
-The eight server rules, with their defaults and effects (all changeable with `/chatrule`, **console only**):
+The twelve server rules, with their defaults and effects (all changeable with `/chatrule`, **console only**):
 
 The rules **live in `dchat-rules.txt` on the server** (one `rule-name value` per line, `#` starts a comment, editable in Notepad; read at startup, so **editing the file requires a restart**). Changing them with `/chatrule` **writes the file back immediately**, so it also survives a restart; point `--rules <path>` somewhere else to move it.
 
@@ -583,6 +600,10 @@ The rules **live in `dchat-rules.txt` on the server** (one `rule-name value` per
 | `downloadrate` | `0` KB/s | **Per-client download rate limit**; `0` = unlimited. On a public server try 256 |
 | `maxtextlen` | `0` chars | **Maximum characters per message** (counted in Unicode code points, so one CJK character counts as 1); `0` = unlimited. An over-long message is answered only to its sender with an `ERROR` and is not broadcast |
 | `maxtextlines` | `0` lines | **Maximum lines per message**; `0` = unlimited |
+| `maxconns` | `0` | **Maximum total concurrent connections**; `0` = unlimited. Try 200 on a public server — otherwise anyone can open thousands of connections and exhaust the thread pool |
+| `maxconnsperip` | `0` | **Maximum concurrent connections from one IP**; `0` = unlimited. Try 8 on a public server |
+| `loginfails` | `0` | **Login failures allowed from one IP per 5 minutes**; `0` = unlimited. Try 10 on a public server. Once exceeded, logins from that IP are **refused outright (the password is not even compared)** for the rest of the window; a successful login clears the counter immediately |
+| `handshaketimeout` | `30` s | **Seconds a connection may stay unauthenticated**; `0` = unlimited. The limit is dropped as soon as login succeeds, so idle-but-logged-in clients are never kicked |
 
 **How the rate limit works**: each client gets its own **token bucket** (capacity = one second's worth, so a one-second burst is allowed). When a client is over budget the server simply **blocks and waits**, which creates natural back-pressure — the sender slows down and **nothing is dropped or disconnected**. That is far friendlier than "disconnect on over-speed".
 

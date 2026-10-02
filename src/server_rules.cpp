@@ -24,6 +24,11 @@ const RuleRange kRanges[] = {
     {"downloadrate", 0, 1048576, "KB/s", "单个客户端下载限速（0 = 不限制）"},
     {"maxtextlen", 0, 4096, "字符", "单条消息最大字符数（Unicode 码点，0 = 不限制）"},
     {"maxtextlines", 0, 200, "行", "单条消息最大行数（0 = 不限制）"},
+    // ---- 2026-10 新增：公网加固 ----
+    {"maxconns", 0, 100000, "个", "同时连接总数上限（0 = 不限制）"},
+    {"maxconnsperip", 0, 10000, "个", "同一 IP 的同时连接数上限（0 = 不限制）"},
+    {"loginfails", 0, 10000, "次", "同一 IP 在 5 分钟内允许的登录失败次数（0 = 不限制）"},
+    {"handshaketimeout", 0, 600, "秒", "连上后多少秒内必须登录（0 = 不限制）"},
 };
 
 const RuleRange* FindRange(const std::string& name) {
@@ -62,6 +67,10 @@ const std::vector<RuleInfo>& AllRuleInfos() {
         {"downloadrate", "<KB/s> 单客户端下载限速，0 = 不限", false},
         {"maxtextlen", "<字符> 单条消息最大字符数，0 = 不限", false},
         {"maxtextlines", "<行> 单条消息最大行数，0 = 不限", false},
+        {"maxconns", "<个> 同时连接总数上限，0 = 不限", false},
+        {"maxconnsperip", "<个> 同一 IP 的连接数上限，0 = 不限", false},
+        {"loginfails", "<次> 同 IP 每 5 分钟允许的登录失败次数，0 = 不限", false},
+        {"handshaketimeout", "<秒> 连上后多久必须登录，0 = 不限", false},
     };
     return infos;
 }
@@ -128,6 +137,23 @@ std::string DescribeRule(const ServerRules& rules, const std::string& name) {
         return "maxtextlines = " + std::to_string(rules.maxTextLines) +
                " 行（单条消息最大行数，0 = 不限制）";
     }
+    if (lower == "maxconns") {
+        return "maxconns = " + std::to_string(rules.maxConnections) +
+               " 个（同时连接总数上限，0 = 不限制）";
+    }
+    if (lower == "maxconnsperip") {
+        return "maxconnsperip = " + std::to_string(rules.maxConnectionsPerIp) +
+               " 个（同一 IP 的同时连接数上限，0 = 不限制）";
+    }
+    if (lower == "loginfails") {
+        return "loginfails = " + std::to_string(rules.loginFailLimit) +
+               " 次（同一 IP 在 " + std::to_string(kLoginFailWindowSec) +
+               " 秒内允许的登录失败次数，0 = 不限制）";
+    }
+    if (lower == "handshaketimeout") {
+        return "handshaketimeout = " + std::to_string(rules.handshakeTimeoutSec) +
+               " 秒（连上后必须在这个时间内登录，0 = 不限制）";
+    }
     return "未知规则：" + name;
 }
 
@@ -193,6 +219,10 @@ RuleChange ApplyRule(ServerRules* rules, const std::string& name, RuleAction act
     if (lower == "downloadrate") current = rules->downloadRateKbps;
     if (lower == "maxtextlen") current = rules->maxTextLength;
     if (lower == "maxtextlines") current = rules->maxTextLines;
+    if (lower == "maxconns") current = rules->maxConnections;
+    if (lower == "maxconnsperip") current = rules->maxConnectionsPerIp;
+    if (lower == "loginfails") current = rules->loginFailLimit;
+    if (lower == "handshaketimeout") current = rules->handshakeTimeoutSec;
 
     long long next = current;
     if (action == RuleAction::Set) {
@@ -234,6 +264,10 @@ RuleChange ApplyRule(ServerRules* rules, const std::string& name, RuleAction act
     if (lower == "downloadrate") rules->downloadRateKbps = static_cast<int>(next);
     if (lower == "maxtextlen") rules->maxTextLength = static_cast<int>(next);
     if (lower == "maxtextlines") rules->maxTextLines = static_cast<int>(next);
+    if (lower == "maxconns") rules->maxConnections = static_cast<int>(next);
+    if (lower == "maxconnsperip") rules->maxConnectionsPerIp = static_cast<int>(next);
+    if (lower == "loginfails") rules->loginFailLimit = static_cast<int>(next);
+    if (lower == "handshaketimeout") rules->handshakeTimeoutSec = static_cast<int>(next);
     change.message = lower + " = " + std::to_string(next) + " " + range->unit + note;
     return change;
 }
@@ -243,6 +277,10 @@ std::string RulesLineForClient(const ServerRules& rules) {
     // 新字段一律追加在末尾——桌面端的解析器只读 fields[0]，
     // 安卓端的 ServerLine.Rules 也是按位置读并且容忍缺字段，
     // 所以"只追加不重排"能保证新旧客户端都能正常工作。
+    //
+    // 注意：加固那 4 条（maxconns / maxconnsperip / loginfails / handshaketimeout）
+    // **刻意不发给客户端**——它们是服务端的资源保护策略，客户端知道也没用，
+    // 而且这样能保持客户端契约不变。
     return "RULES " + std::to_string(rules.documentSizeMb) + " " +
            std::to_string(rules.chatIntervalMs) + " " + (rules.keepChatHistory ? "1" : "0") + " " +
            std::to_string(rules.uploadRateKbps) + " " + std::to_string(rules.downloadRateKbps) +
@@ -291,6 +329,14 @@ std::string SerializeRules(const ServerRules& rules) {
            "      # 单条消息最大字符数（Unicode 码点），0 = 不限制\n";
     out += "maxtextlines " + std::to_string(rules.maxTextLines) +
            "      # 单条消息最大行数，0 = 不限制\n";
+    out += "maxconns " + std::to_string(rules.maxConnections) +
+           "      # 同时连接总数上限，0 = 不限制（公网建议 200）\n";
+    out += "maxconnsperip " + std::to_string(rules.maxConnectionsPerIp) +
+           "      # 同一 IP 的连接数上限，0 = 不限制（公网建议 8）\n";
+    out += "loginfails " + std::to_string(rules.loginFailLimit) +
+           "      # 同一 IP 每 5 分钟允许的登录失败次数，0 = 不限制（公网建议 10）\n";
+    out += "handshaketimeout " + std::to_string(rules.handshakeTimeoutSec) +
+           "      # 连上后多少秒内必须登录，0 = 不限制（公网建议 30）\n";
     return out;
 }
 
@@ -359,6 +405,10 @@ int ParseRules(const std::string& text, ServerRules* rules) {
         if (name == "downloadrate") parsed.downloadRateKbps = static_cast<int>(number);
         if (name == "maxtextlen") parsed.maxTextLength = static_cast<int>(number);
         if (name == "maxtextlines") parsed.maxTextLines = static_cast<int>(number);
+        if (name == "maxconns") parsed.maxConnections = static_cast<int>(number);
+        if (name == "maxconnsperip") parsed.maxConnectionsPerIp = static_cast<int>(number);
+        if (name == "loginfails") parsed.loginFailLimit = static_cast<int>(number);
+        if (name == "handshaketimeout") parsed.handshakeTimeoutSec = static_cast<int>(number);
         ++count;
     }
     // 文件里可能把两个值写成互相矛盾的样子，这里把 documentsize 夹到不超过 maxservertemp
@@ -367,6 +417,66 @@ int ParseRules(const std::string& text, ServerRules* rules) {
     }
     *rules = parsed;
     return count;
+}
+
+// ---------------------------------------------------------------------------
+// LoginFailTracker：按 IP 统计登录失败，用于防爆破
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** 窗口是否已经过期。 */
+bool WindowExpired(const std::chrono::steady_clock::time_point& start) {
+    if (start.time_since_epoch().count() == 0) return true;
+    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                             std::chrono::steady_clock::now() - start)
+                             .count();
+    return elapsed >= kLoginFailWindowSec;
+}
+
+}  // namespace
+
+bool LoginFailTracker::IsBlocked(const std::string& ip, int limit) const {
+    if (limit <= 0 || ip.empty()) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = records_.find(ip);
+    if (it == records_.end()) return false;
+    if (WindowExpired(it->second.windowStart)) return false;  // 窗口过了，等于没锁
+    return it->second.failures >= limit;
+}
+
+void LoginFailTracker::NoteFailure(const std::string& ip) {
+    if (ip.empty()) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    Record& record = records_[ip];
+    if (WindowExpired(record.windowStart)) {
+        // 开一个新窗口
+        record.failures = 0;
+        record.windowStart = std::chrono::steady_clock::now();
+    }
+    ++record.failures;
+}
+
+void LoginFailTracker::Clear(const std::string& ip) {
+    if (ip.empty()) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    records_.erase(ip);
+}
+
+void LoginFailTracker::Sweep() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = records_.begin(); it != records_.end();) {
+        if (WindowExpired(it->second.windowStart)) {
+            it = records_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+std::size_t LoginFailTracker::TrackedCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return records_.size();
 }
 
 }  // namespace dchat

@@ -10,6 +10,8 @@
 
 #include <chrono>
 #include <cstddef>
+#include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -28,6 +30,54 @@ struct ServerRules {
     int downloadRateKbps = 0;  // downloadrate：单个客户端下载限速（KB/s），0 = 不限制
     int maxTextLength = 0;     // maxtextlen：单条消息最大字符数（Unicode 码点），0 = 不限制
     int maxTextLines = 0;      // maxtextlines：单条消息最大行数，0 = 不限制
+
+    // ---- 2026-10 新增：公网加固 ----
+    // 这几条是**给公网服务器用的**：不设的话，任何人都能开几千个连接把线程耗光，
+    // 或者对着账号无限次试密码。局域网里不用管（默认值就是"不限制"）。
+    int maxConnections = 0;        // maxconns：同时连接总数上限，0 = 不限制
+    int maxConnectionsPerIp = 0;   // maxconnsperip：同一 IP 的同时连接数上限，0 = 不限制
+    int loginFailLimit = 0;        // loginfails：同一 IP 在 5 分钟内允许的登录失败次数，0 = 不限制
+    int handshakeTimeoutSec = 30;  // handshaketimeout：连上后多少秒内必须登录，0 = 不限制
+};
+
+/**
+ * 登录失败窗口的固定长度（秒）。
+ *
+ * 刻意做成常量而不是规则：窗口长度调来调去对实际防护没什么帮助，
+ * 反而多一条要记的规则。5 分钟是常见取值。
+ */
+inline constexpr int kLoginFailWindowSec = 300;
+
+/**
+ * 按 IP 统计登录失败次数，用于防爆破。
+ *
+ * 规则：同一个 IP 在 [kLoginFailWindowSec] 秒内失败达到 `loginfails` 次，
+ * 就**在剩余窗口内直接拒绝登录**（连密码都不比对），窗口过期自动清零。
+ * 登录成功也会立刻清零，免得正常用户偶尔打错几次被自己锁住。
+ */
+class LoginFailTracker {
+public:
+    /** 这个 IP 现在是不是被锁了（只在 limit > 0 时有意义）。 */
+    bool IsBlocked(const std::string& ip, int limit) const;
+
+    /** 记一次登录失败。 */
+    void NoteFailure(const std::string& ip);
+
+    /** 登录成功：把这个 IP 的记录清掉。 */
+    void Clear(const std::string& ip);
+
+    /** 顺手清理过期的记录，避免长期运行时 map 无限增长。 */
+    void Sweep();
+
+    std::size_t TrackedCount() const;
+
+private:
+    struct Record {
+        int failures = 0;
+        std::chrono::steady_clock::time_point windowStart{};
+    };
+    mutable std::mutex mutex_;
+    std::map<std::string, Record> records_;
 };
 
 // 令牌桶限速器：**每个客户端一个**，桶容量等于 1 秒的量（允许 1 秒的突发）。

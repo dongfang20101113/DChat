@@ -38,13 +38,20 @@ int main() {
         check(rules.downloadRateKbps == 0, "downloadrate 默认 0（不限制）");
         check(rules.maxTextLength == 0, "maxtextlen 默认 0（不限制）");
         check(rules.maxTextLines == 0, "maxtextlines 默认 0（不限制）");
-        check(dchat::AllRuleNames().size() == 8, "一共 8 条规则");
+        // 公网加固这 4 条：默认值是"不限制"，但握手超时默认 30 秒（防挂机占连接）
+        check(rules.maxConnections == 0, "maxconns 默认 0（不限制）");
+        check(rules.maxConnectionsPerIp == 0, "maxconnsperip 默认 0（不限制）");
+        check(rules.loginFailLimit == 0, "loginfails 默认 0（不限制）");
+        check(rules.handshakeTimeoutSec == 30, "handshaketimeout 默认 30 秒（不是 0）");
+        check(dchat::AllRuleNames().size() == 12, "一共 12 条规则");
         check(dchat::IsKnownRule("chatinterval") && dchat::IsKnownRule("DOCUMENTSIZE") &&
                   dchat::IsKnownRule("keepchathistory") &&
                   dchat::IsKnownRule("maxservertemp") && dchat::IsKnownRule("UPLOADRATE") &&
                   dchat::IsKnownRule("downloadrate") && dchat::IsKnownRule("maxtextlen") &&
-                  dchat::IsKnownRule("maxtextlines"),
-              "八条规则名都能识别（大小写不敏感）");
+                  dchat::IsKnownRule("maxtextlines") && dchat::IsKnownRule("maxconns") &&
+                  dchat::IsKnownRule("maxconnsperip") && dchat::IsKnownRule("loginfails") &&
+                  dchat::IsKnownRule("handshaketimeout"),
+              "十二条规则名都能识别（大小写不敏感）");
         check(!dchat::IsKnownRule("nope"), "不认识的规则名返回非法");
         check(dchat::RuleMbToBytes(1) == 1024ull * 1024ull, "MB 转字节");
     }
@@ -140,7 +147,7 @@ int main() {
         check(text.find("keepchathistory true") != std::string::npos, "布尔规则写进去了");
 
         ServerRules loaded;
-        check(dchat::ParseRules(text, &loaded) == 8, "八条规则都能读回来（4 条旧的 + 4 条新的）");
+        check(dchat::ParseRules(text, &loaded) == 12, "十二条规则都能读回来（8 条 + 4 条加固）");
         check(loaded.chatIntervalMs == 400 && loaded.documentSizeMb == 8 &&
                   loaded.keepChatHistory && loaded.maxServerTempMb == 512,
               "写出去再读回来完全一致（往返正确）");
@@ -172,7 +179,7 @@ int main() {
     {
         std::printf("[9] 规则元数据（Tab 补全用）\n");
         const std::vector<dchat::RuleInfo>& infos = dchat::AllRuleInfos();
-        check(infos.size() == 8, "八条规则各有一份元数据");
+        check(infos.size() == 12, "十二条规则各有一份元数据");
         bool hintsOk = true;
         bool namesOk = true;
         for (std::size_t i = 0; i < infos.size(); ++i) {
@@ -319,6 +326,95 @@ int main() {
         // Configure 会重置状态
         limiter.Configure(1024);
         check(limiter.Consume(512 * 1024) == 0, "重新配置后桶又是满的");
+    }
+
+    // ------------------------------------------------------------------
+    // 2026-10 新增：公网加固
+    // ------------------------------------------------------------------
+    {
+        std::printf("[14] 公网加固规则：set / 范围 / 不下发给客户端\n");
+        ServerRules rules;
+
+        dchat::ApplyRule(&rules, "maxconns", RuleAction::Set, 200, false);
+        check(rules.maxConnections == 200, "maxconns set 200");
+        dchat::ApplyRule(&rules, "maxconnsperip", RuleAction::Set, 8, false);
+        check(rules.maxConnectionsPerIp == 8, "maxconnsperip set 8");
+        dchat::ApplyRule(&rules, "loginfails", RuleAction::Set, 10, false);
+        check(rules.loginFailLimit == 10, "loginfails set 10");
+        dchat::ApplyRule(&rules, "handshaketimeout", RuleAction::Set, 15, false);
+        check(rules.handshakeTimeoutSec == 15, "handshaketimeout set 15");
+
+        // handshaketimeout 允许设成 0（= 不限制）
+        dchat::ApplyRule(&rules, "handshaketimeout", RuleAction::Set, 0, false);
+        check(rules.handshakeTimeoutSec == 0, "handshaketimeout 可以设回 0（不限制）");
+
+        // 超上限会被夹住
+        dchat::ApplyRule(&rules, "maxconns", RuleAction::Set, 99999999, false);
+        check(rules.maxConnections == 100000, "maxconns 上限 100000");
+        dchat::ApplyRule(&rules, "handshaketimeout", RuleAction::Set, 99999, false);
+        check(rules.handshakeTimeoutSec == 600, "handshaketimeout 上限 600 秒");
+
+        // **加固规则刻意不下发给客户端**：客户端知道也没用，还能保持契约不变
+        ServerRules out;
+        out.maxConnections = 200;
+        out.maxConnectionsPerIp = 8;
+        out.loginFailLimit = 10;
+        out.handshakeTimeoutSec = 15;
+        const std::string line = dchat::RulesLineForClient(out);
+        check(line == "RULES 64 0 0 0 0 0 0",
+              "加固规则不占用 RULES 下发行的字段（仍是 8 个字段）");
+        check(line.find("200") == std::string::npos && line.find("15") == std::string::npos,
+              "加固规则的值确实没出现在下发行里");
+
+        // 描述文本要能看出是哪一类
+        check(dchat::DescribeRule(out, "maxconns").find("200") != std::string::npos,
+              "DescribeRule 能读出 maxconns");
+        check(dchat::DescribeRule(out, "loginfails").find("300") != std::string::npos,
+              "loginfails 的说明里写清窗口是 300 秒");
+    }
+
+    {
+        std::printf("[15] 防爆破追踪器（LoginFailTracker）\n");
+        dchat::LoginFailTracker tracker;
+
+        // limit <= 0 = 不限制：怎么失败都不锁
+        for (int i = 0; i < 100; ++i) tracker.NoteFailure("10.0.0.1");
+        check(!tracker.IsBlocked("10.0.0.1", 0), "limit=0 时永不封锁");
+        check(!tracker.IsBlocked("10.0.0.1", -5), "负的 limit 也当不限制");
+
+        // limit = 3：第 3 次之前不锁，第 3 次开始锁
+        dchat::LoginFailTracker t2;
+        check(!t2.IsBlocked("1.2.3.4", 3), "还没有失败记录时不锁");
+        t2.NoteFailure("1.2.3.4");
+        check(!t2.IsBlocked("1.2.3.4", 3), "失败 1 次（未达上限）不锁");
+        t2.NoteFailure("1.2.3.4");
+        check(!t2.IsBlocked("1.2.3.4", 3), "失败 2 次（未达上限）不锁");
+        t2.NoteFailure("1.2.3.4");
+        check(t2.IsBlocked("1.2.3.4", 3), "失败 3 次（达到上限）开始锁");
+        t2.NoteFailure("1.2.3.4");
+        check(t2.IsBlocked("1.2.3.4", 3), "继续失败仍然锁着");
+
+        // 不同 IP 互不影响——这是"按 IP"的关键语义
+        check(!t2.IsBlocked("5.6.7.8", 3), "别的 IP 不受影响");
+
+        // 登录成功立刻清零，免得本人打错几次把自己锁住
+        t2.Clear("1.2.3.4");
+        check(!t2.IsBlocked("1.2.3.4", 3), "Clear 之后解锁");
+
+        // 空 IP 不能崩，也不该被记
+        dchat::LoginFailTracker t3;
+        t3.NoteFailure("");
+        check(!t3.IsBlocked("", 1), "空 IP 永远不锁");
+        check(t3.TrackedCount() == 0, "空 IP 不进表");
+        t3.NoteFailure("9.9.9.9");
+        check(t3.TrackedCount() == 1, "正常 IP 会进表");
+        t3.Sweep();
+        check(t3.TrackedCount() == 1, "窗口没过期时 Sweep 不会误删");
+        t3.Clear("9.9.9.9");
+        check(t3.TrackedCount() == 0, "Clear 会把记录删掉（不是只把计数归零）");
+
+        // 窗口长度是固定常量 300 秒
+        check(dchat::kLoginFailWindowSec == 300, "失败窗口固定 300 秒（5 分钟）");
     }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

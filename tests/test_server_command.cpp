@@ -442,7 +442,7 @@ int main() {
         const dchat::CompletionResult rules = dchat::Suggest("/chatrule ", noNicks);
         check(rules.isArgument && rules.matches.size() == dchat::AllRuleNames().size(),
               "打 /chatrule + 空格 会列出全部规则名");
-        check(rules.matches.size() == 8 && rules.matches[0] == "chatinterval" &&
+        check(rules.matches.size() == 12 && rules.matches[0] == "chatinterval" &&
                   rules.groups[0] == "服务器规则",
               "规则名按顺序给出，并分到「服务器规则」组");
         bool hintsOk = rules.hints.size() == rules.matches.size();
