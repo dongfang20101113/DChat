@@ -1,322 +1,91 @@
-// dchat 传输加密的实现（Windows CNG / bcrypt.dll）
+// dchat 传输加密的实现。
 //
-// 这里只做"把系统提供的密码学原语拼起来"这件事：
-//   随机数   BCryptGenRandom
-//   ECDH     BCryptOpenAlgorithmProvider(ECDH_P256) + BCryptSecretAgreement
-//   SHA-256  BCryptCreateHash
-//   HMAC     BCryptCreateHash(HMAC 标志)
-//   AES-GCM  BCryptEncrypt/BCryptDecrypt + BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO
+// 这里只做"把密码学原语拼起来"这件事（握手组装、HKDF、会话计数器），
+// 原语本身在 crypto_backend.h 后面：Windows 走 CNG，Linux 走 OpenSSL。
+//
+// 三端（Windows / Linux / 安卓）必须字节级一致，改动这里任何一步之前先想清楚
+// 对端会变成什么——不一致不会报错，只表现为"解出来是乱码"。
 #include "crypto.h"
 
-#include <windows.h>
-#include <bcrypt.h>
+#include "crypto_backend.h"
 
 #include <algorithm>
 #include <cstdio>
 
-#ifndef NT_SUCCESS
-#define NT_SUCCESS(status) (((NTSTATUS)(status)) >= 0)
-#endif
-
 namespace dchat {
 
-namespace {
-
-// P-256 的曲线参数：坐标 32 字节
-constexpr ULONG kP256CoordinateBytes = 32;
-// BCRYPT_ECCKEY_BLOB 的魔数（"ECK1" / "ECK2"，小端读出来是这两个值）
-constexpr ULONG kEcdhPublicP256Magic = 0x314B4345;
-constexpr ULONG kEcdhPrivateP256Magic = 0x324B4345;
-
-// BCRYPT_KDF_RAW_SECRET：不做任何 KDF，直接要原始的共享密钥。
-// 微软文档里的值就是字符串 "TRUNCATE"。MinGW 的 bcrypt.h 没有这个宏，
-// 所以自己定义一份（Windows SDK 里定义时也带了这个条件判断）。
-#ifndef BCRYPT_KDF_RAW_SECRET
-constexpr wchar_t kKdfRawSecret[] = L"TRUNCATE";
-#else
-constexpr const wchar_t* kKdfRawSecret = BCRYPT_KDF_RAW_SECRET;
-#endif
-
-// ---- 极简 RAII：CNG 的句柄都必须显式关，异常路径上很容易漏 ----
-struct AlgHandle {
-    BCRYPT_ALG_HANDLE handle = nullptr;
-    ~AlgHandle() {
-        if (handle) BCryptCloseAlgorithmProvider(handle, 0);
-    }
-    bool Open(LPCWSTR algorithm, ULONG flags = 0) {
-        return NT_SUCCESS(BCryptOpenAlgorithmProvider(&handle, algorithm, nullptr, flags));
-    }
-};
-
-struct HashHandle {
-    BCRYPT_HASH_HANDLE handle = nullptr;
-    ~HashHandle() {
-        if (handle) BCryptDestroyHash(handle);
-    }
-};
-
-struct KeyHandle {
-    BCRYPT_KEY_HANDLE handle = nullptr;
-    ~KeyHandle() {
-        if (handle) BCryptDestroyKey(handle);
-    }
-};
-
-struct SecretHandle {
-    BCRYPT_SECRET_HANDLE handle = nullptr;
-    ~SecretHandle() {
-        if (handle) BCryptDestroySecret(handle);
-    }
-};
-
-// BCRYPT_ECCKEY_BLOB 的布局：{ ULONG dwMagic; ULONG cbKey; } 后面跟 X、Y
-std::vector<unsigned char> MakeEccPublicBlob(const std::vector<unsigned char>& xy) {
-    std::vector<unsigned char> blob(sizeof(BCRYPT_ECCKEY_BLOB) + xy.size(), 0);
-    auto* header = reinterpret_cast<BCRYPT_ECCKEY_BLOB*>(blob.data());
-    header->dwMagic = kEcdhPublicP256Magic;
-    header->cbKey = kP256CoordinateBytes;
-    std::copy(xy.begin(), xy.end(), blob.begin() + sizeof(BCRYPT_ECCKEY_BLOB));
-    return blob;
-}
-
-/** 从导出的 ECCPUBLIC_BLOB 里取出裸的 X||Y。 */
-bool ExtractPublicXY(const std::vector<unsigned char>& blob, std::vector<unsigned char>* out) {
-    if (blob.size() < sizeof(BCRYPT_ECCKEY_BLOB)) return false;
-    const auto* header = reinterpret_cast<const BCRYPT_ECCKEY_BLOB*>(blob.data());
-    if (header->cbKey != kP256CoordinateBytes) return false;
-    const std::size_t need = sizeof(BCRYPT_ECCKEY_BLOB) + kP256CoordinateBytes * 2;
-    if (blob.size() < need) return false;
-    out->assign(blob.begin() + sizeof(BCRYPT_ECCKEY_BLOB), blob.begin() + need);
-    return true;
-}
-
-/** 一个缓冲区大小的 SHA-256。 */
-bool Sha256(const unsigned char* data, std::size_t length, std::vector<unsigned char>* out) {
-    AlgHandle alg;
-    if (!alg.Open(BCRYPT_SHA256_ALGORITHM)) return false;
-    DWORD objectBytes = 0, digestBytes = 0, produced = 0;
-    if (!NT_SUCCESS(BCryptGetProperty(alg.handle, BCRYPT_OBJECT_LENGTH,
-                                      reinterpret_cast<PUCHAR>(&objectBytes), sizeof(objectBytes),
-                                      &produced, 0))) {
-        return false;
-    }
-    if (!NT_SUCCESS(BCryptGetProperty(alg.handle, BCRYPT_HASH_LENGTH,
-                                      reinterpret_cast<PUCHAR>(&digestBytes), sizeof(digestBytes),
-                                      &produced, 0))) {
-        return false;
-    }
-    std::vector<unsigned char> object(objectBytes);
-    HashHandle hash;
-    if (!NT_SUCCESS(BCryptCreateHash(alg.handle, &hash.handle, object.data(), objectBytes, nullptr,
-                                     0, 0))) {
-        return false;
-    }
-    if (!NT_SUCCESS(BCryptHashData(hash.handle, const_cast<PUCHAR>(data),
-                                   static_cast<ULONG>(length), 0))) {
-        return false;
-    }
-    out->assign(digestBytes, 0);
-    return NT_SUCCESS(BCryptFinishHash(hash.handle, out->data(), digestBytes, 0));
-}
-
-/** HMAC-SHA256（HKDF 的底座）。 */
-bool HmacSha256(const std::vector<unsigned char>& key, const unsigned char* data,
-                std::size_t length, std::vector<unsigned char>* out) {
-    AlgHandle alg;
-    if (!alg.Open(BCRYPT_SHA256_ALGORITHM, BCRYPT_ALG_HANDLE_HMAC_FLAG)) return false;
-    DWORD objectBytes = 0, digestBytes = 0, produced = 0;
-    if (!NT_SUCCESS(BCryptGetProperty(alg.handle, BCRYPT_OBJECT_LENGTH,
-                                      reinterpret_cast<PUCHAR>(&objectBytes), sizeof(objectBytes),
-                                      &produced, 0))) {
-        return false;
-    }
-    if (!NT_SUCCESS(BCryptGetProperty(alg.handle, BCRYPT_HASH_LENGTH,
-                                      reinterpret_cast<PUCHAR>(&digestBytes), sizeof(digestBytes),
-                                      &produced, 0))) {
-        return false;
-    }
-    std::vector<unsigned char> object(objectBytes);
-    HashHandle hash;
-    if (!NT_SUCCESS(BCryptCreateHash(alg.handle, &hash.handle, object.data(), objectBytes,
-                                     const_cast<PUCHAR>(key.data()),
-                                     static_cast<ULONG>(key.size()), 0))) {
-        return false;
-    }
-    if (!NT_SUCCESS(BCryptHashData(hash.handle, const_cast<PUCHAR>(data),
-                                   static_cast<ULONG>(length), 0))) {
-        return false;
-    }
-    out->assign(digestBytes, 0);
-    return NT_SUCCESS(BCryptFinishHash(hash.handle, out->data(), digestBytes, 0));
-}
-
-/** 准备一个 AES-GCM 的算法句柄（已设好链模式）。 */
-bool OpenAesGcm(AlgHandle* alg) {
-    if (!alg->Open(BCRYPT_AES_ALGORITHM)) return false;
-    // GCM 是认证加密模式，必须显式设置链模式，否则默认是 CBC
-    const wchar_t* mode = BCRYPT_CHAIN_MODE_GCM;
-    return NT_SUCCESS(BCryptSetProperty(alg->handle, BCRYPT_CHAINING_MODE,
-                                        reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(mode)),
-                                        sizeof(BCRYPT_CHAIN_MODE_GCM), 0));
-}
-
-}  // namespace
-
 // ---------------------------------------------------------------------------
-// 随机数
+// 随机数 / ECDH（原语在后端，这里只做类型转换）
 // ---------------------------------------------------------------------------
 
 bool RandomBytes(std::size_t count, std::vector<unsigned char>* out) {
-    if (!out) return false;
-    out->assign(count, 0);
-    if (count == 0) return true;
-    return NT_SUCCESS(BCryptGenRandom(nullptr, out->data(), static_cast<ULONG>(count),
-                                      BCRYPT_USE_SYSTEM_PREFERRED_RNG));
+    return BackendRandomBytes(count, out);
 }
-
-// ---------------------------------------------------------------------------
-// ECDH
-// ---------------------------------------------------------------------------
 
 bool GenerateEcdhKeyPair(EcdhKeyPair* out) {
     if (!out) return false;
-    out->privateBlob.clear();
-    out->publicKey.clear();
-
-    AlgHandle alg;
-    if (!alg.Open(BCRYPT_ECDH_P256_ALGORITHM)) return false;
-
-    KeyHandle key;
-    if (!NT_SUCCESS(BCryptGenerateKeyPair(alg.handle, &key.handle, 256, 0))) return false;
-    if (!NT_SUCCESS(BCryptFinalizeKeyPair(key.handle, 0))) return false;
-
-    // 私钥：导出成不透明 blob 留着后面算共享密钥
-    DWORD privateBytes = 0;
-    if (!NT_SUCCESS(BCryptExportKey(key.handle, nullptr, BCRYPT_ECCPRIVATE_BLOB, nullptr, 0,
-                                    &privateBytes, 0))) {
-        return false;
-    }
-    out->privateBlob.assign(privateBytes, 0);
-    if (!NT_SUCCESS(BCryptExportKey(key.handle, nullptr, BCRYPT_ECCPRIVATE_BLOB,
-                                    out->privateBlob.data(), privateBytes, &privateBytes, 0))) {
-        out->privateBlob.clear();
-        return false;
-    }
-
-    // 公钥：导出后只留裸的 X||Y
-    DWORD publicBytes = 0;
-    if (!NT_SUCCESS(BCryptExportKey(key.handle, nullptr, BCRYPT_ECCPUBLIC_BLOB, nullptr, 0,
-                                    &publicBytes, 0))) {
-        out->privateBlob.clear();
-        return false;
-    }
-    std::vector<unsigned char> publicBlob(publicBytes);
-    if (!NT_SUCCESS(BCryptExportKey(key.handle, nullptr, BCRYPT_ECCPUBLIC_BLOB, publicBlob.data(),
-                                    publicBytes, &publicBytes, 0))) {
-        out->privateBlob.clear();
-        return false;
-    }
-    if (!ExtractPublicXY(publicBlob, &out->publicKey)) {
-        out->privateBlob.clear();
-        return false;
-    }
+    BackendEcdhKeyPair pair;
+    if (!BackendGenerateEcdhKeyPair(&pair)) return false;
+    out->privateBlob = pair.privateBlob;
+    out->publicKey = pair.publicKey;
     return true;
 }
 
 bool ImportEcdhKeyPair(const std::vector<unsigned char>& privateScalar,
                        const std::vector<unsigned char>& publicKey, EcdhKeyPair* out) {
     if (!out) return false;
-    out->privateBlob.clear();
-    out->publicKey.clear();
-    if (privateScalar.size() != kP256CoordinateBytes) return false;
-    if (publicKey.size() != kP256PublicKeyBytes) return false;
-
-    // ECCPRIVATE_BLOB 的布局：header(8) + X(32) + Y(32) + d(32)
-    std::vector<unsigned char> blob(sizeof(BCRYPT_ECCKEY_BLOB) + kP256PublicKeyBytes +
-                                        kP256CoordinateBytes,
-                                    0);
-    auto* header = reinterpret_cast<BCRYPT_ECCKEY_BLOB*>(blob.data());
-    header->dwMagic = kEcdhPrivateP256Magic;
-    header->cbKey = kP256CoordinateBytes;
-    std::copy(publicKey.begin(), publicKey.end(), blob.begin() + sizeof(BCRYPT_ECCKEY_BLOB));
-    std::copy(privateScalar.begin(), privateScalar.end(),
-              blob.begin() + sizeof(BCRYPT_ECCKEY_BLOB) + kP256PublicKeyBytes);
-
-    AlgHandle alg;
-    if (!alg.Open(BCRYPT_ECDH_P256_ALGORITHM)) return false;
-
-    KeyHandle key;
-    if (!NT_SUCCESS(BCryptImportKeyPair(alg.handle, nullptr, BCRYPT_ECCPRIVATE_BLOB, &key.handle,
-                                        blob.data(), static_cast<ULONG>(blob.size()), 0))) {
-        return false;
-    }
-
-    // ⚠️ 实测结论（踩过才知道）：CNG 对 ECC 私钥 blob 是**原样存取**——
-    // 既不校验标量和公钥是否对应，也不会用标量重算公钥；导出回来的就是传进去的那份。
-    // 所以这里**没法**替调用方校验，错配是静默的。
-    //
-    // 好消息是真正影响安全的那部分是对的：ComputeSharedSecret 用的是 blob 里的标量 d，
-    // 传一对不匹配的进去，ECDH 结果仍然对应 d（这一点由 test_crypto 的 fixture 用例钉住）。
-    // 影响仅限于 out->publicKey 会是调用方给的那份，可能对不上 d。
-    //
-    // 因此这个函数的契约是：**调用方必须传一对真正匹配的标量和公钥**。
-    // 它只有两个用途——测试里的固定向量、以及将来从文件读回服务器身份密钥，
-    // 两处的信息来源都是可信的。
-    out->privateBlob = blob;
-    out->publicKey = publicKey;
+    BackendEcdhKeyPair pair;
+    if (!BackendImportEcdhKeyPair(privateScalar, publicKey, &pair)) return false;
+    out->privateBlob = pair.privateBlob;
+    out->publicKey = pair.publicKey;
     return true;
 }
 
 bool ComputeSharedSecret(const EcdhKeyPair& mine, const std::vector<unsigned char>& peerPublicKey,
                          std::vector<unsigned char>* out) {
+    BackendEcdhKeyPair pair;
+    pair.privateBlob = mine.privateBlob;
+    pair.publicKey = mine.publicKey;
+    // 字节序由后端统一成大端（CNG 返回小端要翻转、OpenSSL 本来就是大端）。
+    // 这里不翻转，否则 Linux 端会翻成小端、和另外两端不一致。
+    return BackendEcdhSharedSecret(pair, peerPublicKey, out);
+}
+
+/**
+ * 取出密钥对里的裸私有标量（32 字节）。服务器落盘身份密钥要用，
+ * 落盘格式（标量 + 公钥的十六进制）必须两端一致，所以偏移量由后端负责。
+ */
+bool EcdhPrivateScalar(const EcdhKeyPair& pair, std::vector<unsigned char>* out) {
+    BackendEcdhKeyPair backend;
+    backend.privateBlob = pair.privateBlob;
+    backend.publicKey = pair.publicKey;
+    return BackendEcdhPrivateScalar(backend, out);
+}
+
+// ---------------------------------------------------------------------------
+// AES-256-GCM
+// ---------------------------------------------------------------------------
+
+bool AesGcmEncrypt(const std::vector<unsigned char>& key, const std::vector<unsigned char>& nonce,
+                   const std::string& plaintext, std::string* out) {
     if (!out) return false;
     out->clear();
-    if (mine.privateBlob.empty() || peerPublicKey.size() != kP256PublicKeyBytes) return false;
+    std::vector<unsigned char> input(plaintext.begin(), plaintext.end());
+    std::vector<unsigned char> produced;
+    if (!BackendAesGcmEncrypt(key, nonce, input, &produced)) return false;
+    out->assign(reinterpret_cast<const char*>(produced.data()), produced.size());
+    return true;
+}
 
-    AlgHandle alg;
-    if (!alg.Open(BCRYPT_ECDH_P256_ALGORITHM)) return false;
-
-    // 自己的私钥
-    KeyHandle privateKey;
-    if (!NT_SUCCESS(BCryptImportKeyPair(alg.handle, nullptr, BCRYPT_ECCPRIVATE_BLOB,
-                                        &privateKey.handle,
-                                        const_cast<PUCHAR>(mine.privateBlob.data()),
-                                        static_cast<ULONG>(mine.privateBlob.size()), 0))) {
-        return false;
-    }
-
-    // 对方的公钥（长度已经检查过；不是曲线上的合法点会被 ImportKeyPair 拒掉）
-    const std::vector<unsigned char> peerBlob = MakeEccPublicBlob(peerPublicKey);
-    KeyHandle publicKey;
-    if (!NT_SUCCESS(BCryptImportKeyPair(alg.handle, nullptr, BCRYPT_ECCPUBLIC_BLOB,
-                                        &publicKey.handle,
-                                        const_cast<PUCHAR>(peerBlob.data()),
-                                        static_cast<ULONG>(peerBlob.size()), 0))) {
-        return false;
-    }
-
-    SecretHandle secret;
-    if (!NT_SUCCESS(BCryptSecretAgreement(privateKey.handle, publicKey.handle, &secret.handle, 0))) {
-        return false;
-    }
-
-    DWORD secretBytes = 0;
-    if (!NT_SUCCESS(BCryptDeriveKey(secret.handle, kKdfRawSecret, nullptr, nullptr, 0,
-                                    &secretBytes, 0))) {
-        return false;
-    }
-    out->assign(secretBytes, 0);
-    if (!NT_SUCCESS(BCryptDeriveKey(secret.handle, kKdfRawSecret, nullptr, out->data(),
-                                    secretBytes, &secretBytes, 0))) {
-        out->clear();
-        return false;
-    }
-
-    // ⚠️ 跨平台的关键一步：Windows 的 BCRYPT_KDF_RAW_SECRET 返回的是
-    // **小端序**的 x 坐标，而 Java 的 KeyAgreement.generateSecret() 是**大端序**。
-    // 不翻转的话两端的共享密钥完全相同地不同，握手永远成功不了（而且不会有任何报错，
-    // 只表现为"解出来是乱码"）。翻转后统一成大端。
-    std::reverse(out->begin(), out->end());
+bool AesGcmDecrypt(const std::vector<unsigned char>& key, const std::vector<unsigned char>& nonce,
+                   const std::string& ciphertext, std::string* out) {
+    if (!out) return false;
+    out->clear();
+    std::vector<unsigned char> input(ciphertext.begin(), ciphertext.end());
+    std::vector<unsigned char> produced;
+    // 认证失败（被篡改 / 密钥不对）在这里就是 false。绝不能把半截明文当成功返回。
+    if (!BackendAesGcmDecrypt(key, nonce, input, &produced)) return false;
+    out->assign(reinterpret_cast<const char*>(produced.data()), produced.size());
     return true;
 }
 
@@ -336,7 +105,7 @@ bool HkdfSha256(const std::vector<unsigned char>& ikm, const std::vector<unsigne
     const std::vector<unsigned char> effectiveSalt =
         salt.empty() ? std::vector<unsigned char>(32, 0) : salt;
     std::vector<unsigned char> prk;
-    if (!HmacSha256(effectiveSalt, ikm.data(), ikm.size(), &prk)) return false;
+    if (!BackendHmacSha256(effectiveSalt, ikm.data(), ikm.size(), &prk)) return false;
 
     // expand：T(i) = HMAC(PRK, T(i-1) || info || i)
     std::vector<unsigned char> previous;  // T(0) 是空
@@ -347,7 +116,7 @@ bool HkdfSha256(const std::vector<unsigned char>& ikm, const std::vector<unsigne
         block.insert(block.end(), previous.begin(), previous.end());
         block.insert(block.end(), info.begin(), info.end());
         block.push_back(counter);
-        if (!HmacSha256(prk, block.data(), block.size(), &previous)) {
+        if (!BackendHmacSha256(prk, block.data(), block.size(), &previous)) {
             out->clear();
             return false;
         }
@@ -369,105 +138,15 @@ SessionKeys DeriveSessionKeys(const std::vector<unsigned char>& sharedSecret,
     salt.insert(salt.end(), clientNonce.begin(), clientNonce.end());
     salt.insert(salt.end(), serverNonce.begin(), serverNonce.end());
 
-    if (!HkdfSha256(sharedSecret, salt, kHkdfInfoClientToServer, kAesKeyBytes,
-                    &keys.clientToServer)) {
+    // 两个方向各派生一把：客户端→服务端、服务端→客户端。
+    // 用不同的 info 分离，避免两个方向共用一把密钥（否则可以反射攻击）。
+    if (!HkdfSha256(sharedSecret, salt, kHkdfInfoClientToServer, kAesKeyBytes, &keys.clientToServer)) {
         return SessionKeys{};
     }
-    if (!HkdfSha256(sharedSecret, salt, kHkdfInfoServerToClient, kAesKeyBytes,
-                    &keys.serverToClient)) {
+    if (!HkdfSha256(sharedSecret, salt, kHkdfInfoServerToClient, kAesKeyBytes, &keys.serverToClient)) {
         return SessionKeys{};
     }
     return keys;
-}
-
-// ---------------------------------------------------------------------------
-// AES-256-GCM
-// ---------------------------------------------------------------------------
-
-bool AesGcmEncrypt(const std::vector<unsigned char>& key, const std::vector<unsigned char>& nonce,
-                   const std::string& plaintext, std::string* out) {
-    if (!out) return false;
-    out->clear();
-    if (key.size() != kAesKeyBytes) return false;
-    if (nonce.size() != kGcmNonceBytes) return false;
-
-    AlgHandle alg;
-    if (!OpenAesGcm(&alg)) return false;
-
-    KeyHandle keyHandle;
-    if (!NT_SUCCESS(BCryptGenerateSymmetricKey(alg.handle, &keyHandle.handle, nullptr, 0,
-                                               const_cast<PUCHAR>(key.data()),
-                                               static_cast<ULONG>(key.size()), 0))) {
-        return false;
-    }
-
-    std::vector<unsigned char> tag(kGcmTagBytes, 0);
-    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
-    BCRYPT_INIT_AUTH_MODE_INFO(info);
-    info.pbNonce = const_cast<PUCHAR>(nonce.data());
-    info.cbNonce = static_cast<ULONG>(nonce.size());
-    info.pbTag = tag.data();
-    info.cbTag = static_cast<ULONG>(tag.size());
-
-    std::vector<unsigned char> buffer(plaintext.size() + kGcmTagBytes);
-    ULONG produced = 0;
-    const PUCHAR input = plaintext.empty()
-                             ? nullptr
-                             : reinterpret_cast<PUCHAR>(const_cast<char*>(plaintext.data()));
-    if (!NT_SUCCESS(BCryptEncrypt(keyHandle.handle, input, static_cast<ULONG>(plaintext.size()),
-                                  &info, nullptr, 0, buffer.data(),
-                                  static_cast<ULONG>(buffer.size()), &produced, 0))) {
-        return false;
-    }
-    buffer.resize(produced);
-
-    // 输出 = 密文 || 标签（和 Java 的 Cipher.doFinal 顺序一致）
-    out->assign(reinterpret_cast<const char*>(buffer.data()), buffer.size());
-    out->append(reinterpret_cast<const char*>(tag.data()), tag.size());
-    return true;
-}
-
-bool AesGcmDecrypt(const std::vector<unsigned char>& key, const std::vector<unsigned char>& nonce,
-                   const std::string& ciphertext, std::string* out) {
-    if (!out) return false;
-    out->clear();
-    if (key.size() != kAesKeyBytes) return false;
-    if (nonce.size() != kGcmNonceBytes) return false;
-    if (ciphertext.size() < kGcmTagBytes) return false;
-
-    const std::size_t bodyBytes = ciphertext.size() - kGcmTagBytes;
-    std::vector<unsigned char> tag(ciphertext.begin() + static_cast<std::ptrdiff_t>(bodyBytes),
-                                   ciphertext.end());
-
-    AlgHandle alg;
-    if (!OpenAesGcm(&alg)) return false;
-
-    KeyHandle keyHandle;
-    if (!NT_SUCCESS(BCryptGenerateSymmetricKey(alg.handle, &keyHandle.handle, nullptr, 0,
-                                               const_cast<PUCHAR>(key.data()),
-                                               static_cast<ULONG>(key.size()), 0))) {
-        return false;
-    }
-
-    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
-    BCRYPT_INIT_AUTH_MODE_INFO(info);
-    info.pbNonce = const_cast<PUCHAR>(nonce.data());
-    info.cbNonce = static_cast<ULONG>(nonce.size());
-    info.pbTag = tag.data();
-    info.cbTag = static_cast<ULONG>(tag.size());
-
-    std::vector<unsigned char> buffer(bodyBytes > 0 ? bodyBytes : 1);
-    ULONG produced = 0;
-    const PUCHAR input =
-        bodyBytes == 0 ? nullptr : reinterpret_cast<PUCHAR>(const_cast<char*>(ciphertext.data()));
-    const NTSTATUS status =
-        BCryptDecrypt(keyHandle.handle, input, static_cast<ULONG>(bodyBytes), &info, nullptr, 0,
-                      buffer.data(), static_cast<ULONG>(buffer.size()), &produced, 0);
-    // 认证失败（被篡改 / 密钥不对）就是这里失败。绝不能把半截明文当成功返回。
-    if (!NT_SUCCESS(status)) return false;
-
-    out->assign(reinterpret_cast<const char*>(buffer.data()), produced);
-    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -526,7 +205,7 @@ void CryptoSession::Reset() {
 
 std::string PublicKeyFingerprint(const std::vector<unsigned char>& publicKey) {
     std::vector<unsigned char> digest;
-    if (!Sha256(publicKey.data(), publicKey.size(), &digest)) return std::string();
+    if (!BackendSha256(publicKey.data(), publicKey.size(), &digest)) return std::string();
 
     // 取前 16 字节，写成 AA:BB:CC:... 的形式，方便人眼比对
     static const char* kHex = "0123456789ABCDEF";

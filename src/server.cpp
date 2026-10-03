@@ -460,10 +460,11 @@ bool LoadOrCreateIdentityKey() {
     }
 
     if (!dchat::GenerateEcdhKeyPair(&g_identityKey)) return false;
-    if (g_identityKey.privateBlob.size() < kEccScalarOffset + 32) return false;
+    std::vector<unsigned char> scalar;
+    if (!dchat::EcdhPrivateScalar(g_identityKey, &scalar)) return false;
 
     const std::string scalarHex =
-        BytesToHex(g_identityKey.privateBlob.data() + kEccScalarOffset, 32);
+        BytesToHex(scalar.data(), scalar.size());
     const std::string publicHex =
         BytesToHex(g_identityKey.publicKey.data(), g_identityKey.publicKey.size());
 

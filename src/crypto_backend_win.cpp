@@ -310,6 +310,19 @@ bool BackendEcdhSharedSecret(const BackendEcdhKeyPair& mine,
     return true;
 }
 
+bool BackendEcdhPrivateScalar(const BackendEcdhKeyPair& pair,
+                              std::vector<unsigned char>* out) {
+    if (!out) return false;
+    out->clear();
+    // CNG 的 ECCPRIVATE_BLOB 布局：header(8) + X(32) + Y(32) + d(32)，标量在最后 32 字节
+    constexpr std::size_t kScalarOffset = sizeof(BCRYPT_ECCKEY_BLOB) + kP256CoordinateBytes * 2;
+    if (pair.privateBlob.size() < kScalarOffset + kP256CoordinateBytes) return false;
+    out->assign(pair.privateBlob.begin() + static_cast<std::ptrdiff_t>(kScalarOffset),
+                pair.privateBlob.begin() +
+                    static_cast<std::ptrdiff_t>(kScalarOffset + kP256CoordinateBytes));
+    return true;
+}
+
 bool BackendAesGcmEncrypt(const std::vector<unsigned char>& key,
                           const std::vector<unsigned char>& nonce,
                           const std::vector<unsigned char>& plaintext,

@@ -111,6 +111,15 @@ bool ComputeSharedSecret(const EcdhKeyPair& mine, const std::vector<unsigned cha
                          std::vector<unsigned char>* out);
 
 /**
+ * 取出密钥对里的**裸私有标量**（32 字节大端）。
+ *
+ * 服务器要把身份密钥落盘（格式是"标量 + 公钥"的十六进制），这个格式必须两端一致——
+ * Windows 上生成的密钥文件要能被 Linux 读。以前调用方自己按 CNG 的 blob 偏移去抠，
+ * 那是 Windows 专有布局；现在交给后端。
+ */
+bool EcdhPrivateScalar(const EcdhKeyPair& pair, std::vector<unsigned char>* out);
+
+/**
  * HKDF-SHA256（RFC 5869）：extract + expand。
  *
  * 自己拼是因为要用到 HMAC-SHA256 这个原语，而它由系统提供；

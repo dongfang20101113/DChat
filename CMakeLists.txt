@@ -18,7 +18,15 @@ if(MINGW)
 endif()
 
 # 协议层、显示规则、输入历史、服务端指令解析：与网络、界面都无关，可单独做单元测试
-add_library(dchat_protocol STATIC src/protocol.cpp src/render.cpp src/input_history.cpp src/server_command.cpp src/auth.cpp src/file_transfer.cpp src/server_rules.cpp src/crypto.cpp)
+# 密码学后端按平台选：Windows 走 CNG（系统自带），Linux 走 OpenSSL（libssl-dev）。
+# 上层的 crypto.cpp / auth.cpp 只认 crypto_backend.h 里的接口，两端共用同一份源码。
+if(WIN32)
+    set(DCHAT_CRYPTO_BACKEND src/crypto_backend_win.cpp)
+else()
+    set(DCHAT_CRYPTO_BACKEND src/crypto_backend_openssl.cpp)
+endif()
+
+add_library(dchat_protocol STATIC src/protocol.cpp src/render.cpp src/input_history.cpp src/server_command.cpp src/auth.cpp src/file_transfer.cpp src/server_rules.cpp src/crypto.cpp ${DCHAT_CRYPTO_BACKEND})
 target_include_directories(dchat_protocol PUBLIC src)
 # 密码哈希与传输加密都用 Windows 自带的加密库（CNG / bcrypt.dll）
 target_link_libraries(dchat_protocol PUBLIC bcrypt)

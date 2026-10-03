@@ -1,9 +1,9 @@
-﻿#include "auth.h"
+#include "auth.h"
 
-#include <windows.h>
-#include <bcrypt.h>
+#include "crypto_backend.h"  // PBKDF2 / 随机数：Windows 走 CNG，Linux 走 OpenSSL
 
 #include <cctype>
+#include <chrono>
 
 namespace dchat {
 
@@ -45,19 +45,9 @@ bool FromHex(const std::string& hex, std::vector<unsigned char>* bytes) {
 bool DeriveBytes(const std::string& password, const std::vector<unsigned char>& salt, int iterations,
                  std::vector<unsigned char>* out) {
     if (iterations <= 0) return false;
-    BCRYPT_ALG_HANDLE algorithm = nullptr;
-    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr,
-                                    BCRYPT_ALG_HANDLE_HMAC_FLAG) != 0) {
-        return false;
-    }
-    out->assign(kHashBytes, 0);
-    const NTSTATUS status = BCryptDeriveKeyPBKDF2(
-        algorithm, reinterpret_cast<PUCHAR>(const_cast<char*>(password.data())),
-        static_cast<ULONG>(password.size()), const_cast<PUCHAR>(salt.data()),
-        static_cast<ULONG>(salt.size()), static_cast<ULONGLONG>(iterations), out->data(),
-        static_cast<ULONG>(out->size()), 0);
-    BCryptCloseAlgorithmProvider(algorithm, 0);
-    return status == 0;
+    // PBKDF2-HMAC-SHA256 交给后端（Windows CNG / Linux OpenSSL）。
+    // 派生结果**必须三端一致**：口令哈希是落盘的，结果一变所有人都登不上。
+    return BackendPbkdf2Sha256(password, salt, iterations, kHashBytes, out);
 }
 
 std::vector<std::string> SplitLines(const std::string& text) {
@@ -109,11 +99,13 @@ const char* PasswordErrorText(PasswordError error) {
 }
 
 std::string MakeSaltHex() {
-    std::vector<unsigned char> salt(kSaltBytes, 0);
-    if (BCryptGenRandom(nullptr, salt.data(), static_cast<ULONG>(salt.size()),
-                        BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
-        // 极端情况下退化成基于时间的盐（仍然比固定盐好）
-        const auto ticks = static_cast<unsigned long long>(GetTickCount64());
+    std::vector<unsigned char> salt;
+    if (!BackendRandomBytes(kSaltBytes, &salt)) {
+        // 极端情况下退化成基于时间的盐（仍然比固定盐好）。
+        // 时间源用 C++ 标准库，两端都能编——以前这里用的是 Windows 的 GetTickCount64。
+        salt.assign(kSaltBytes, 0);
+        const auto ticks = static_cast<unsigned long long>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
         for (std::size_t i = 0; i < salt.size(); ++i) {
             salt[i] = static_cast<unsigned char>((ticks >> ((i % 8) * 8)) & 0xFF);
         }

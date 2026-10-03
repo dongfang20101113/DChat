@@ -121,6 +121,15 @@ build CMakeFiles/dchat_protocol.dir/src/crypto.cpp.obj: CXX_COMPILER__dchat_prot
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_protocol.dir
 
+build CMakeFiles/dchat_protocol.dir/src/crypto_backend_win.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/crypto_backend_win.cpp || cmake_object_order_depends_target_dchat_protocol
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\dchat_protocol.dir\src\crypto_backend_win.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\dchat_protocol.dir
+  OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
+  TARGET_SUPPORT_DIR = CMakeFiles\dchat_protocol.dir
+
 
 # =============================================================================
 # Link build statements for STATIC_LIBRARY target dchat_protocol
@@ -129,7 +138,7 @@ build CMakeFiles/dchat_protocol.dir/src/crypto.cpp.obj: CXX_COMPILER__dchat_prot
 #############################################
 # Link the static library libdchat_protocol.a
 
-build libdchat_protocol.a: CXX_STATIC_LIBRARY_LINKER__dchat_protocol_Release CMakeFiles/dchat_protocol.dir/src/protocol.cpp.obj CMakeFiles/dchat_protocol.dir/src/render.cpp.obj CMakeFiles/dchat_protocol.dir/src/input_history.cpp.obj CMakeFiles/dchat_protocol.dir/src/server_command.cpp.obj CMakeFiles/dchat_protocol.dir/src/auth.cpp.obj CMakeFiles/dchat_protocol.dir/src/file_transfer.cpp.obj CMakeFiles/dchat_protocol.dir/src/server_rules.cpp.obj CMakeFiles/dchat_protocol.dir/src/crypto.cpp.obj
+build libdchat_protocol.a: CXX_STATIC_LIBRARY_LINKER__dchat_protocol_Release CMakeFiles/dchat_protocol.dir/src/protocol.cpp.obj CMakeFiles/dchat_protocol.dir/src/render.cpp.obj CMakeFiles/dchat_protocol.dir/src/input_history.cpp.obj CMakeFiles/dchat_protocol.dir/src/server_command.cpp.obj CMakeFiles/dchat_protocol.dir/src/auth.cpp.obj CMakeFiles/dchat_protocol.dir/src/file_transfer.cpp.obj CMakeFiles/dchat_protocol.dir/src/server_rules.cpp.obj CMakeFiles/dchat_protocol.dir/src/crypto.cpp.obj CMakeFiles/dchat_protocol.dir/src/crypto_backend_win.cpp.obj
   CONFIG = Release
   LANGUAGE_COMPILE_FLAGS = -O3 -DNDEBUG
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir

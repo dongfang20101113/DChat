@@ -50,10 +50,21 @@ bool BackendImportEcdhKeyPair(const std::vector<unsigned char>& privateScalar,
                               const std::vector<unsigned char>& publicKey,
                               BackendEcdhKeyPair* out);
 
-/** 算共享密钥（X 坐标，32 字节）。 */
+/** 算共享密钥（X 坐标，32 字节，大端）。 */
 bool BackendEcdhSharedSecret(const BackendEcdhKeyPair& mine,
                              const std::vector<unsigned char>& peerPublicKey,
                              std::vector<unsigned char>* out);
+
+/**
+ * 从密钥对里取出**裸的私有标量**（32 字节大端）。
+ *
+ * 存在的理由：服务器要把身份密钥落盘，落盘格式是"标量 + 公钥"的十六进制——
+ * 这个格式必须两端一致（Windows 上生成的密钥文件要能被 Linux 读）。
+ * 以前调用方自己按 `8 + 32 + 32` 这个偏移从 CNG 的 blob 里抠，那是 Windows 专有布局；
+ * 抽到这里之后，两边都只认"32 字节标量"这一个约定。
+ */
+bool BackendEcdhPrivateScalar(const BackendEcdhKeyPair& pair,
+                              std::vector<unsigned char>* out);
 
 /**
  * AES-256-GCM 加密。
