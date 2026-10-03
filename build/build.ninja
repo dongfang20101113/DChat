@@ -49,10 +49,19 @@ cmake_ninja_workdir = D$:/codes/dchat/build/
 
 build cmake_object_order_depends_target_dchat_protocol: phony || .
 
+build CMakeFiles/dchat_protocol.dir/src/socket_util.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/socket_util.cpp || cmake_object_order_depends_target_dchat_protocol
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\dchat_protocol.dir\src\socket_util.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\dchat_protocol.dir
+  OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
+  TARGET_SUPPORT_DIR = CMakeFiles\dchat_protocol.dir
+
 build CMakeFiles/dchat_protocol.dir/src/protocol.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/protocol.cpp || cmake_object_order_depends_target_dchat_protocol
   CONFIG = Release
   DEP_FILE = CMakeFiles\dchat_protocol.dir\src\protocol.cpp.obj.d
-  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
@@ -61,7 +70,7 @@ build CMakeFiles/dchat_protocol.dir/src/protocol.cpp.obj: CXX_COMPILER__dchat_pr
 build CMakeFiles/dchat_protocol.dir/src/render.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/render.cpp || cmake_object_order_depends_target_dchat_protocol
   CONFIG = Release
   DEP_FILE = CMakeFiles\dchat_protocol.dir\src\render.cpp.obj.d
-  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
@@ -70,7 +79,7 @@ build CMakeFiles/dchat_protocol.dir/src/render.cpp.obj: CXX_COMPILER__dchat_prot
 build CMakeFiles/dchat_protocol.dir/src/input_history.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/input_history.cpp || cmake_object_order_depends_target_dchat_protocol
   CONFIG = Release
   DEP_FILE = CMakeFiles\dchat_protocol.dir\src\input_history.cpp.obj.d
-  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
@@ -79,7 +88,7 @@ build CMakeFiles/dchat_protocol.dir/src/input_history.cpp.obj: CXX_COMPILER__dch
 build CMakeFiles/dchat_protocol.dir/src/server_command.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/server_command.cpp || cmake_object_order_depends_target_dchat_protocol
   CONFIG = Release
   DEP_FILE = CMakeFiles\dchat_protocol.dir\src\server_command.cpp.obj.d
-  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
@@ -88,7 +97,7 @@ build CMakeFiles/dchat_protocol.dir/src/server_command.cpp.obj: CXX_COMPILER__dc
 build CMakeFiles/dchat_protocol.dir/src/auth.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/auth.cpp || cmake_object_order_depends_target_dchat_protocol
   CONFIG = Release
   DEP_FILE = CMakeFiles\dchat_protocol.dir\src\auth.cpp.obj.d
-  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
@@ -97,7 +106,7 @@ build CMakeFiles/dchat_protocol.dir/src/auth.cpp.obj: CXX_COMPILER__dchat_protoc
 build CMakeFiles/dchat_protocol.dir/src/file_transfer.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/file_transfer.cpp || cmake_object_order_depends_target_dchat_protocol
   CONFIG = Release
   DEP_FILE = CMakeFiles\dchat_protocol.dir\src\file_transfer.cpp.obj.d
-  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
@@ -106,7 +115,7 @@ build CMakeFiles/dchat_protocol.dir/src/file_transfer.cpp.obj: CXX_COMPILER__dch
 build CMakeFiles/dchat_protocol.dir/src/server_rules.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/server_rules.cpp || cmake_object_order_depends_target_dchat_protocol
   CONFIG = Release
   DEP_FILE = CMakeFiles\dchat_protocol.dir\src\server_rules.cpp.obj.d
-  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
@@ -115,7 +124,7 @@ build CMakeFiles/dchat_protocol.dir/src/server_rules.cpp.obj: CXX_COMPILER__dcha
 build CMakeFiles/dchat_protocol.dir/src/crypto.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/crypto.cpp || cmake_object_order_depends_target_dchat_protocol
   CONFIG = Release
   DEP_FILE = CMakeFiles\dchat_protocol.dir\src\crypto.cpp.obj.d
-  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
@@ -124,7 +133,7 @@ build CMakeFiles/dchat_protocol.dir/src/crypto.cpp.obj: CXX_COMPILER__dchat_prot
 build CMakeFiles/dchat_protocol.dir/src/crypto_backend_win.cpp.obj: CXX_COMPILER__dchat_protocol_unscanned_Release D$:/codes/dchat/src/crypto_backend_win.cpp || cmake_object_order_depends_target_dchat_protocol
   CONFIG = Release
   DEP_FILE = CMakeFiles\dchat_protocol.dir\src\crypto_backend_win.cpp.obj.d
-  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_protocol.dir\src
@@ -138,7 +147,7 @@ build CMakeFiles/dchat_protocol.dir/src/crypto_backend_win.cpp.obj: CXX_COMPILER
 #############################################
 # Link the static library libdchat_protocol.a
 
-build libdchat_protocol.a: CXX_STATIC_LIBRARY_LINKER__dchat_protocol_Release CMakeFiles/dchat_protocol.dir/src/protocol.cpp.obj CMakeFiles/dchat_protocol.dir/src/render.cpp.obj CMakeFiles/dchat_protocol.dir/src/input_history.cpp.obj CMakeFiles/dchat_protocol.dir/src/server_command.cpp.obj CMakeFiles/dchat_protocol.dir/src/auth.cpp.obj CMakeFiles/dchat_protocol.dir/src/file_transfer.cpp.obj CMakeFiles/dchat_protocol.dir/src/server_rules.cpp.obj CMakeFiles/dchat_protocol.dir/src/crypto.cpp.obj CMakeFiles/dchat_protocol.dir/src/crypto_backend_win.cpp.obj
+build libdchat_protocol.a: CXX_STATIC_LIBRARY_LINKER__dchat_protocol_Release CMakeFiles/dchat_protocol.dir/src/socket_util.cpp.obj CMakeFiles/dchat_protocol.dir/src/protocol.cpp.obj CMakeFiles/dchat_protocol.dir/src/render.cpp.obj CMakeFiles/dchat_protocol.dir/src/input_history.cpp.obj CMakeFiles/dchat_protocol.dir/src/server_command.cpp.obj CMakeFiles/dchat_protocol.dir/src/auth.cpp.obj CMakeFiles/dchat_protocol.dir/src/file_transfer.cpp.obj CMakeFiles/dchat_protocol.dir/src/server_rules.cpp.obj CMakeFiles/dchat_protocol.dir/src/crypto.cpp.obj CMakeFiles/dchat_protocol.dir/src/crypto_backend_win.cpp.obj
   CONFIG = Release
   LANGUAGE_COMPILE_FLAGS = -O3 -DNDEBUG
   OBJECT_DIR = CMakeFiles\dchat_protocol.dir
@@ -298,7 +307,7 @@ build cmake_object_order_depends_target_dchat_client: phony || cmake_object_orde
 build CMakeFiles/dchat_client.dir/src/client.cpp.obj: CXX_COMPILER__dchat_client_unscanned_Release D$:/codes/dchat/src/client.cpp || cmake_object_order_depends_target_dchat_client
   CONFIG = Release
   DEP_FILE = CMakeFiles\dchat_client.dir\src\client.cpp.obj.d
-  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fwide-exec-charset=UTF-16LE
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
   INCLUDES = -ID:/codes/dchat/resources -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\dchat_client.dir
   OBJECT_FILE_DIR = CMakeFiles\dchat_client.dir\src
@@ -540,7 +549,7 @@ build cmake_object_order_depends_target_test_voice_notes: phony || cmake_object_
 build CMakeFiles/test_voice_notes.dir/tests/test_voice_notes.cpp.obj: CXX_COMPILER__test_voice_notes_unscanned_Release D$:/codes/dchat/tests/test_voice_notes.cpp || cmake_object_order_depends_target_test_voice_notes
   CONFIG = Release
   DEP_FILE = CMakeFiles\test_voice_notes.dir\tests\test_voice_notes.cpp.obj.d
-  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\test_voice_notes.dir
   OBJECT_FILE_DIR = CMakeFiles\test_voice_notes.dir\tests
@@ -579,7 +588,7 @@ build cmake_object_order_depends_target_test_ui_layout: phony || cmake_object_or
 build CMakeFiles/test_ui_layout.dir/tests/test_ui_layout.cpp.obj: CXX_COMPILER__test_ui_layout_unscanned_Release D$:/codes/dchat/tests/test_ui_layout.cpp || cmake_object_order_depends_target_test_ui_layout
   CONFIG = Release
   DEP_FILE = CMakeFiles\test_ui_layout.dir\tests\test_ui_layout.cpp.obj.d
-  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
   INCLUDES = -ID:/codes/dchat/src
   OBJECT_DIR = CMakeFiles\test_ui_layout.dir
   OBJECT_FILE_DIR = CMakeFiles\test_ui_layout.dir\tests

@@ -1,14 +1,12 @@
 // 聊天服务器：Winsock2 + 每客户端一个线程，收到消息后广播给所有人。
 // 控制台日志保持纯 ASCII（避免代码页问题），协议里的用户可见文本是 UTF-8 中文。
-#define WIN32_LEAN_AND_MEAN
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <windows.h>
+#include "socket_util.h"  // 跨平台 socket（Windows Winsock / Linux POSIX）
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <deque>
 #include <fstream>
 #include <iostream>
@@ -24,6 +22,16 @@
 #include "file_transfer.h"
 #include "server_rules.h"
 #include "server_command.h"
+
+// 下面这些 using 让业务代码一个字都不用动就能两端编译。
+// 名字像 Winsock 是刻意的——大面积改名会让 diff 淹没真正的移植点。
+using dchat::sock::Accept;
+using dchat::sock::Bind;
+using dchat::sock::Handle;
+using dchat::sock::kInvalid;
+using dchat::sock::Listen;
+using dchat::sock::Receive;
+using dchat::sock::Send;
 
 namespace {
 
@@ -264,7 +272,7 @@ std::vector<std::string> LocalAddresses() {
     if (::getaddrinfo(name, nullptr, &hints, &result) != 0) return out;
     for (addrinfo* it = result; it != nullptr; it = it->ai_next) {
         char text[64] = {0};
-        const auto* address = reinterpret_cast<const sockaddr_in*>(it->ai_addr);
+        const auto* address = reinterpret_cast<const dchat::sock::Address*>(it->ai_addr);
         if (::inet_ntop(AF_INET, &address->sin_addr, text, sizeof(text)) == nullptr) continue;
         const std::string ip = text;
         if (ip == "127.0.0.1") continue;
@@ -280,23 +288,44 @@ std::vector<std::string> LocalAddresses() {
 
 // 打开 TCP keepalive：长时间没数据时由系统探测连接是否还活着
 // （走公网 / NAT 时很有用，能及时发现"假连接"）
-void EnableKeepAlive(SOCKET sock) {
+//
+// 两端设置方式不同：Windows 用 WSAIoctl(SIO_KEEPALIVE_VALS) 一次设好空闲时间和间隔，
+// Linux 是三个独立 setsockopt（TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT）。
+// 数值定成同一组（30 秒空闲、5 秒间隔、探 3 次算断），两端发现死连接的时间才一致。
+void EnableKeepAlive(dchat::sock::Handle handle) {
+#ifdef _WIN32
     BOOL on = TRUE;
-    ::setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<const char*>(&on), sizeof(on));
+    ::setsockopt(handle, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<const char*>(&on), sizeof(on));
     tcp_keepalive settings{};
     settings.onoff = TRUE;
     settings.keepalivetime = 30000;    // 30 秒空闲后开始探测
     settings.keepaliveinterval = 5000; // 探测间隔 5 秒
     DWORD returned = 0;
-    ::WSAIoctl(sock, SIO_KEEPALIVE_VALS, &settings, sizeof(settings), nullptr, 0, &returned, nullptr,
-               nullptr);
+    ::WSAIoctl(handle, SIO_KEEPALIVE_VALS, &settings, sizeof(settings), nullptr, 0, &returned,
+               nullptr, nullptr);
+#else
+    const int on = 1;
+    ::setsockopt(handle, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on));
+    const int idle = 30;     // 秒
+    const int interval = 5;  // 秒
+    const int count = 3;     // 探测几次算断
+    ::setsockopt(handle, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+    ::setsockopt(handle, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+    ::setsockopt(handle, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
+#endif
 }
 
 void Log(const std::string& text) {
-    SYSTEMTIME now{};
-    GetLocalTime(&now);
+    // 用 C++ 的本地时间而不是 Windows 的 GetLocalTime：两端都能编。
+    const std::time_t stamp = std::time(nullptr);
+    std::tm local{};
+#ifdef _WIN32
+    localtime_s(&local, &stamp);
+#else
+    localtime_r(&stamp, &local);
+#endif
     std::lock_guard<std::mutex> lock(g_logMutex);
-    std::printf("[%02d:%02d:%02d] %s\n", now.wHour, now.wMinute, now.wSecond, text.c_str());
+    std::printf("[%02d:%02d:%02d] %s\n", local.tm_hour, local.tm_min, local.tm_sec, text.c_str());
     std::fflush(stdout);
 }
 
@@ -307,7 +336,7 @@ std::string Timed(const std::string& command, const std::string& rest = std::str
 }
 
 struct Client {
-    SOCKET sock = INVALID_SOCKET;
+    dchat::sock::Handle sock = dchat::sock::kInvalid;
     std::string nick;     // 空表示还没设置昵称
     std::string ip;       // 裸 IP（不含端口），公网加固按它做单 IP 限流
     std::string address;  // 例如 127.0.0.1:51234
@@ -336,7 +365,7 @@ struct Client {
     }
 
     bool SendLine(const std::string& line) {
-        if (sock == INVALID_SOCKET) return false;
+        if (sock == dchat::sock::kInvalid) return false;
 
         // ⚠️ 加密必须在 sendMutex **锁内**做。
         // SendLine 会被广播线程和本连接自己的线程并发调用，而 CryptoSession 的
@@ -359,7 +388,7 @@ struct Client {
 
         std::size_t sent = 0;
         while (sent < data.size()) {
-            const int n = ::send(sock, data.data() + sent, static_cast<int>(data.size() - sent), 0);
+            const std::ptrdiff_t n = dchat::sock::Send(sock, data.data() + sent, data.size() - sent);
             if (n <= 0) return false;
             sent += static_cast<std::size_t>(n);
         }
@@ -744,7 +773,7 @@ bool KickByName(const std::string& name) {
     }
     if (!target) return false;
     target->SendLine(Timed("ERROR", "你被管理员移出了房间（可以重新加入）"));
-    ::shutdown(target->sock, SD_BOTH);  // 读线程的 recv 会立刻返回，连接随之关闭
+    dchat::sock::ShutdownWrite(target->sock);  // 读线程的 recv 会立刻返回，连接随之关闭
     return true;
 }
 
@@ -1560,9 +1589,9 @@ void ClientLoop(std::shared_ptr<Client> client) {
     bool handshakeTimeoutActive = false;
     const int handshakeSec = CurrentRules().handshakeTimeoutSec;
     if (handshakeSec > 0) {
-        DWORD timeoutMs = static_cast<DWORD>(handshakeSec) * 1000;
-        if (::setsockopt(client->sock, SOL_SOCKET, SO_RCVTIMEO,
-                         reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs)) == 0) {
+        // 超时的设置方式两端不同（Windows 用 DWORD 毫秒、Linux 用 timeval），
+        // 这层差异在 socket_util 里吸收掉
+        if (dchat::sock::SetReceiveTimeout(client->sock, handshakeSec * 1000)) {
             handshakeTimeoutActive = true;
         }
     }
@@ -1571,9 +1600,11 @@ void ClientLoop(std::shared_ptr<Client> client) {
     std::vector<char> chunk(2048);
     bool keepGoing = true;
     while (keepGoing) {
-        const int received = ::recv(client->sock, chunk.data(), static_cast<int>(chunk.size()), 0);
-        if (received == SOCKET_ERROR) {
-            if (::WSAGetLastError() == WSAETIMEDOUT) {
+        const std::ptrdiff_t received = dchat::sock::Receive(client->sock, chunk.data(), chunk.size());
+        // 超时 / 出错都走 dchat::sock::WouldBlock，不直接比错误码：
+        // 两端的"超时"错误码不同（Windows 是 WSAETIMEDOUT，Linux 是 EAGAIN）
+        if (received < 0) {
+            if (dchat::sock::WouldBlock()) {
                 if (client->nick.empty()) {
                     client->SendLine(Timed("ERROR", "太久没有登录，连接已关闭"));
                     Log("handshake timeout: " + client->address);
@@ -1628,9 +1659,7 @@ void ClientLoop(std::shared_ptr<Client> client) {
 
         // 登录成功就撤掉握手超时（设回 0 = 永不超时，恢复原来的行为）
         if (handshakeTimeoutActive && !client->nick.empty()) {
-            DWORD zero = 0;
-            ::setsockopt(client->sock, SOL_SOCKET, SO_RCVTIMEO,
-                         reinterpret_cast<const char*>(&zero), sizeof(zero));
+            dchat::sock::SetReceiveTimeout(client->sock, 0);
             handshakeTimeoutActive = false;
         }
     }
@@ -1642,16 +1671,20 @@ void ClientLoop(std::shared_ptr<Client> client) {
     } else {
         Log(client->address + " disconnected");
     }
-    ::shutdown(client->sock, SD_BOTH);
-    ::closesocket(client->sock);
-    client->sock = INVALID_SOCKET;
+    dchat::sock::ShutdownWrite(client->sock);
+    dchat::sock::Close(client->sock);
+    client->sock = dchat::sock::kInvalid;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // Windows 控制台默认不是 UTF-8，不设的话中文日志和中文昵称都会乱码。
+    // Linux 终端本来就是 UTF-8，不需要（也没有这两个 API）。
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);  // 控制台输入也按 UTF-8，中文昵称才能匹配
+#endif
 
     int port = dchat::kDefaultPort;
     std::string bindAddress;  // 空 = 监听所有网卡
@@ -1667,44 +1700,41 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    WSADATA wsa{};
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        std::printf("WSAStartup failed\n");
+    if (!dchat::sock::Startup()) {
+        std::printf("socket startup failed\n");
         return 1;
     }
 
-    const SOCKET listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (listener == INVALID_SOCKET) {
-        std::printf("socket() failed: %d\n", WSAGetLastError());
-        WSACleanup();
+    const dchat::sock::Handle listener = dchat::sock::CreateTcp();
+    if (listener == dchat::sock::kInvalid) {
+        std::printf("socket() failed: %d\n", dchat::sock::LastError());
+        dchat::sock::Cleanup();
         return 1;
     }
 
-    BOOL reuse = TRUE;
-    ::setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse),
-                 sizeof(reuse));
+    dchat::sock::SetReuseAddress(listener);
 
-    sockaddr_in address{};
+    dchat::sock::Address address{};
     address.sin_family = AF_INET;
     if (bindAddress.empty()) {
-        address.sin_addr.s_addr = htonl(INADDR_ANY);  // 默认：所有网卡都监听
+        address.sin_addr.s_addr = INADDR_ANY;  // 默认：所有网卡都监听
     } else if (::inet_pton(AF_INET, bindAddress.c_str(), &address.sin_addr) != 1) {
         std::printf("--bind 只支持 IPv4 地址，例如 --bind 0.0.0.0 或 --bind 192.168.31.251\n");
-        ::closesocket(listener);
-        WSACleanup();
+        dchat::sock::Close(listener);
+        dchat::sock::Cleanup();
         return 1;
     }
-    address.sin_port = htons(static_cast<u_short>(port));
-    if (::bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
-        std::printf("bind() failed on port %d: %d\n", port, WSAGetLastError());
-        ::closesocket(listener);
-        WSACleanup();
+    address.sin_port = htons(static_cast<unsigned short>(port));
+    if (!dchat::sock::Bind(listener, address)) {
+        std::printf("bind() failed on port %d: %d\n", port, dchat::sock::LastError());
+        dchat::sock::Close(listener);
+        dchat::sock::Cleanup();
         return 1;
     }
-    if (::listen(listener, SOMAXCONN) == SOCKET_ERROR) {
-        std::printf("listen() failed: %d\n", WSAGetLastError());
-        ::closesocket(listener);
-        WSACleanup();
+    if (!dchat::sock::Listen(listener, SOMAXCONN)) {
+        std::printf("listen() failed: %d\n", dchat::sock::LastError());
+        dchat::sock::Close(listener);
+        dchat::sock::Cleanup();
         return 1;
     }
 
@@ -1734,13 +1764,13 @@ int main(int argc, char** argv) {
     std::thread(BanMaintenanceLoop).detach();  // 每秒清理到期封禁
 
     for (;;) {
-        sockaddr_in peer{};
-        int peerLength = sizeof(peer);
-        const SOCKET sock = ::accept(listener, reinterpret_cast<sockaddr*>(&peer), &peerLength);
-        if (sock == INVALID_SOCKET) break;
+        dchat::sock::Address peer{};
+        
+        const dchat::sock::Handle sock = dchat::sock::Accept(listener, &peer);
+        if (sock == dchat::sock::kInvalid) break;
 
         // 关掉 Nagle：聊天都是小消息，等合并会让人感觉卡顿
-        BOOL noDelay = TRUE;
+        const bool noDelay = true; (void)noDelay;
         ::setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&noDelay),
                      sizeof(noDelay));
         EnableKeepAlive(sock);  // 公网 / NAT 环境下尽早发现断掉的连接
@@ -1781,9 +1811,9 @@ int main(int argc, char** argv) {
                 const std::string line =
                     dchat::BuildLine("ERROR", dchat::NowTimeString() + " " + reason);
                 const std::string payload = line + "\n";
-                ::send(sock, payload.data(), static_cast<int>(payload.size()), 0);
-                ::shutdown(sock, SD_BOTH);
-                ::closesocket(sock);
+                dchat::sock::SendAll(sock, payload.data(), payload.size());
+                dchat::sock::ShutdownWrite(sock);
+                dchat::sock::Close(sock);
                 Log("rejected connection from " + ip + ": " + reason);
                 continue;
             }
@@ -1801,7 +1831,7 @@ int main(int argc, char** argv) {
         std::thread(ClientLoop, client).detach();
     }
 
-    ::closesocket(listener);
-    WSACleanup();
+    dchat::sock::Close(listener);
+    dchat::sock::Cleanup();
     return 0;
 }

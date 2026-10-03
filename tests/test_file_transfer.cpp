@@ -1,7 +1,12 @@
 // 文件传输公共部分的单元测试：Base64 编解码、文件名清理、重名处理、字节数格式化，
 // 以及"最坏情况下 FILE_DATA 一行不会超过协议上限"这条硬约束。
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <sys/stat.h>  // mkdir
+#include <unistd.h>
+#endif
 
 #include <cstdio>
 #include <fstream>
@@ -26,15 +31,24 @@ void check(bool ok, const char* what) {
 }
 
 std::wstring TempDir() {
+    // 两端都能编的临时目录：Windows 用 GetTempPathW，POSIX 用 /tmp。
+    // 这个测试只关心"目录里有文件时重名怎么处理"，路径长什么样不重要。
+#ifdef _WIN32
     wchar_t buffer[MAX_PATH] = {0};
     ::GetTempPathW(MAX_PATH, buffer);
     std::wstring dir = buffer;
     dir += L"dchat-file-transfer-test";
     ::CreateDirectoryW(dir.c_str(), nullptr);
     return dir;
+#else
+    const std::wstring dir = L"/tmp/dchat-file-transfer-test";
+    ::mkdir("/tmp/dchat-file-transfer-test", 0700);
+    return dir;
+#endif
 }
 
 void WriteFileBytes(const std::wstring& path) {
+#ifdef _WIN32
     HANDLE file = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                                 FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return;
@@ -42,6 +56,13 @@ void WriteFileBytes(const std::wstring& path) {
     DWORD written = 0;
     ::WriteFile(file, data, 1, &written, nullptr);
     ::CloseHandle(file);
+#else
+    // POSIX 侧路径只含 ASCII（/tmp/...），wstring 按字节直接转
+    std::string narrow;
+    for (wchar_t ch : path) narrow.push_back(ch < 128 ? static_cast<char>(ch) : '?');
+    std::ofstream out(narrow, std::ios::binary);
+    out << "x";
+#endif
 }
 
 std::wstring BaseName(const std::wstring& path) {
@@ -52,6 +73,18 @@ std::wstring BaseName(const std::wstring& path) {
 
 int main() {
     std::printf("== dchat file transfer tests ==\n");
+
+    // 删掉上次跑剩下的文件；两端都能编的删法（POSIX 侧路径只含 ASCII）。
+    // 放在 main 开头是因为下面两处 [4] 小节都要用。
+    auto removeFile = [](const std::wstring& path) {
+#ifdef _WIN32
+        ::DeleteFileW(path.c_str());
+#else
+        std::string narrow;
+        for (wchar_t ch : path) narrow.push_back(ch < 128 ? static_cast<char>(ch) : '?');
+        ::remove(narrow.c_str());
+#endif
+    };
 
     {
         std::printf("[1] Base64 编码（RFC 4648 标准向量）\n");
@@ -125,9 +158,9 @@ int main() {
     {
         std::printf("[4] 重名处理\n");
         const std::wstring dir = TempDir();
-        ::DeleteFileW((dir + L"\\t.txt").c_str());
-        ::DeleteFileW((dir + L"\\t (2).txt").c_str());
-        ::DeleteFileW((dir + L"\\报告.txt").c_str());
+        removeFile(dir + L"\\t.txt");
+        removeFile(dir + L"\\t (2).txt");
+        removeFile(dir + L"\\报告.txt");
 
         check(BaseName(dchat::MakeUniquePathW(dir, L"t.txt")) == L"t.txt",
               "没有同名文件时原样返回");
@@ -143,9 +176,8 @@ int main() {
               "中文文件名正常");
         check(BaseName(dchat::MakeUniquePathW(dir, L"没有扩展名")) == L"没有扩展名",
               "没有扩展名也行");
-
-        ::DeleteFileW((dir + L"\\t.txt").c_str());
-        ::DeleteFileW((dir + L"\\t (2).txt").c_str());
+        removeFile(dir + L"\\t.txt");
+        removeFile(dir + L"\\t (2).txt");
     }
 
     {
