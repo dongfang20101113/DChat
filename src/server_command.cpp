@@ -1,4 +1,4 @@
-﻿#include "server_command.h"
+#include "server_command.h"
 
 #include "auth.h"  // 改密码时复用密码规则（长度 / 不能有空格）
 #include "server_rules.h"
@@ -159,6 +159,12 @@ const CommandSpec kCommandSpecs[] = {
     {"cp", "账号", "<新密码>（同上）"},
     {"bans", "其它", "查看黑名单"},
     {"help", "其它", "显示指令帮助"},
+    // 彩色文字代码：这条是**客户端自己处理**的（不发到服务器），但候选浮层和
+    // 补全共用这一张表，所以在这里登记，用户 Tab 一下就能看到。
+    // 几个常见拼写都列出来，打 /char 或 /chatc 都能补到。
+    {"chatcolor", "彩色文字", "[help|choose]"},
+    {"charcolor", "彩色文字", "[help|choose]（同上）"},
+    {"chatcolour", "彩色文字", "[help|choose]（英式拼写）"},
 };
 
 const std::vector<std::string>& AllCommandNames() {
@@ -269,6 +275,21 @@ CompletionResult Suggest(const std::string& text, const std::vector<std::string>
             }
             if (online) continue;  // 上面已经列过了
             addCandidate(nick, "", "已注册玩家");
+        }
+        return result;
+    }
+
+    if (keyword == "chatcolor" || keyword == "charcolor" || keyword == "chatcolour" ||
+        keyword == "color" || keyword == "colour") {
+        // /chatcolor 的参数只有 help（默认）和 choose（弹色板）
+        result.isArgument = true;
+        if (argIndex == 1) {
+            if (StartsWithIgnoreCase("help", word)) {
+                addCandidate("help", "显示常用色码对照表", "彩色文字");
+            }
+            if (StartsWithIgnoreCase("choose", word)) {
+                addCandidate("choose", "弹出 32 色色板，选中把色码放进输入框", "彩色文字");
+            }
         }
         return result;
     }

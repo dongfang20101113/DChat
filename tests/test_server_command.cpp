@@ -460,10 +460,33 @@ int main() {
         check(dchat::Suggest("/chatrule keep", noNicks).matches[0] == "keepchathistory",
               "keep 前缀能补到 keepchathistory");
 
+        // 彩色文字指令：它由客户端自己处理，但候选浮层和补全共用同一张指令表，
+        // 不登记的话用户 Tab 不出来（这正是用户报的问题）
+        {
+            const dchat::CompletionResult typed = dchat::Suggest("/chat", noNicks);
+            bool hasChatColor = false, hasChatRule = false;
+            for (const std::string& match : typed.matches) {
+                if (match == "/chatcolor") hasChatColor = true;
+                if (match == "/chatrule") hasChatRule = true;
+            }
+            check(hasChatColor && hasChatRule, "/chat 同时补到 /chatcolor 和 /chatrule");
+            check(dchat::Suggest("/char", noNicks).matches[0] == "/charcolor",
+                  "/char 补到 /charcolor（另一种拼写）");
+            const dchat::CompletionResult args = dchat::Suggest("/chatcolor ", noNicks);
+            check(args.isArgument && args.matches.size() == 2 && args.matches[0] == "help" &&
+                      args.matches[1] == "choose",
+                  "/chatcolor 的候选是 help / choose");
+            check(dchat::Suggest("/chatcolor c", noNicks).matches.size() == 1 &&
+                      dchat::Suggest("/chatcolor c", noNicks).matches[0] == "choose",
+                  "/chatcolor c 只剩 choose");
+            dchat::TabCompleter colorTab;
+            check(colorTab.Next("/chatcolor ", noNicks).text == "/chatcolor help",
+                  "Tab 把 /chatcolor 的参数补进输入框");
+        }
+
         dchat::TabCompleter ruleTab;
         check(ruleTab.Next("/chatrule ch", noNicks).text == "/chatrule chatinterval",
-              "Tab 把规则名补进输入框");
-        dchat::TabCompleter ruleCycle;
+              "Tab 把规则名补进输入框");        dchat::TabCompleter ruleCycle;
         check(ruleCycle.Next("/chatrule ", noNicks).text == "/chatrule chatinterval",
               "规则名也能按 Tab 循环");
         check(ruleCycle.Next("/chatrule chatinterval", noNicks).text == "/chatrule documentsize",
