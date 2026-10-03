@@ -97,6 +97,20 @@ ZIG=$(python3 -c "import ziglang,os;print(os.path.join(os.path.dirname(ziglang._
 **不能验证**：链接（缺 macOS 版 OpenSSL）、运行行为、framework 相关代码
 （zig **不带 Foundation/AppKit 头**，所以 GUI 一行都编不了）。
 
+### 「缺什么」不该靠我手写一句话，有脚本证明
+
+```bash
+tools/probe_macos_openssl.sh
+```
+
+它逐条检查：macOS SDK 在不在、osxcross 有没有、Homebrew 的 macOS 版 OpenSSL 头有没有、
+能不能拿来做 `-fsyntax-only`。任何一条通了，它就会把可用的方法打出来。
+在开发这台机器上的实测结果是**四条全空**，所以 `crypto_backend_openssl.cpp`
+编到 macOS 这件事在本机确实做不到，而不是"我懒得试"。
+
+> 这也是唯一一个"本可以验证却没验证"的项。其余未验证项（Cocoa GUI、运行行为）
+> 是**结构上不可能**在本机验证的。
+
 ## 关于那个编不了的 GUI：做了哪些替代检查
 
 `macos/main.mm` 一行都没被编译过，所以除了"小心写"之外，还做了两件事：
