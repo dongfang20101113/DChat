@@ -256,18 +256,23 @@ def make_registration_chart(path):
 # 实测事实：zig 0.16 **不带任何 framework 头**（Foundation/AppKit/CoreFoundation
 # 全都没有），所以 Cocoa 界面在这台开发机上编不了。这张图的作用就是把
 # "验过什么 / 没验过什么"一次说清 —— 这种图不画出来，读者很容易默认"都测过了"。
+# 0 = 未验证　1 = 部分验证　2 = 已验证
 MAC_VERIFY = [
-    ("服务端 + 协议 + 加密", "真交叉编译成 Mach-O", 2),
-    ("客户端核心 18 个文件", "两个 macOS 架构各编一遍", 2),
-    ("Cocoa 界面 main.mm", "只做了文本层静态检查", 1),
-    ("OpenSSL 后端", "缺 macOS 头，未编译", 0),
-    ("运行行为（收发/文件/语音）", "没有 Mac，未运行", 0),
+    ("Cocoa 界面真机编译 + 运行", "首次编译零报错，直接跑起来", 2),
+    ("登录 / 收发消息", "在 Mac 上与三个平台互发消息", 2),
+    ("四端同时在线互通", "Windows · Linux · macOS · Android 同服务器", 2),
+    ("附件传输", "文件在端之间传过", 2),
+    ("彩色文字", "色码在 mac 上显示正常", 2),
+    ("语音消息", "这一项没测，不做假设", 0),
 ]
-MAC_LEVEL_TEXT = {2: "已编译验证", 1: "部分检查", 0: "未验证"}
+MAC_LEVEL_TEXT = {2: "已验证", 1: "部分验证", 0: "未测"}
 
 
 def make_macos_verify_chart(path):
-    W, H = 2000, 900
+    # 高度按行数算：写死高度的话，行数从 5 加到 6 之后最后一行会被裁掉
+    # （第一版就是这么裁掉了"语音"那行和结论）。
+    W = 2000
+    H = 190 + 124 * len(MAC_VERIFY) + 90
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
     f_title = load_font(34, bold=True)
@@ -275,27 +280,27 @@ def make_macos_verify_chart(path):
     f_note = load_font(21)
     f_badge = load_font(20, bold=True)
 
-    d.text((90, 44), "macOS 端验证到了哪一步（不夸大）", font=f_title, fill=NAVY)
-    d.text((90, 96), "同一张图里的每一项都在仓库里有对应证据：脚本、错误信息或缺失的头文件",
+    d.text((90, 44), "macOS 端验证到了哪一步（真机实测之后）", font=f_title, fill=NAVY)
+    d.text((90, 96), "原先只做了静态验证，现已在 Mac 上真机跑通；下表按实际测过的范围标注",
            font=f_note, fill=GRAY)
 
     colors = {2: GREEN, 1: AMBER, 0: RED}
     fills = {2: GREEN_L, 1: AMBER_L, 0: RED_L}
-    y = 170
+    y = 168
     for label, detail, level in MAC_VERIFY:
-        d.rounded_rectangle((90, y, 1910, y + 118), radius=16, fill=fills[level],
+        d.rounded_rectangle((90, y, 1910, y + 104), radius=16, fill=fills[level],
                             outline=colors[level], width=3)
-        d.text((130, y + 26), label, font=f_row, fill=TEXT)
-        d.text((130, y + 68), detail, font=f_note, fill=GRAY)
+        d.text((130, y + 20), label, font=f_row, fill=TEXT)
+        d.text((130, y + 58), detail, font=f_note, fill=GRAY)
         # 右侧徽标
         badge = MAC_LEVEL_TEXT[level]
-        d.rounded_rectangle((1560, y + 30, 1870, y + 88), radius=14,
+        d.rounded_rectangle((1560, y + 26, 1870, y + 78), radius=14,
                             fill=colors[level])
-        d.text((1715, y + 59), badge, font=f_badge, fill=(255, 255, 255), anchor="mm")
-        y += 138
+        d.text((1715, y + 52), badge, font=f_badge, fill=(255, 255, 255), anchor="mm")
+        y += 124
 
-    d.text((90, 860),
-           "结论：能编的都编过了、能查的都查了，但 macOS 版本第一次在真机上编译大概率还需要修",
+    d.text((90, y + 26),
+           "结论：首次真机编译零报错，四端互通已验证；语音是唯一还没测的一项",
            font=f_note, fill=TEXT)
     img.save(path)
     return path
@@ -358,6 +363,79 @@ def make_layers_chart(path):
     return path
 
 
+# ---------------------------------------------------------------------------
+# 四端互通矩阵（实测：四端同时在线、互相都能看到消息，还传了附件）
+# ---------------------------------------------------------------------------
+# 行 = 谁发，列 = 谁收。2 = 实测互通；这一轮没测的组合一律留灰，**不做假设**。
+INTEROP_ROWS = ["Windows", "Linux", "macOS", "Android"]
+INTEROP_COLS = ["Windows", "Linux", "macOS", "Android"]
+INTEROP = {
+    ("Windows", "macOS"): 2, ("macOS", "Windows"): 2,
+    ("Linux", "macOS"): 2, ("macOS", "Linux"): 2,
+    ("Android", "macOS"): 2, ("macOS", "Android"): 2,
+}
+
+
+def make_interop_chart(path):
+    """互通矩阵：行=谁发，列=谁收。绿=实测互通，灰=这一轮没测（不做假设）。"""
+    W, H = 2000, 900
+    img = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(img)
+    f_title = load_font(34, bold=True)
+    f_note = load_font(21)
+    f_cell = load_font(23, bold=True)
+    f_axis = load_font(24, bold=True)
+
+    d.text((80, 40), "四端互通矩阵：实测过的组合", font=f_title, fill=NAVY)
+    d.text((80, 92), "四端同时在同一个服务器上，互相都能看到消息；附件也能在端之间传",
+           font=f_note, fill=GRAY)
+
+    left, top = 360, 200
+    cell_w, cell_h = 330, 130
+
+    for col_index, name in enumerate(INTEROP_COLS):
+        cx = left + col_index * cell_w + cell_w // 2
+        d.text((cx, top - 46), name, font=f_axis, fill=NAVY, anchor="mm")
+    d.text((left + 2 * cell_w + cell_w // 2, top - 108), "谁收 →", font=f_note, fill=GRAY,
+           anchor="mm")
+
+    for row_index, row in enumerate(INTEROP_ROWS):
+        cy = top + row_index * cell_h + cell_h // 2
+        d.text((left - 30, cy), row, font=f_axis, fill=NAVY, anchor="rm")
+        for col_index, col in enumerate(INTEROP_COLS):
+            x0 = left + col_index * cell_w
+            y0 = top + row_index * cell_h
+            if row == col:
+                d.rounded_rectangle((x0 + 8, y0 + 8, x0 + cell_w - 8, y0 + cell_h - 8),
+                                    radius=12, fill=(246, 247, 250), outline=GRID, width=2)
+                d.text((x0 + cell_w // 2, cy), "—", font=f_cell, fill=GRAY, anchor="mm")
+                continue
+            known = INTEROP.get((row, col), 0)
+            if known == 2:
+                d.rounded_rectangle((x0 + 8, y0 + 8, x0 + cell_w - 8, y0 + cell_h - 8),
+                                    radius=12, fill=GREEN_L, outline=GREEN, width=3)
+                # 注意：不要用 ✓ / ↔ 这类符号 —— 这套字体里没有，会显示成方框。
+                # 中文箭头 ← → 在同图别处已验证能正常渲染，所以统一用它们。
+                d.text((x0 + cell_w // 2, cy - 12), "已互通", font=f_cell, fill=GREEN,
+                       anchor="mm")
+                d.text((x0 + cell_w // 2, cy + 20), "已实测", font=f_note, fill=GREEN,
+                       anchor="mm")
+            else:
+                d.rounded_rectangle((x0 + 8, y0 + 8, x0 + cell_w - 8, y0 + cell_h - 8),
+                                    radius=12, fill=(246, 247, 250), outline=GRID, width=2)
+                d.text((x0 + cell_w // 2, cy), "这一轮没测", font=f_note, fill=GRAY,
+                       anchor="mm")
+
+    d.text((80, 790),
+           "已实测：macOS ←→ Windows / Linux / Android 双向互发，四端同时在线",
+           font=f_note, fill=GREEN)
+    d.text((80, 830),
+           "灰色格表示这一轮没测 —— 标出来比统一涂绿更有用：下一个要补的地方一目了然",
+           font=f_note, fill=GRAY)
+    img.save(path)
+    return path
+
+
 if __name__ == "__main__":
     import os
     out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -368,3 +446,4 @@ if __name__ == "__main__":
     print(make_registration_chart(os.path.join(out, "chart-registration.png")))
     print(make_macos_verify_chart(os.path.join(out, "chart-macos-verify.png")))
     print(make_layers_chart(os.path.join(out, "chart-layers.png")))
+    print(make_interop_chart(os.path.join(out, "chart-interop.png")))

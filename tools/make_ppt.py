@@ -600,6 +600,31 @@ def slide_rules(prs):
 
 
 
+def slide_interop(prs):
+    """四端互通：实测过的组合 + 这次真机验证补齐了什么。"""
+    slide = add_slide(prs, "四端互通：实测通过",
+                      "Windows · Linux · macOS · Android 同一个服务器，互相都能看到消息")
+    add_image_fit(slide, os.path.join(ASSETS, "chart-interop.png"), 0.45, 1.05, 12.5, 4.2)
+    card_text(slide, 0.6, 5.45, 4.0, 1.7, "这次补上了什么", [
+        "· macOS 首次真机编译：零报错",
+        "· 原先只做过静态验证（交叉编译）",
+        "· 现在补上了运行与互通验证",
+        "· 那张「不夸大」图已改成「已实测」",
+    ], accent=GREEN, fill=GREEN_L, title_size=13, body_size=11)
+    card_text(slide, 4.75, 5.45, 4.0, 1.7, "已验证的功能", [
+        "· 登录 / 收发消息（与三个平台双向互发）",
+        "· 四端同时在线，互相都看得到",
+        "· 附件（文件）在端之间传过",
+        "· 彩色文字在 mac 上显示正常",
+    ], accent=BLUE, fill=BLUE_L, title_size=13, body_size=11)
+    card_text(slide, 8.9, 5.45, 3.85, 1.7, "为什么不全部涂绿", [
+        "· 语音消息没测，那一行标红写「未测」",
+        "· 灰色格是这一轮没测的组合",
+        "· 标出来比统一涂绿更有用：",
+        "  下一个要补的地方一目了然",
+    ], accent=AMBER, fill=AMBER_L, title_size=13, body_size=11)
+    return slide
+
 def slide_unified(prs):
     """四端统一：会话逻辑只有一处实现 + 终端界面的真机测试。"""
     slide = add_slide(prs, "四端统一：会话逻辑只有一处实现",
@@ -613,8 +638,8 @@ def slide_unified(prs):
     ], accent=BLUE, fill=BLUE_L, title_size=13, body_size=11)
     card_text(slide, 4.75, 5.35, 4.0, 1.8, "界面终于能自动化测了", [
         "· 用伪终端（pty）驱动真客户端",
-        "· 24 项：收发 / Tab 补全 / 色码 / 退格删中文",
-        "· 还覆盖 Ctrl+U、↑ 翻历史、/clear、/quit",
+        "· 35 项：收发 / 补全 / 色码 / 退格删中文",
+        "· 还有附件（下载内容逐字节核对）与语音",
         "· 以前这块完全没有自动化覆盖",
     ], accent=GREEN, fill=GREEN_L, title_size=13, body_size=11)
     card_text(slide, 8.9, 5.35, 3.85, 1.8, "一个值得记的教训", [
@@ -805,6 +830,7 @@ def main():
     slide_perf_boundary(prs)
     slide_rules(prs)
     slide_unified(prs)
+    slide_interop(prs)
     slide_macos(prs)
     slide_bugs(prs)
     slide_ai_intro(prs)
