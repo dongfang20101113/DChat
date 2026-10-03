@@ -132,6 +132,19 @@ data class ChatState(
     val maxTextLength: Int = 0,
     /** maxtextlines：单条消息最大行数。 */
     val maxTextLines: Int = 0,
+    /**
+     * chatcolor：服务器允不允许彩色文字代码。关掉后聊天气泡里的色码**原样显示**
+     * （和桌面端同一条约定：用户打进去的字不该凭空消失）。
+     */
+    val chatColorEnabled: Boolean = true,
+
+    /** 取色盘是否打开（由 `/chatcolor choose` 翻起来，界面负责显示）。 */
+    val showColorPicker: Boolean = false,
+    /**
+     * 取色盘刚选好的色码：界面把它放进输入框，放完就清掉。
+     * **不直接发出去**——用户还要接着打字（和桌面端一致）。
+     */
+    val pendingColorCode: String? = null,
 
     /** 每条提示/消息产生时的本地时间（`hh:mm`），与桌面端"时间在产生那一刻固定"的做法一致。 */
     val nextKey: Long = 1L,
@@ -261,6 +274,7 @@ fun ChatState.reduce(line: ServerLine, nowTime: String): ChatState = when (line)
         downloadRateKbps = line.downloadRateKbps,
         maxTextLength = line.maxTextLength,
         maxTextLines = line.maxTextLines,
+        chatColorEnabled = line.chatColor,
     )
 
     is ServerLine.FileOffer -> if (items.any { it is ChatItem.FileItem && it.fileId == line.fileId }) {

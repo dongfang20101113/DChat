@@ -18,7 +18,7 @@
 28	6165	8126999532668433	CMakeFiles/dchat_protocol.dir/src/auth.cpp.obj	137b8c35de761c30
 58	6855	8126999532969553	CMakeFiles/dchat_ui.dir/src/image_preview.cpp.obj	c3b4a39305613a6f
 2518	2739	8127006723966128	libdchat_protocol.a	43bb5b39908a968
-2712	2826	8127089056294466	libdchat_ui.a	1e7ac2be428e8f02
+2231	2428	8127090875078815	libdchat_ui.a	1e7ac2be428e8f02
 2805	3322	8127006726834576	test_history.exe	a15309d5bf9d31f2
 2756	3326	8127006726345838	test_protocol.exe	bd388cc3e7898eb2
 2765	3327	8127006726435841	test_render.exe	1ed6555ac83bbc17
@@ -42,9 +42,9 @@
 63	7188	8126999533019717	CMakeFiles/dchat_ui.dir/src/voice_notes.cpp.obj	158242b0d8fa78b8
 6467	10557	8126999597063227	CMakeFiles/test_voice_notes.dir/tests/test_voice_notes.cpp.obj	8d5a7fdae51fdb5
 2853	3234	8127089057703399	test_voice_notes.exe	915b6ce356b78611
-11	145	8127089314629372	build.ninja	d48dc3669a8ff204
-11	145	8127089314592395	D:/codes/dchat/build/cmake_install.cmake	d48dc3669a8ff204
-11	145	8127089314602458	D:/codes/dchat/build/CTestTestfile.cmake	d48dc3669a8ff204
+11	145	8127090994048816	build.ninja	d48dc3669a8ff204
+11	145	8127090993998791	D:/codes/dchat/build/cmake_install.cmake	d48dc3669a8ff204
+11	145	8127090994008815	D:/codes/dchat/build/CTestTestfile.cmake	d48dc3669a8ff204
 6847	11441	8126999600860050	CMakeFiles/ui_mockup.dir/tools/ui_mockup.cpp.obj	e69e61593318d01c
 2912	3222	8127089058286576	ui_mockup.exe	9b0faf51164fc83b
 16	1550	8126999891340793	CMakeFiles/dchat_ui.dir/src/ui_layout.cpp.obj	dfbd09bb670a476d
@@ -55,9 +55,9 @@
 33	2299	8126447318336464	CMakeFiles/layout_probe.dir/tools/layout_probe.cpp.obj	e6d6cc2cc253450a
 3458	3613	8126447352575057	layout_probe.exe	f7696e5b55cf6fa0
 15	33	8126999532112096	clean	e371adebbde26dc9
-6635	9852	8126999598736890	CMakeFiles/test_chat_color.dir/tests/test_chat_color.cpp.obj	96a236b581936995
-80	6806	8126999533189549	CMakeFiles/dchat_ui.dir/src/chat_color.cpp.obj	cd8d823db6cb2baa
-2872	3166	8127089057890461	test_chat_color.exe	6f27a4f00e252941
+17	1411	8127090921314823	CMakeFiles/test_chat_color.dir/tests/test_chat_color.cpp.obj	96a236b581936995
+11	2231	8127090852875961	CMakeFiles/dchat_ui.dir/src/chat_color.cpp.obj	cd8d823db6cb2baa
+1412	1548	8127090935260698	test_chat_color.exe	6f27a4f00e252941
 25	486	8127006918231157	CMakeFiles/tab_probe.dir/tools/tab_probe.cpp.obj	53b7c13b770c5461
 486	630	8127006922848645	tab_probe.exe	c56d18d09a61df52
 17	2064	8127089029339142	CMakeFiles/dchat_ui.dir/src/color_picker.cpp.obj	372963627e151404
@@ -68,3 +68,9 @@
 22	2712	8127089029384143	CMakeFiles/dchat_ui.dir/src/picker_dialog.cpp.obj	3dbb9110d8090e
 34	2154	8127089029508021	CMakeFiles/picker_mockup.dir/tools/picker_mockup.cpp.obj	8bca8e80d596c2ea
 2892	3234	8127089058091143	picker_mockup.exe	216fe060629d1c2a
+39	1522	8127090995125270	CMakeFiles/cc_probe.dir/tools/cc_probe.cpp.obj	6f908aa6f7ac975d
+1522	1642	8127091009953939	cc_probe.exe	379f895d42258d1
+20	1850	8127091209203319	CMakeFiles/dchat_ui.dir/src/chat_color.cpp.obj	cd8d823db6cb2baa
+1851	1936	8127091227509363	libdchat_ui.a	1e7ac2be428e8f02
+1936	2070	8127091228363481	test_chat_color.exe	6f27a4f00e252941
+1944	2077	8127091228433478	cc_probe.exe	379f895d42258d1

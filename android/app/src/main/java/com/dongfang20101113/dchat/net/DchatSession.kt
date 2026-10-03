@@ -6,6 +6,7 @@ import android.os.Environment
 import android.provider.OpenableColumns
 import com.dongfang20101113.dchat.data.SettingsStore
 import com.dongfang20101113.dchat.protocol.AttachmentKind
+import com.dongfang20101113.dchat.protocol.ChatColor
 import com.dongfang20101113.dchat.protocol.FILE_CHUNK_BYTES
 import com.dongfang20101113.dchat.protocol.ServerLine
 import com.dongfang20101113.dchat.protocol.VoiceMessage
@@ -301,6 +302,10 @@ object DchatSession {
     fun sendMessage(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
+        // 本机指令（/chatcolor 等）就地处理，不发到服务器——
+        // 它们只是把色码放进输入框、或往记录区写帮助，不需要联网。
+        // 和桌面端 client.cpp 的 HandleLocalCommand 是同一条约定。
+        if (handleLocalCommand(trimmed)) return
         // 换行必须先转义才能过行式协议（否则会被 buildLine 丢掉），
         // 服务端的 maxtextlen / maxtextlines 也是按转义后的形态统计的。
         val escaped = escapeText(trimmed)
@@ -311,6 +316,50 @@ object DchatSession {
                 )
             }
         }
+    }
+
+    /**
+     * 本机指令：`/chatcolor`（也认 `/charcolor`、`/chatcolour`）。
+     *
+     * - 不带参数或 `help`：把色码对照表写进聊天记录（方便对照着打）
+     * - `choose`：请界面层弹取色盘（这里只翻一个标志位）
+     *
+     * 返回 true 表示这条已经处理掉了，不要再发服务器。
+     */
+    private fun handleLocalCommand(text: String): Boolean {
+        if (!text.startsWith("/")) return false
+        val body = text.substring(1)
+        val name = body.substringBefore(' ').lowercase()
+        val argument = if (body.contains(' ')) body.substringAfter(' ').trim() else ""
+        if (name !in setOf("chatcolor", "charcolor", "chatcolour", "color", "colour")) return false
+
+        when (argument.lowercase()) {
+            "", "help", "?", "列表" -> _state.value = _state.value.reduce(
+                ServerLine.Sys("", ChatColor.helpText()),
+                nowTime(),
+            )
+            "choose", "pick", "色板" -> _state.value = _state.value.copy(showColorPicker = true)
+            else -> _state.value = _state.value.reduce(
+                ServerLine.Error("", "用法：/chatcolor help 看色码表，/chatcolor choose 弹色板"),
+                nowTime(),
+            )
+        }
+        return true
+    }
+
+    /** 取色盘选完颜色后由界面调用：把色码记下来，界面负责放进输入框。 */
+    fun rememberPickedColor(code: String) {
+        _state.value = _state.value.copy(pendingColorCode = code, showColorPicker = false)
+    }
+
+    /** 取色盘被关掉（没选）。 */
+    fun dismissColorPicker() {
+        _state.value = _state.value.copy(showColorPicker = false)
+    }
+
+    /** 色码已经放进输入框了，清掉待处理标记（否则下一轮又会插一次）。 */
+    fun clearPendingColorCode() {
+        _state.value = _state.value.copy(pendingColorCode = null)
     }
 
     fun markRead() { _state.value = _state.value.copy(unread = 0) }

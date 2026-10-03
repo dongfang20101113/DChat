@@ -87,20 +87,21 @@ std::vector<ColorRun> ParseChatColors(const std::wstring& text, COLORREF default
                 i += length;
                 continue;
             }
-            // 色码本身不显示，只换色
-            if (!current.text.empty()) {
-                runs.push_back(current);
-                current = ColorRun{};
+            // 色码本身不显示，只换色。
+            // 到上限之后**不再新建片段**，但解析继续——剩下的文字仍要按色码切掉，
+            // 并进最后一段里。以前这里是 break + 把尾巴原样追加，结果色码被当成
+            // 文字显示出来（上限是防排版被拖慢的，不该改变显示出来的内容）。
+            if (runs.size() < maxSpans) {
+                if (!current.text.empty()) {
+                    runs.push_back(current);
+                    current = ColorRun{};
+                }
+                active = found;
+                activeSet = true;
+                current.color = active;
+                current.hasColor = true;
             }
-            active = found;
-            activeSet = true;
-            current.color = active;
-            current.hasColor = true;
             i += length;
-            if (runs.size() >= maxSpans) {
-                current.text.append(text, i, std::wstring::npos);
-                break;
-            }
             continue;
         }
         current.text.push_back(text[i]);

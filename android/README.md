@@ -76,7 +76,7 @@ $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.9.10-hotspot'
 $env:ANDROID_HOME = 'D:\codes\tools\android-sdk'
 cd D:\codes\dchat\android
 
-.\gradlew.bat test            # 跑全部单测（310 项）
+.\gradlew.bat test            # 跑全部单测（328 项）
 .\gradlew.bat assembleDebug   # 产出 app\build\outputs\apk\debug\app-debug.apk
 .\gradlew.bat assembleRelease # 产出已签名的 app-release.apk（签名配置见文末）
 ```
@@ -215,7 +215,21 @@ app/src/main/java/com/dongfang20101113/dchat/
 .\gradlew.bat test
 ```
 
-**310 项，覆盖 18 个测试类：**
+### 彩色文字代码（和桌面端同一套规则）
+
+聊天里可以给文字上色，两端规则**必须一致**（`protocol/ChatColor.kt` 对应桌面端 `src/chat_color.cpp`）：
+
+- `#rrggbb` 十六进制色码，例：`#ff0000红字`
+- `&0`~`&f` 快捷色码（16 色），例：`&c红字`
+- `&&` 表示一个字面的 `&`；认不出来的（如 `&z`）**原样显示**，不吞字
+- 色码之后到下一个色码为止都是那个颜色
+
+指令 `/chatcolor`（也认 `/charcolor`、`/chatcolour`）：不带参数或 `help` 把色码对照表写进记录区；
+`choose` 弹出**取色盘**（色相环 + 明度/饱和度方块），选好确定后把 `#rrggbb` **放进输入框**
+（不直接发出去，用户还要接着打字）。服务端用布尔规则 `chatcolor` 控制（默认开）；
+**关掉后色码原样显示**——用户打进去的字不会凭空消失。
+
+**328 项，覆盖 19 个测试类：**
 
 | 测试类 | 项数 | 覆盖什么 |
 | --- | --- | --- |

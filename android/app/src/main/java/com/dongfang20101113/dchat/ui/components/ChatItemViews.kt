@@ -26,12 +26,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.dongfang20101113.dchat.protocol.ChatColor
 import com.dongfang20101113.dchat.protocol.nickColorIndex
 import com.dongfang20101113.dchat.ui.ChatItem
 import com.dongfang20101113.dchat.ui.FileState
@@ -50,8 +56,28 @@ import com.dongfang20101113.dchat.voice.playbackFraction
  */
 
 /** 一条消息（气泡 + 表头）。 */
+/**
+ * 把一条消息的正文转成带颜色的 [AnnotatedString]。
+ *
+ * 色码规则在 [ChatColor]（和桌面端 `src/chat_color.cpp` 同一套）：
+ * - `enabled` 为假（服务器关掉彩色聊天）时，色码**原样显示**，不会被删掉
+ * - 解析不出片段时退回整段单色，绝不会把文字弄丢
+ */
+fun coloredText(text: String, defaultColor: Color, enabled: Boolean): AnnotatedString {
+    val spans = ChatColor.parse(text, defaultColor, enabled)
+    if (spans.size == 1 && !spans[0].hasColor) {
+        // 没有色码：直接用整段（省一次 AnnotatedString 构造）
+        return AnnotatedString(spans[0].text)
+    }
+    return buildAnnotatedString {
+        for (span in spans) {
+            withStyle(SpanStyle(color = span.color)) { append(span.text) }
+        }
+    }
+}
+
 @Composable
-fun SayRow(item: ChatItem.SayItem, metrics: ChatMetrics) {
+fun SayRow(item: ChatItem.SayItem, metrics: ChatMetrics, chatColorEnabled: Boolean = true) {
     val colors = LocalDchatColors.current
     val say = item.info
 
@@ -110,8 +136,10 @@ fun SayRow(item: ChatItem.SayItem, metrics: ChatMetrics) {
                 ),
         ) {
             Text(
-                text = say.text,
-                color = textColor,
+                // 彩色文字代码（#rrggbb / &a）在这里按片段上色。
+                // 服务器把彩色聊天关掉时 ChatColor.parse 会把色码**原样留在文字里**，
+                // 用户打进去的东西不会凭空消失（桌面端同一条约定）。
+                text = coloredText(say.text, textColor, chatColorEnabled),
                 fontSize = metrics.messageFontSp.sp,
                 // 长文本自动换行；超长单条由外层列表滚动，不做折叠（避免"点开才看得全"的困惑）
                 lineHeight = (metrics.messageFontSp + 6).sp,

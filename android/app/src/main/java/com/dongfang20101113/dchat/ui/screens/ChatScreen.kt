@@ -1,4 +1,4 @@
-﻿package com.dongfang20101113.dchat.ui.screens
+package com.dongfang20101113.dchat.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -117,6 +117,12 @@ fun ChatScreen(
     initialRecordingSeconds: Int? = null,
     /** 用户核对后接受服务器的新指纹（TOFU 警告条上的按钮）。 */
     onAcceptFingerprint: () -> Unit = {},
+    /** 取色盘选了颜色：把色码交给会话层（界面负责放进输入框）。 */
+    onPickColor: (String) -> Unit = {},
+    /** 取色盘关掉（没选）。 */
+    onDismissColorPicker: () -> Unit = {},
+    /** 上面那条色码已经放进输入框了，清掉待处理标记。 */
+    onColorCodeConsumed: () -> Unit = {},
 ) {
     val colors = LocalDchatColors.current
 
@@ -176,6 +182,9 @@ fun ChatScreen(
                     initialRecordingSeconds = initialRecordingSeconds,
                     voice = voice,
                     onAcceptFingerprint = onAcceptFingerprint,
+                    onPickColor = onPickColor,
+                    onDismissColorPicker = onDismissColorPicker,
+                    onColorCodeConsumed = onColorCodeConsumed,
                 )
                 MemberPane(
                     modifier = Modifier.width(metrics.memberPaneWidthDp!!.dp).fillMaxHeight(),
@@ -194,6 +203,9 @@ fun ChatScreen(
                     initialRecordingSeconds = initialRecordingSeconds,
                     voice = voice,
                     onAcceptFingerprint = onAcceptFingerprint,
+                    onPickColor = onPickColor,
+                    onDismissColorPicker = onDismissColorPicker,
+                    onColorCodeConsumed = onColorCodeConsumed,
                 )
             }
         }
@@ -222,11 +234,58 @@ private fun ChatPane(
     initialDraft: String = "",
     initialRecordingSeconds: Int? = null,
     onAcceptFingerprint: () -> Unit = {},
+    /** 取色盘选了颜色：把色码交给会话层（界面负责放进输入框）。 */
+    onPickColor: (String) -> Unit = {},
+    /** 取色盘关掉（没选）。 */
+    onDismissColorPicker: () -> Unit = {},
+    /** 上面那条色码已经放进输入框了，清掉待处理标记。 */
+    onColorCodeConsumed: () -> Unit = {},
 ) {
     val colors = LocalDchatColors.current
     var draft by remember { mutableStateOf(initialDraft) }
     var showMembers by remember { mutableStateOf(false) }
+    var showColorPicker by remember { mutableStateOf(false) }
+
+    // `/chatcolor choose` 会把 state.showColorPicker 翻起来 → 弹取色盘
+    LaunchedEffect(state.showColorPicker) {
+        if (state.showColorPicker) showColorPicker = true
+    }
+    if (showColorPicker) {
+        // 用 AlertDialog 这类系统对话框而不是自绘浮层：返回键、点外面关闭都由系统兜住
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = {
+                showColorPicker = false
+                onDismissColorPicker()
+            },
+            confirmButton = {},
+            text = {
+                com.dongfang20101113.dchat.ui.components.ColorPickerPanel(
+                    initial = com.dongfang20101113.dchat.protocol.ChatColor.parseHex(
+                        draft.substringBefore(' ').takeIf { it.startsWith("#") } ?: "",
+                    ) ?: androidx.compose.ui.graphics.Color.White,
+                    onPicked = { color ->
+                        showColorPicker = false
+                        onPickColor(com.dongfang20101113.dchat.protocol.ChatColor.toHex(color))
+                    },
+                )
+            },
+        )
+    }
     val listState = rememberLazyListState()
+
+    // 取色盘选好的色码：放进输入框（**不直接发出去**，用户还要接着打字）。
+    // 和桌面端一致：还没确定就再选一次的话，上一次那段色码会被这次覆盖，不会越堆越长。
+    var lastPickedCode by remember { mutableStateOf("") }
+    LaunchedEffect(state.pendingColorCode) {
+        val code = state.pendingColorCode ?: return@LaunchedEffect
+        var text = draft
+        if (lastPickedCode.isNotEmpty()) {
+            text = text.replaceFirst(lastPickedCode, "")
+        }
+        draft = code + text
+        lastPickedCode = code
+        onColorCodeConsumed()
+    }
 
     // 新消息到达时自动滚到底（只在底部跟随，不打断往上翻历史）
     LaunchedEffect(state.items.size) {
@@ -291,7 +350,7 @@ private fun ChatPane(
         ) {
             items(state.items, key = { it.key }) { item ->
                 when (item) {
-                    is ChatItem.SayItem -> SayRow(item, metrics)
+                    is ChatItem.SayItem -> SayRow(item, metrics, state.chatColorEnabled)
                     is ChatItem.NoticeItem -> NoticeRow(item, metrics)
                     is ChatItem.FileItem ->
                         // 三种附件走**同一个传输通道**，区别只在这里：

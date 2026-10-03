@@ -159,4 +159,24 @@ class ServerLineTest {
         assertTrue(ServerLine.parse("") is ServerLine.Unknown)
         assertTrue(ServerLine.parse("   ") is ServerLine.Unknown)
     }
+
+    @Test
+    fun `RULES 的 chatcolor 是具名字段_按名字读而不是按位置`() {
+        // 桌面端把 chatcolor 写成 `chatcolor=1|0` 追加在行尾，**刻意不挤占位置序列**，
+        // 这样服务端以后再插字段也不会读错（安卓这边必须按名字找）。
+        val line = ServerLine.parse("RULES 64 0 0 0 0 0 0 chatcolor=0")
+        assertTrue("应当解析成 Rules，实际 $line", line is ServerLine.Rules)
+        assertFalse("chatcolor=0 应当读成不允许彩色", (line as ServerLine.Rules).chatColor)
+
+        val on = ServerLine.parse("RULES 64 0 0 0 0 0 0 chatcolor=1")
+        assertTrue((on as ServerLine.Rules).chatColor)
+    }
+
+    @Test
+    fun `老服务器不发 chatcolor 时默认允许彩色`() {
+        // 只发 3 个字段的老服务器：不能因为缺字段就解析失败或默认关掉
+        val line = ServerLine.parse("RULES 64 0 1")
+        assertTrue(line is ServerLine.Rules)
+        assertTrue("缺字段时默认允许", (line as ServerLine.Rules).chatColor)
+    }
 }

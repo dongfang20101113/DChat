@@ -63,6 +63,14 @@ sealed interface ServerLine {
         val maxTextLength: Int = 0,
         /** maxtextlines：单条消息最大行数，0 = 不限制。 */
         val maxTextLines: Int = 0,
+        /**
+         * chatcolor：聊天里能不能用彩色文字代码（`#rrggbb` / `&a`）。
+         *
+         * 这是**具名字段**（服务端写成 `chatcolor=1|0` 追加在行尾），不是位置字段——
+         * 以后服务端再加字段也不会读错位置。默认 true（老服务器不发 = 允许）。
+         * 关掉后客户端**把色码原样显示**，不是把它删掉。
+         */
+        val chatColor: Boolean = true,
     ) : ServerLine
 
     /** `FILE_OFFER <时间> <昵称> <文件ID> <文件名B64> <字节数> [1]` —— 第 5 个字段为 `1` 表示带缩略图。 */
@@ -199,6 +207,15 @@ sealed interface ServerLine {
             // 服务端只追加不重排，所以前 3 个字段的位置永远不变。
             fun optional(index: Int): Int = words.getOrNull(index)?.toIntOrNull() ?: 0
 
+            // chatcolor 是**具名字段**（追加在行尾，形如 chatcolor=0），按名字找。
+            // 按位置读的话，服务端以后再插字段就会读错。
+            var chatColor = true
+            for (word in words) {
+                if (word.startsWith("chatcolor=")) {
+                    chatColor = word.removePrefix("chatcolor=") != "0"
+                }
+            }
+
             return Rules(
                 documentSizeMb = mb,
                 chatIntervalMs = interval,
@@ -207,6 +224,7 @@ sealed interface ServerLine {
                 downloadRateKbps = optional(4),
                 maxTextLength = optional(5),
                 maxTextLines = optional(6),
+                chatColor = chatColor,
             )
         }
 

@@ -715,6 +715,45 @@ build picker_mockup.exe: CXX_EXECUTABLE_LINKER__picker_mockup_Release CMakeFiles
   TARGET_SUPPORT_DIR = CMakeFiles\picker_mockup.dir
 
 # =============================================================================
+# Object build statements for EXECUTABLE target cc_probe
+
+
+#############################################
+# Order-only phony target for cc_probe
+
+build cmake_object_order_depends_target_cc_probe: phony || cmake_object_order_depends_target_dchat_ui
+
+build CMakeFiles/cc_probe.dir/tools/cc_probe.cpp.obj: CXX_COMPILER__cc_probe_unscanned_Release D$:/codes/dchat/tools/cc_probe.cpp || cmake_object_order_depends_target_cc_probe
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\cc_probe.dir\tools\cc_probe.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\cc_probe.dir
+  OBJECT_FILE_DIR = CMakeFiles\cc_probe.dir\tools
+  TARGET_SUPPORT_DIR = CMakeFiles\cc_probe.dir
+
+
+# =============================================================================
+# Link build statements for EXECUTABLE target cc_probe
+
+
+#############################################
+# Link the executable cc_probe.exe
+
+build cc_probe.exe: CXX_EXECUTABLE_LINKER__cc_probe_Release CMakeFiles/cc_probe.dir/tools/cc_probe.cpp.obj | libdchat_ui.a || libdchat_ui.a
+  CONFIG = Release
+  FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
+  LINK_LIBRARIES = libdchat_ui.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lwinmm  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  OBJECT_DIR = CMakeFiles\cc_probe.dir
+  POST_BUILD = cd .
+  PRE_LINK = cd .
+  TARGET_FILE = cc_probe.exe
+  TARGET_IMPLIB = libcc_probe.dll.a
+  TARGET_PDB = cc_probe.exe.dbg
+  TARGET_SUPPORT_DIR = CMakeFiles\cc_probe.dir
+
+# =============================================================================
 # Object build statements for EXECUTABLE target icon_probe
 
 
@@ -1064,6 +1103,8 @@ build rebuild_cache: phony CMakeFiles/rebuild_cache.util
 # =============================================================================
 # Target aliases.
 
+build cc_probe: phony cc_probe.exe
+
 build dchat_client: phony dchat_client.exe
 
 build dchat_protocol: phony libdchat_protocol.a
@@ -1116,7 +1157,7 @@ build ui_mockup: phony ui_mockup.exe
 #############################################
 # Folder: D:/codes/dchat/build
 
-build all: phony libdchat_protocol.a dchat_server.exe libdchat_ui.a dchat_client.exe test_protocol.exe test_render.exe test_rounded.exe test_bubble.exe test_image_preview.exe test_voice_notes.exe test_ui_layout.exe test_chat_color.exe test_color_picker.exe picker_mockup.exe icon_probe.exe ui_mockup.exe test_server_rules.exe test_history.exe test_server_command.exe test_auth.exe test_file_transfer.exe test_crypto.exe
+build all: phony libdchat_protocol.a dchat_server.exe libdchat_ui.a dchat_client.exe test_protocol.exe test_render.exe test_rounded.exe test_bubble.exe test_image_preview.exe test_voice_notes.exe test_ui_layout.exe test_chat_color.exe test_color_picker.exe picker_mockup.exe cc_probe.exe icon_probe.exe ui_mockup.exe test_server_rules.exe test_history.exe test_server_command.exe test_auth.exe test_file_transfer.exe test_crypto.exe
 
 # =============================================================================
 # Built-in targets

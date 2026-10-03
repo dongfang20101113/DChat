@@ -89,6 +89,10 @@ private fun DchatRoot() {
                 onStartVoice = DchatSession::beginVoiceRecording,
                 onStopVoice = DchatSession::finishVoiceRecording,
                 onCancelVoice = DchatSession::cancelVoiceRecording,
+                // 取色盘：选好的色码交给会话层，界面负责放进输入框（不直接发出去）
+                onPickColor = DchatSession::rememberPickedColor,
+                onDismissColorPicker = DchatSession::dismissColorPicker,
+                onColorCodeConsumed = DchatSession::clearPendingColorCode,
             )
         }
     }

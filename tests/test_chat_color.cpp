@@ -123,6 +123,19 @@ int main() {
         check(help.find(L"#ff0000") != std::wstring::npos, "帮助里列出了快捷码对应的十六进制");
     }
 
+    // ---- 片段上限：达到上限后剩下的文字**不能丢** ----
+    {
+        std::wstring many;
+        for (int i = 0; i < 500; ++i) many += L"#ff0000a";
+        const std::vector<ColorRun> runs = ParseChatColors(many, RGB(0, 0, 0), true, 8);
+        check(runs.size() <= 10, "片段数受上限限制");
+        std::wstring joined;
+        for (const ColorRun& run : runs) joined += run.text;
+        // 上限是防止排版被拖慢，不该顺手吃掉用户的内容
+        std::wstring expected(500, L'a');
+        check(joined == expected, "达到上限后剩下的文字一个字都没丢");
+    }
+
     // ---- 快捷色码唯一性 ----
     {
         bool unique = true;
