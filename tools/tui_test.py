@@ -264,6 +264,85 @@ def main():
     check("/send 不存在的文件要报错而不是静默", "失败" in alice.visible(),
           alice.visible()[-300:])
 
+    # ---- 附件：上传 -> 对方收到卡片 -> 下载 ----
+    # 用一个真实临时文件（内容要能在下载后核对）
+    import tempfile
+    global ATTFILE, ATTDIR
+    ATTDIR = tempfile.mkdtemp(prefix="dchat-att-")
+    ATTFILE = os.path.join(ATTDIR, "测试附件.txt")
+    with open(ATTFILE, "w", encoding="utf-8") as fh:
+        fh.write("这是附件内容 attachment-payload-42")
+
+    reset(bob)
+    reset(alice)
+    alice.send("/send " + ATTFILE + "\r")
+    alice.read(1.2)
+    # 附件卡片会广播给所有人（含发送者）；从 bob 那边看更干净
+    card = received_by(bob, 1.5)
+    match = re.search(r"\bF\d+\b", card)
+    check("/send 之后对方收到附件卡片（含附件 id）", match is not None,
+          repr(card[-300:]))
+    att_id = match.group(0) if match else None
+    check("卡片里能看到文件名", "测试附件" in card, repr(card[-300:]))
+    check("alice 这边确认上传成功", "已上传" in alice.visible(), repr(alice.visible()[-200:]))
+
+    if att_id:
+        # bob 下载：要验证落盘内容正确（这才是"附件真的能用"的证据）
+        bob.send("/get " + att_id + "\r")
+        bob.read(2.0)
+        check("/get 有反馈", ("已请求下载" in bob.visible()) or
+              ("下载" in bob.visible()), repr(bob.visible()[-300:]))
+        # 等下载落盘并核对内容
+        import glob
+        found = None
+        deadline = time.time() + 6
+        while time.time() < deadline and not found:
+            for path in glob.glob(os.path.join(ATTDIR, "**", "*"), recursive=True) + \
+                        glob.glob(os.path.expanduser("~/dchat-build/work/out/dchat-downloads/*")):
+                if os.path.isfile(path) and "测试附件" in os.path.basename(path):
+                    found = path
+                    break
+            if not found:
+                time.sleep(0.3)
+        check("下载的文件真的落盘了", found is not None, "没找到下载文件")
+        if found:
+            with open(found, encoding="utf-8") as fh:
+                content = fh.read()
+            check("下载内容与上传内容完全一致", "attachment-payload-42" in content,
+                  repr(content[:120]))
+
+    # ---- 语音 ----
+    # 实测发现：这台 VM 虽然**没有麦克风输入**，但 /dev/snd 里有 controlC0，
+    # 所以 arecord 能起来、也会产出 wav（内容基本是静音）。也就是说语音这条
+    # **完整路径能在这里跑通**，不是"只能测错误提示"。
+    # （第一版我按"必然失败"写断言，把成功当成了 bug。）
+    reset(alice)
+    alice.send("/voice\r")
+    alice.read(1.5)
+    voice_out = alice.visible()
+    started = "正在录音" in voice_out
+    refused = ("录不了音" in voice_out) or ("没有可用的音频设备" in voice_out) or \
+              ("找不到" in voice_out)
+    check("/voice 要么开始录音、要么给一句可读的拒绝（不能静默）",
+          started or refused, repr(voice_out[-300:]))
+    check("/voice 的输出里没有乱码", "\ufffd" not in voice_out, repr(voice_out[-200:]))
+
+    if started:
+        # 录一小段然后停：验证"录音 -> 停 -> 上传"整条链路
+        time.sleep(1.2)
+        reset(alice)
+        reset(bob)
+        alice.send("/voice\r")          # 再敲一次 = 停
+        alice.read(2.5)
+        stopped = alice.visible()
+        check("再敲 /voice 会停止并给出录音时长", "录好了" in stopped,
+              repr(stopped[-250:]))
+        check("语音上传有结果（成功或明确失败）",
+              ("语音已发出" in stopped) or ("语音发送失败" in stopped),
+              repr(stopped[-250:]))
+        check("bob 能收到语音附件卡片", "voice" in received_by(bob, 1.5).lower(),
+              repr(received_by(bob, 0.5)[-200:]))
+
     # ---- /quit ----
     alice.buffer = ""
     alice.send("/quit\r")
