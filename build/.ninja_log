@@ -42,9 +42,9 @@
 63	7188	8126999533019717	CMakeFiles/dchat_ui.dir/src/voice_notes.cpp.obj	158242b0d8fa78b8
 43	2647	8127113430693941	CMakeFiles/test_voice_notes.dir/tests/test_voice_notes.cpp.obj	b8ca406e0beffa23
 2647	2791	8127113456738549	test_voice_notes.exe	915b6ce356b78611
-5	265	8127119564541986	build.ninja	d48dc3669a8ff204
-5	265	8127119564496633	D:/codes/dchat/build/cmake_install.cmake	d48dc3669a8ff204
-5	265	8127119564506624	D:/codes/dchat/build/CTestTestfile.cmake	d48dc3669a8ff204
+5	265	8127127300578240	build.ninja	d48dc3669a8ff204
+5	265	8127127300541820	D:/codes/dchat/build/cmake_install.cmake	d48dc3669a8ff204
+5	265	8127127300558227	D:/codes/dchat/build/CTestTestfile.cmake	d48dc3669a8ff204
 6847	11441	8126999600860050	CMakeFiles/ui_mockup.dir/tools/ui_mockup.cpp.obj	e69e61593318d01c
 82	653	8127113431086650	ui_mockup.exe	9b0faf51164fc83b
 16	1550	8126999891340793	CMakeFiles/dchat_ui.dir/src/ui_layout.cpp.obj	dfbd09bb670a476d
@@ -72,3 +72,8 @@
 1944	2077	8127091228433478	cc_probe.exe	379f895d42258d1
 68	3103	8127111773101408	CMakeFiles/dchat_protocol.dir/src/crypto_backend_win.cpp.obj	163132622f295c39
 21	2358	8127111772636014	CMakeFiles/dchat_protocol.dir/src/socket_util.cpp.obj	3173d3a0be4a3a62
+3	162	8127127300578240	build.ninja	d48dc3669a8ff204
+3	162	8127127300578240	D:/codes/dchat/build/cmake_install.cmake	d48dc3669a8ff204
+3	162	8127127300578240	D:/codes/dchat/build/CTestTestfile.cmake	d48dc3669a8ff204
+32	5020	8127127301169145	CMakeFiles/dchat_server.dir/src/server.cpp.obj	892b5f4f55942401
+6	270	8127127528986611	dchat_server.exe	f2d6707a8427c05d

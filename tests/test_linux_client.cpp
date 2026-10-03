@@ -7,6 +7,8 @@
 #include <vector>
 
 #include "chat_color.h"
+#include "file_transfer.h"
+#include "files_parse.h"
 #include "server_command.h"
 #include "trust.h"
 
@@ -161,6 +163,44 @@ int main() {
         check(hasChatColor, "指令表里有 chatcolor（Tab 能补出来）");
     }
 
+    {
+        std::printf("[9] 附件（FILE_OFFER）解析\n");
+        // 服务器实际发的格式：**第一格是上传者**。第一版漏了它，把昵称当成附件 ID，
+        // 表现是"附件卡片不显示"——所以这条必须有测试。
+        const std::string real = "FILE_OFFER 02:32 alice F1 " +
+                                 dchat::Base64Encode(std::string("报告.pdf")) + " 123456 0 0";
+        const dchat::FileOffer parsed = dchat::ParseFileOffer(real);
+        check(parsed.valid, "能解析服务器发的 FILE_OFFER");
+        check(parsed.owner == "alice", "上传者解析成 alice（不是被当成 ID）");
+        check(parsed.id == "F1", "附件 ID 是 F1");
+        check(parsed.name == "报告.pdf", "文件名从 Base64 解出来");
+        check(parsed.size == 123456, "字节数正确");
+        check(!parsed.IsVoice(), "没有种类 -> 普通文件");
+        check(!parsed.hasThumbnail, "缩略图标记 0");
+
+        // 不带上传者的老写法也要能解析
+        const std::string old = "FILE_OFFER F2 " +
+                                dchat::Base64Encode(std::string("a.txt")) + " 10";
+        const dchat::FileOffer parsedOld = dchat::ParseFileOffer(old);
+        check(parsedOld.valid, "不带上传者的写法也能解析");
+        check(parsedOld.id == "F2" && parsedOld.name == "a.txt", "老写法字段正确");
+
+        // 种类在最后一格：voice 要认出来（安卓录的是 .m4a、桌面是 .wav，不能看扩展名）
+        const std::string voice = "FILE_OFFER bob F3 " +
+                                  dchat::Base64Encode(std::string("voice.wav")) + " 5000 0 voice";
+        const dchat::FileOffer parsedVoice = dchat::ParseFileOffer(voice);
+        check(parsedVoice.valid && parsedVoice.IsVoice(), "voice 种类被认成语音");
+
+        // 残缺的行不能崩，也不能当成有效
+        check(!dchat::ParseFileOffer("FILE_OFFER F4").valid, "字段不够 -> 无效");
+        check(!dchat::ParseFileOffer("FILE_OFFER F5 !!!notbase64!!! 10").valid,
+              "文件名字段不是 Base64 -> 无效");
+        check(!dchat::ParseFileOffer("FILE_OFFER F6 " +
+                                     dchat::Base64Encode(std::string("x.txt")) + " 0")
+                   .valid,
+              "0 字节 -> 无效（协议不接受空附件）");
+        check(!dchat::ParseFileOffer("").valid, "空行 -> 无效");
+    }
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

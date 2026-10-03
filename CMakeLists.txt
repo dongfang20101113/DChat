@@ -159,16 +159,20 @@ if(NOT WIN32)
         linux/client/trust.cpp
         linux/client/terminal.cpp
         linux/client/chat_color.cpp
+        linux/client/files.cpp
+        linux/client/files_parse.cpp
         linux/client/ui.cpp)
     target_link_libraries(dchat_client_linux PRIVATE dchat_protocol Threads::Threads)
     target_include_directories(dchat_client_linux PRIVATE linux/client)
 
-    # Linux 客户端纯逻辑部分的测试（色码解析 / TOFU / 补全）。
+    # Linux 客户端纯逻辑部分的测试（色码解析 / TOFU / 附件解析）。
     # 这几块错了不会报错，只会"显示不对"或"安全判定悄悄错"，所以单独钉住。
+    # 注意只链纯逻辑文件：files.cpp 依赖 net.cpp，进测试目标会缺符号。
     add_executable(test_linux_client
         tests/test_linux_client.cpp
         linux/client/chat_color.cpp
-        linux/client/trust.cpp)
+        linux/client/trust.cpp
+        linux/client/files_parse.cpp)
     target_link_libraries(test_linux_client PRIVATE dchat_protocol)
     target_include_directories(test_linux_client PRIVATE linux/client)
 endif()

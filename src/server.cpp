@@ -1491,6 +1491,20 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
                       client.get());
             Log("file stored: id=" + fileId + " owner=" + client->nick + " " + showName + "（" +
                 dchat::FormatBytes(upload->data.size()) + "）");
+            // **也要告诉上传者它的附件 ID。**
+            //
+            // 以前这里只 Broadcast 给别人（except = 上传者），结果上传者自己拿不到
+            // 服务器分配的 ID：Linux 客户端上传完想再 /get 下来验证一下就做不到，
+            // 用户也会问"我刚传的文件 id 是多少"。服务器分配 ID（形如 F1），
+            // 客户端无从猜测，所以必须回一条。
+            //
+            // 用**和广播完全相同的命令与字段顺序**，只是把接收者换成上传者：
+            // 另外两端的界面本来就按"有人上传好了"处理 FILE_OFFER，
+            // 显示出来正好是"文件已上传（自己传的）"，语义正确、解析零改动。
+            client->SendLine(Timed("FILE_OFFER",
+                                   client->nick + " " + fileId + " " + upload->nameB64 + " " +
+                                       std::to_string(upload->data.size()) + " " +
+                                       (upload->thumb.empty() ? "0" : "1") + " " + upload->kind));
             return true;
         }
 

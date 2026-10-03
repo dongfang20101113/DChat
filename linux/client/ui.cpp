@@ -35,12 +35,18 @@ int EncodeSequence(const char* text) {
 
 }  // namespace
 
-ChatUi::ChatUi(ClientConnection* connection, Terminal* terminal)
-    : connection_(connection), terminal_(terminal) {}
+ChatUi::ChatUi(ClientConnection* connection, Terminal* terminal, FileTransfers* files)
+    : connection_(connection), terminal_(terminal), files_(files) {}
 
 void ChatUi::SetSelfNick(const std::string& nick) { selfNick_ = nick; }
 
 void ChatUi::SetOnlineNicks(const std::vector<std::string>& nicks) { onlineNicks_ = nicks; }
+
+void ChatUi::ShowStatus(const std::string& text) {
+    // 接收线程调过来的：PrintAbove 只碰 stdout 和输入行，不碰别的状态，
+    // 所以这里不需要额外加锁（界面主线程也在跑，但两者都只做"擦行+打印"）
+    PrintLine(text);
+}
 
 void ChatUi::PrintLine(const std::string& text) {
     // 历史区输出和输入行是"抢"同一块终端的：必须先把输入行擦掉再打印，
@@ -192,7 +198,45 @@ bool ChatUi::HandleLocalCommand(const std::string& text) {
             }
         }
         if (row.size() > 2) PrintLine(row);
-        PrintLine("  本地指令：/quit 退出  /clear 清屏  /me <动作> 仅本机显示");
+        PrintLine("  本地指令：/send <路径> 发文件  /get <id> 下载附件");
+        PrintLine("            /quit 退出  /clear 清屏  /chatcolor on|off 彩色开关");
+        return true;
+    }
+    if (name == "/send") {
+        const std::string path =
+            space == std::string::npos ? std::string() : text.substr(space + 1);
+        if (path.empty()) {
+            PrintLine("用法：/send <文件路径> [voice|sticker]");
+            return true;
+        }
+        PrintLine("正在上传 " + path + " …");
+        std::string error;
+        const std::string localId = files_->Upload(path, std::string(), &error);
+        if (localId.empty()) {
+            PrintLine("\x1b[31m上传失败：" + error + "\x1b[0m");
+        } else {
+            // 服务器会自己分配附件 ID（形如 F1）并在 FILE_OFFER 里广播回来；
+            // 那条广播很快就会到，界面上会显示正确的 /get id
+            const std::string serverId = files_->ServerIdFor(localId);
+            PrintLine(serverId.empty()
+                          ? "✅ 文件已上传，等服务器确认附件 id…"
+                          : ("✅ 文件已上传（id=" + serverId + "），可以 /get " + serverId +
+                             " 下载"));
+        }
+        return true;
+    }
+    if (name == "/get") {
+        const std::string id = space == std::string::npos ? std::string() : text.substr(space + 1);
+        if (id.empty()) {
+            PrintLine("用法：/get <附件 id>（收到附件时消息里会带 id）");
+            return true;
+        }
+        std::string error;
+        if (!files_->RequestDownload(id, &error)) {
+            PrintLine("\x1b[31m下载请求失败：" + error + "\x1b[0m");
+        } else {
+            PrintLine("已请求下载 " + id + "，保存到 " + files_->DownloadDir() + "/");
+        }
         return true;
     }
     if (name == "/clear") {

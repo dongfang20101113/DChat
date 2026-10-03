@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "files.h"
+#include "files_parse.h"
 #include "net.h"
 #include "server_command.h"
 #include "terminal.h"
@@ -12,7 +14,7 @@ namespace dchat {
 
 class ChatUi {
 public:
-    ChatUi(ClientConnection* connection, Terminal* terminal);
+    ChatUi(ClientConnection* connection, Terminal* terminal, FileTransfers* files);
 
     /** 登录后服务器会告诉我们昵称（用于 @我 高亮和 Tab 补全排除自己）。 */
     void SetSelfNick(const std::string& nick);
@@ -21,6 +23,9 @@ public:
     void HandleServerLine(const std::string& line);
 
     void SetOnlineNicks(const std::vector<std::string>& nicks);
+
+    /** 从别的线程（接收线程）打一行状态出来。 */
+    void ShowStatus(const std::string& text);
 
     /** 跑主循环，返回进程退出码。 */
     int Run();
@@ -32,6 +37,7 @@ private:
     bool HandleLocalCommand(const std::string& text);
 
     ClientConnection* connection_ = nullptr;
+    FileTransfers* files_ = nullptr;
     Terminal* terminal_ = nullptr;
     std::string selfNick_;
     std::string input_;

@@ -10,7 +10,6 @@
 //   2. 交互模式（不带 --send 时）：连上登录后进终端聊天界面（见 ui.cpp）。
 #include <chrono>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -24,6 +23,7 @@
 #include "file_transfer.h"
 #include "net.h"
 #include "protocol.h"
+#include "files.h"
 #include "terminal.h"
 #include "ui.h"
 #include "render.h"  // SayInfo / ParseSay：把 SAY 行拆成昵称与正文
@@ -287,8 +287,17 @@ int main(int argc, char** argv) {
     }
     if (options.send.empty()) {
         dchat::Terminal terminal;
-        dchat::ChatUi ui(&connection, &terminal);
-        connection.StartReceiveLoop([&ui](const std::string& line) { ui.HandleServerLine(line); });
+        dchat::FileTransfers files(&connection);
+        dchat::ChatUi ui(&connection, &terminal, &files);
+        connection.StartReceiveLoop([&ui, &files, &terminal](const std::string& line) {
+            // 文件相关的行先给文件模块，它认领了就不到界面去
+            if (files.HandleLine(line, [&ui](const std::string& text) {
+                    ui.ShowStatus(text);
+                })) {
+                return;
+            }
+            ui.HandleServerLine(line);
+        });
         // 交互模式下由主循环负责发送登录请求
         if (!options.user.empty()) {
             const std::string command = options.wantRegister ? "REGISTER" : "LOGIN";
