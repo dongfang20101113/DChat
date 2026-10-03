@@ -16,7 +16,9 @@
 
 #include <windowsx.h>  // GET_X_LPARAM / GET_Y_LPARAM
 
+#include <algorithm>
 #include <cmath>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -34,6 +36,7 @@ constexpr DWORD kPickerStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU;
 constexpr DWORD kPickerExStyle = WS_EX_DLGMODALFRAME;
 
 constexpr int kPickerOkId = 301;
+constexpr int kPickerCancelId = 302;
 
 // 字体由客户端设进来；单独出图时用系统默认字体
 HFONT g_pickFont = nullptr;
@@ -41,6 +44,11 @@ HFONT g_pickFontSmall = nullptr;
 
 HFONT PickFont() { return g_pickFont; }
 HFONT PickFontSmall() { return g_pickFontSmall ? g_pickFontSmall : g_pickFont; }
+
+// 自绘按钮：**按窗口记原来的过程**。主界面用过一个全局 WNDPROC，被后来的控件覆盖掉，
+// 结果所有按钮都不画（踩过这个坑，这里不再犯）。
+std::map<HWND, WNDPROC> g_pickerButtons;
+std::map<HWND, bool> g_pickerHover;
 
 void DrawTextAt(HDC dc, const std::wstring& text, const RECT& rect, HFONT font, COLORREF color,
                 UINT flags) {
@@ -53,6 +61,57 @@ void DrawTextAt(HDC dc, const std::wstring& text, const RECT& rect, HFONT font, 
     SetBkMode(dc, oldMode);
     if (oldFont) SelectObject(dc, oldFont);
 }
+
+void DrawPickerButton(const DRAWITEMSTRUCT* item) {
+    if (!item) return;
+    const RECT rect = item->rcItem;
+    const bool pressed = (item->itemState & ODS_SELECTED) != 0;
+    const bool hover = g_pickerHover[item->hwndItem];
+    const bool accent = item->CtlID == static_cast<UINT>(kPickerOkId);
+    COLORREF fill = accent ? RGB(0, 120, 215) : RGB(52, 54, 58);
+    if (pressed) {
+        fill = RGB(GetRValue(fill) * 8 / 10, GetGValue(fill) * 8 / 10, GetBValue(fill) * 8 / 10);
+    } else if (hover) {
+        fill = RGB((std::min)(255, GetRValue(fill) + 18), (std::min)(255, GetGValue(fill) + 18),
+                   (std::min)(255, GetBValue(fill) + 18));
+    }
+    ui::DrawRoundedControl(item->hDC, rect, 6, kPickerBg, fill,
+                           accent ? RGB(0, 100, 180) : kPickerBorder, kPickerBg);
+    wchar_t label[64] = {0};
+    GetWindowTextW(item->hwndItem, label, 64);
+    DrawTextAt(item->hDC, label, rect, PickFont(), accent ? RGB(255, 255, 255) : kPickerText,
+               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+}
+
+LRESULT CALLBACK PickerButtonProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_MOUSEMOVE:
+            if (!g_pickerHover[hwnd]) {
+                g_pickerHover[hwnd] = true;
+                InvalidateRect(hwnd, nullptr, TRUE);
+            }
+            break;
+        case WM_MOUSELEAVE:
+            g_pickerHover[hwnd] = false;
+            InvalidateRect(hwnd, nullptr, TRUE);
+            break;
+        case WM_NCDESTROY: {
+            const auto it = g_pickerButtons.find(hwnd);
+            const WNDPROC previous = it == g_pickerButtons.end() ? nullptr : it->second;
+            g_pickerButtons.erase(hwnd);
+            g_pickerHover.erase(hwnd);
+            return previous ? CallWindowProcW(previous, hwnd, msg, wp, lp)
+                            : DefWindowProcW(hwnd, msg, wp, lp);
+        }
+        default:
+            break;
+    }
+    const auto it = g_pickerButtons.find(hwnd);
+    if (it == g_pickerButtons.end() || !it->second) return DefWindowProcW(hwnd, msg, wp, lp);
+    return CallWindowProcW(it->second, hwnd, msg, wp, lp);
+}
+
+
 struct ColorPickerState {
     COLORREF chosen = RGB(255, 255, 255);   // 当前选中的颜色
     COLORREF original = RGB(255, 255, 255); // 打开时的颜色（对比用）
@@ -156,12 +215,20 @@ void DrawPickerPanel(HDC dc, const PickerGeometry& geometry, const ColorPickerSt
         graphics.DrawEllipse(&dark, squareMark.x - 6, squareMark.y - 6, 12, 12);
     }
 
-    // 底部：当前色 / 原色
-    const int half = (geometry.preview.right - geometry.preview.left) / 2;
+    // 右侧：新 / 原色对比（各自上面一行小标签）
+    const int half = (geometry.preview.right - geometry.preview.left - 8) / 2;
     RECT currentRect = geometry.preview;
     currentRect.right = currentRect.left + half;
     RECT originalRect = geometry.preview;
     originalRect.left = originalRect.right - half;
+    RECT currentLabel{currentRect.left, currentRect.top - 18, currentRect.right,
+                      currentRect.top - 2};
+    RECT originalLabel{originalRect.left, originalRect.top - 18, originalRect.right,
+                       originalRect.top - 2};
+    DrawTextAt(dc, L"新颜色", currentLabel, PickFontSmall(), kPickerDim,
+               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    DrawTextAt(dc, L"原颜色", originalLabel, PickFontSmall(), kPickerDim,
+               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     ui::FillRoundedRect(dc, currentRect, 6, state.chosen, state.chosen, 0.0f);
     ui::FillRoundedRect(dc, originalRect, 6, state.original, state.original, 0.0f);
     ui::OutlineRoundedRect(dc, currentRect, 6, kPickerBorder);
@@ -171,18 +238,30 @@ void DrawPickerPanel(HDC dc, const PickerGeometry& geometry, const ColorPickerSt
     DrawTextAt(dc, L"原", originalRect, PickFontSmall(), ContrastText(state.original),
                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
-    // 常用色那一排
+    // 十六进制输入框（底板 + 上面的小标题）
+    RECT hexLabel{geometry.hexField.left, geometry.hexField.top - 18, geometry.hexField.right,
+                  geometry.hexField.top - 2};
+    DrawTextAt(dc, L"十六进制色码", hexLabel, PickFontSmall(), kPickerDim,
+               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    ui::DrawRoundedControl(dc, geometry.hexField, 6, kPickerBg, kPickerField, kPickerBorder,
+                           kPickerBg);
+
+    // 常用色：网格（8 列 x 2 行），格与格之间留缝，不再挤成一条
     int count = 0;
     const COLORREF* quick = QuickPickColors(&count);
-    if (count > 0) {
-        const int span = geometry.swatches.right - geometry.swatches.left;
-        const int cell = span / count;
-        for (int i = 0; i < count; ++i) {
-            RECT cellRect{geometry.swatches.left + i * cell, geometry.swatches.top,
-                          geometry.swatches.left + (i + 1) * cell - 2, geometry.swatches.bottom};
-            ui::FillRoundedRect(dc, cellRect, 4, quick[i], quick[i], 0.0f);
-            ui::OutlineRoundedRect(dc, cellRect, 4, kPickerBorder);
-        }
+    RECT swatchLabel{geometry.swatches.left, geometry.swatches.top - 18, geometry.swatches.right,
+                     geometry.swatches.top - 2};
+    DrawTextAt(dc, L"常用色", swatchLabel, PickFontSmall(), kPickerDim,
+               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    for (int i = 0; i < count; ++i) {
+        const int col = i % kPickerSwatchCols;
+        const int row = i / kPickerSwatchCols;
+        RECT cellRect{geometry.swatches.left + col * kPickerSwatchCell + 2,
+                      geometry.swatches.top + row * kPickerSwatchCell + 2,
+                      geometry.swatches.left + (col + 1) * kPickerSwatchCell - 2,
+                      geometry.swatches.top + (row + 1) * kPickerSwatchCell - 2};
+        ui::FillRoundedRect(dc, cellRect, 4, quick[i], quick[i], 0.0f);
+        ui::OutlineRoundedRect(dc, cellRect, 4, kPickerBorder);
     }
 }
 
@@ -213,6 +292,21 @@ LRESULT CALLBACK ColorPickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPickerHexEditId)), nullptr, nullptr);
             SendMessageW(state->hexEdit, WM_SETFONT, reinterpret_cast<WPARAM>(PickFont()), TRUE);
             SendMessageW(state->hexEdit, EM_SETLIMITTEXT, 7, 0);
+            // 确定 / 取消：确定把当前颜色带回去，取消原样丢弃
+            const HWND ok = CreateWindowW(
+                L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
+                hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPickerOkId)), nullptr, nullptr);
+            const HWND cancel = CreateWindowW(
+                L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
+                hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPickerCancelId)), nullptr, nullptr);
+            SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(PickFont()), TRUE);
+            SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(PickFont()), TRUE);
+            // 自绘按钮的过程**按窗口记**（一个全局变量会被后面的控件覆盖，踩过）
+            g_pickerButtons[ok] = reinterpret_cast<WNDPROC>(
+                SetWindowLongPtrW(ok, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(PickerButtonProc)));
+            g_pickerButtons[cancel] = reinterpret_cast<WNDPROC>(
+                SetWindowLongPtrW(cancel, GWLP_WNDPROC,
+                                  reinterpret_cast<LONG_PTR>(PickerButtonProc)));
             SyncPickerFromColor(state);
             return 0;
         }
@@ -220,13 +314,18 @@ LRESULT CALLBACK ColorPickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!state) return 0;
             RECT client{};
             GetClientRect(hwnd, &client);
-            const PickerGeometry geometry =
-                PickerLayout(client.right, client.bottom);
-            // 十六进制输入框：**宽度用两个色块各自的一半**（写成整段宽会顶出右边界），
-            // 摆在左边那块的下方
-            const int half = (geometry.preview.right - geometry.preview.left) / 2;
-            MoveWindow(state->hexEdit, geometry.preview.left, geometry.swatches.bottom + 6,
-                       half - 6, 22, TRUE);
+            const PickerGeometry geometry = PickerLayout(client.right, client.bottom);
+            // 输入框和两个按钮按布局矩形摆（布局常量都在 color_picker.h）
+            MoveWindow(state->hexEdit, geometry.hexField.left, geometry.hexField.top + 3,
+                       geometry.hexField.right - geometry.hexField.left,
+                       geometry.hexField.bottom - geometry.hexField.top - 6, TRUE);
+            MoveWindow(GetDlgItem(hwnd, kPickerOkId), geometry.okButton.left,
+                       geometry.okButton.top, geometry.okButton.right - geometry.okButton.left,
+                       geometry.okButton.bottom - geometry.okButton.top, TRUE);
+            MoveWindow(GetDlgItem(hwnd, kPickerCancelId), geometry.cancelButton.left,
+                       geometry.cancelButton.top,
+                       geometry.cancelButton.right - geometry.cancelButton.left,
+                       geometry.cancelButton.bottom - geometry.cancelButton.top, TRUE);
             return 0;
         }
         case WM_ERASEBKGND:
@@ -243,11 +342,7 @@ LRESULT CALLBACK ColorPickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 const PickerGeometry geometry =
                     PickerLayout(client.right, client.bottom);
                 DrawPickerPanel(dc, geometry, *state);
-                // 输入框下面一行提示
-                RECT hint{geometry.preview.left, client.bottom - 18, client.right - 8,
-                          client.bottom - 2};
-                DrawTextAt(dc, L"回车确定，Esc 取消（输入框里可以直接打 #rrggbb）", hint, PickFontSmall(),
-                           kPickerDim,
+                DrawTextAt(dc, L"回车确定 · Esc 取消", geometry.hint, PickFontSmall(), kPickerDim,
                            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
             }
             EndPaint(hwnd, &ps);
@@ -297,14 +392,14 @@ LRESULT CALLBACK ColorPickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             const int x = GET_X_LPARAM(lp);
             const int y = GET_Y_LPARAM(lp);
 
-            // 常用色那一排
+            // 常用色网格
             int count = 0;
             const COLORREF* quick = QuickPickColors(&count);
             if (count > 0 && HitSwatches(geometry, x, y)) {
-                const int span = geometry.swatches.right - geometry.swatches.left;
-                const int cell = span / count;
-                const int index = (x - geometry.swatches.left) / cell;
-                if (index >= 0 && index < count) {
+                const int col = (x - geometry.swatches.left) / kPickerSwatchCell;
+                const int row = (y - geometry.swatches.top) / kPickerSwatchCell;
+                const int index = row * kPickerSwatchCols + col;
+                if (col >= 0 && col < kPickerSwatchCols && row >= 0 && index < count) {
                     state->chosen = quick[index];
                     SyncPickerFromColor(state);
                     InvalidateRect(hwnd, nullptr, FALSE);

@@ -72,7 +72,10 @@ int main() {
     std::printf("[3] 色盘几何\n");
     PickerGeometry geometry = PickerLayout(kPickerWindowWidth, kPickerWindowHeight);
     {
-        check(geometry.centerX == kPickerWindowWidth / 2, "色盘水平居中");
+        // 布局是"左轮右控制"，色盘在左边而不是整窗居中
+        check(geometry.centerX == kPickerMargin + kPickerOuterRadius, "色盘在左边（留出右侧控制区）");
+        check(geometry.panel.left > geometry.centerX + geometry.outerRadius,
+              "右侧控制区在色盘右边，不重叠");
         check(geometry.outerRadius == kPickerOuterRadius &&
                   geometry.innerRadius == kPickerOuterRadius - kPickerRingWidth,
               "内外半径按常量");
@@ -81,10 +84,22 @@ int main() {
         check(geometry.square.left >= 0 && geometry.square.bottom <= kPickerWindowHeight,
               "方块在窗口里");
         check(geometry.preview.bottom <= kPickerWindowHeight &&
-                  geometry.swatches.bottom <= kPickerWindowHeight,
-              "底部色块和常用色都在窗口里");
-        check(geometry.preview.top > geometry.centerY + geometry.outerRadius,
-              "底部在色盘下方，不重叠");
+                  geometry.swatches.bottom <= kPickerWindowHeight &&
+                  geometry.okButton.bottom <= kPickerWindowHeight,
+              "预览/常用色/按钮都在窗口里");
+        check(geometry.hint.bottom <= kPickerWindowHeight, "底部提示文字也在窗口里");
+        // 右侧从上到下：预览 -> 输入 -> 常用色 -> 按钮，**每一段之间都要留出间距**
+        check(geometry.preview.bottom <= geometry.hexField.top &&
+                  geometry.hexField.bottom <= geometry.swatches.top &&
+                  geometry.swatches.bottom <= geometry.okButton.top,
+              "右侧四块从上到下顺序排开，不互相压住");
+        check(geometry.hexField.top - geometry.preview.bottom >= 8 &&
+                  geometry.swatches.top - geometry.hexField.bottom >= 8 &&
+                  geometry.okButton.top - geometry.swatches.bottom >= 8,
+              "每两块之间至少留 8 像素（太密就是这里出的问题）");
+        check(geometry.okButton.right <= geometry.panel.right &&
+                  geometry.cancelButton.right <= geometry.panel.right,
+              "两个按钮不超出控制区");
     }
 
     std::printf("[4] 命中判断\n");

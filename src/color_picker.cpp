@@ -92,8 +92,9 @@ double HueToRingAngle(double hue) { return RingAngleToHue(hue); }
 
 PickerGeometry PickerLayout(int clientWidth, int clientHeight) {
     PickerGeometry geometry;
-    geometry.centerX = clientWidth / 2;
-    geometry.centerY = kPickerMargin + kPickerOuterRadius;
+    // 色盘放在左边（竖直居中），右边留出控制区
+    geometry.centerX = kPickerMargin + kPickerOuterRadius;
+    geometry.centerY = clientHeight / 2;
     geometry.outerRadius = kPickerOuterRadius;
     geometry.innerRadius = kPickerOuterRadius - kPickerRingWidth;
 
@@ -108,16 +109,30 @@ PickerGeometry PickerLayout(int clientWidth, int clientHeight) {
                            geometry.centerX - side / 2 + side,
                            geometry.centerY - side / 2 + side};
 
-    const int footerTop = kPickerMargin + kPickerOuterRadius * 2 + 6;
-    const int half = (clientWidth - kPickerMargin * 2 - 8) / 2;
-    geometry.preview = RECT{kPickerMargin, footerTop, kPickerMargin + half,
-                            footerTop + kPickerPreviewH};
+    // ---- 右侧控制区：从上到下 预览 / 输入 / 常用色 / 按钮 ----
+    const int panelLeft = kPickerMargin + kPickerWheelBox + kPickerGap;
+    const int panelRight = panelLeft + kPickerPanelWidth;
+    geometry.panel = RECT{panelLeft, kPickerMargin, panelRight, clientHeight - kPickerMargin};
 
-    // 常用色那一排：铺在预览色块下面
-    const int swatchTop = footerTop + kPickerPreviewH + 6;
-    geometry.swatches = RECT{kPickerMargin, swatchTop, clientWidth - kPickerMargin,
-                             swatchTop + 20};
-    (void)clientHeight;
+    int y = geometry.panel.top + kPickerLabelH;  // 每块上面都有一行小标题
+    geometry.preview = RECT{panelLeft, y, panelRight, y + kPickerPreviewH};
+    y = geometry.preview.bottom + kPickerGap;
+
+    geometry.hexField = RECT{panelLeft, y, panelRight, y + kPickerRowH};
+    y = geometry.hexField.bottom + kPickerGap;
+
+    const int swatchWidth = kPickerSwatchCols * kPickerSwatchCell;
+    geometry.swatches = RECT{panelLeft, y, panelLeft + swatchWidth,
+                             y + kPickerSwatchRows * kPickerSwatchCell};
+    y = geometry.swatches.bottom + kPickerGap;
+
+    geometry.okButton = RECT{panelLeft, y, panelLeft + (kPickerPanelWidth - 10) / 2,
+                             y + kPickerButtonH};
+    geometry.cancelButton = RECT{geometry.okButton.right + 10, y, panelRight,
+                                 y + kPickerButtonH};
+    geometry.hint = RECT{panelLeft, geometry.okButton.bottom + 8, panelRight,
+                         geometry.okButton.bottom + 26};
+    (void)clientWidth;
     return geometry;
 }
 
