@@ -270,6 +270,48 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // ---- 交互模式：连接、TOFU、登录全交给 ChatCore（和 macOS 界面同一条路径）----
+    // 放在这里**而不是**走下面的批处理流程，是为了避免"连两次"：
+    // 下面那段自己建连并做 CheckTrust，ChatCore 又会建一次、再做一次 TOFU，
+    // 用户会看到两遍指纹提示，而且白建一条连接。
+    if (options.send.empty()) {
+        if (options.user.empty()) {
+            std::printf("[提示] 没有指定 --user，将直接进交互模式（如果服务器要求登录，"
+                        "请重新带上 --user/--pass）\n");
+        }
+        dchat::Terminal terminal;
+        dchat::ChatUi ui(&terminal);
+        dchat::ChatCore* core = ui.Core();
+        // 指纹备忘文件与批处理模式共用同一个（相对当前目录），
+        // 否则"换个模式就重新第一次信任"，TOFU 就白做了。
+        core->SetKnownServersPath(kKnownServersPath);
+
+        dchat::ConnectOptions connectOptions;
+        connectOptions.host = options.host;
+        connectOptions.port = options.port;
+        std::printf("[连接] %s:%d\n", options.host.c_str(), options.port);
+        std::string connectError;
+        // ConnectOnly：只连接不登录。TOFU 检查在它内部、且在发密码之前完成 ——
+        // 这个顺序不能改，指纹不对就不该把密码送出去。
+        if (!core->ConnectOnly(connectOptions, &connectError)) {
+            if (!connectError.empty()) std::printf("[失败] %s\n", connectError.c_str());
+            dchat::sock::Cleanup();
+            return 2;
+        }
+        if (!options.user.empty()) {
+            core->SetCredentials(options.user, options.password, options.wantRegister);
+            if (!core->SubmitCredentials()) {
+                std::printf("[失败] 发送登录请求失败\n");
+                dchat::sock::Cleanup();
+                return 2;
+            }
+        }
+        const int uiResult = ui.Run();
+        dchat::sock::Cleanup();
+        return uiResult;
+    }
+
+    // ---- 批处理模式（脚本 / 自动化验证用）----
     dchat::ClientConnection connection;
     std::string error;
     std::printf("[连接] %s:%d\n", options.host.c_str(), options.port);
@@ -279,41 +321,6 @@ int main(int argc, char** argv) {
     }
     std::printf("[连接] 已连上（%s）\n", connection.Encrypted() ? "已加密" : "明文");
     if (!CheckTrust(options, connection)) return 4;
-
-    // 没给 --send 就进交互模式；给了就是批处理（脚本 / 自动化验证用）
-    if (options.send.empty() && options.user.empty()) {
-        std::printf("[提示] 没有指定 --user，将直接进交互模式（如果服务器要求登录，"
-                    "请重新带上 --user/--pass）\n");
-    }
-    if (options.send.empty()) {
-        dchat::Terminal terminal;
-        dchat::FileTransfers files(&connection);
-        dchat::ChatUi ui(&connection, &terminal, &files);
-        connection.StartReceiveLoop([&ui, &files, &terminal](const std::string& line) {
-            // 文件相关的行先给文件模块，它认领了就不到界面去
-            if (files.HandleLine(line, [&ui](const std::string& text) {
-                    ui.ShowStatus(text);
-                })) {
-                return;
-            }
-            ui.HandleServerLine(line);
-        });
-        // 交互模式下由主循环负责发送登录请求
-        if (!options.user.empty()) {
-            const std::string command = options.wantRegister ? "REGISTER" : "LOGIN";
-            if (!connection.SendLine(dchat::BuildLine(
-                    command, dchat::EscapeText(options.user + " " + options.password)))) {
-                std::printf("[失败] 发送登录请求失败\n");
-                connection.Close();
-                dchat::sock::Cleanup();
-                return 2;
-            }
-        }
-        const int uiResult = ui.Run();
-        connection.Close();
-        dchat::sock::Cleanup();
-        return uiResult;
-    }
 
     const int result = RunSession(options, &connection);
     connection.Close();

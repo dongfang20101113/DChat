@@ -1,4 +1,8 @@
-// 交互式聊天界面（交互模式）。
+// 交互式聊天界面（终端）。
+//
+// 这一层只做**终端相关**的事：读键、画输入行、把渲染好的行打出去。
+// 会话逻辑（登录注册、收发、指令派发、附件、TOFU）全在 client_core/chat_core 里 ——
+// 和 macOS 的 Cocoa 界面共用同一份，所以两个界面不会各写一套指令解析。
 //
 // 布局是"历史区 + 固定输入行"：消息往上滚，输入行永远留在最后一行。
 // 每输出一条消息就擦掉输入行、打印消息、再把输入行画回来。
@@ -12,14 +16,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
-#include "chat_color.h"
+#include "cli_render.h"
 #include "input_history.h"
-#include "protocol.h"
-#include "render.h"
-#include "server_command.h"
 
 namespace dchat {
 namespace {
@@ -35,34 +37,88 @@ int EncodeSequence(const char* text) {
 
 }  // namespace
 
-ChatUi::ChatUi(ClientConnection* connection, Terminal* terminal, FileTransfers* files)
-    : connection_(connection), terminal_(terminal), files_(files) {}
+ChatUi::ChatUi(Terminal* terminal)
+    : terminal_(terminal), core_(std::make_unique<ChatCore>(this)) {}
 
-void ChatUi::SetSelfNick(const std::string& nick) { selfNick_ = nick; }
+ChatUi::~ChatUi() = default;
 
-void ChatUi::SetOnlineNicks(const std::vector<std::string>& nicks) { onlineNicks_ = nicks; }
+ChatCore* ChatUi::Core() { return core_.get(); }
 
-void ChatUi::SendRecordedVoice(const std::string& path) {
-    const int seconds = WavDurationSeconds(path);
-    PrintLine("🎤 录好了（" + FormatDuration(seconds) + "），正在上传…");
-    std::string error;
-    // kind 传 "voice"：服务器和另外两端就靠这一格判断"这是语音"，
-    // **不看扩展名**（安卓录的是 .m4a、桌面是 .wav，扩展名不可靠）
-    const std::string localId = files_->Upload(path, "voice", &error);
-    if (localId.empty()) {
-        PrintLine("\x1b[31m语音发送失败：" + error + "\x1b[0m");
+// ---------------------------------------------------------------------------
+// ChatCoreDelegate：接收线程上触发，这里只做"渲染 + 打印"
+// ---------------------------------------------------------------------------
+
+void ChatUi::OnChatMessage(const ChatMessage& message) {
+    const RenderedLine rendered = RenderChatMessage(message, core_->ColorEnabled());
+    if (!rendered.visible) return;
+    PrintLine(rendered.text);
+}
+
+void ChatUi::OnConnected(bool encrypted, const std::string& fingerprint,
+                         const TrustDecision& trust) {
+    if (!encrypted) {
+        PrintLine("\x1b[33m[安全] 这次连接**没有加密**（服务器不支持或握手失败）\x1b[0m");
         return;
     }
-    const std::string serverId = files_->ServerIdFor(localId);
-    PrintLine(serverId.empty() ? "✅ 语音已发出，等服务器确认附件 id…"
-                               : ("✅ 语音已发出（id=" + serverId + "）"));
+    PrintLine("[安全] " + DescribeTrust(trust));
+    PrintLine("\x1b[90m[安全] 服务器指纹：" + fingerprint + "\x1b[0m");
 }
 
-void ChatUi::ShowStatus(const std::string& text) {
-    // 接收线程调过来的：PrintAbove 只碰 stdout 和输入行，不碰别的状态，
-    // 所以这里不需要额外加锁（界面主线程也在跑，但两者都只做"擦行+打印"）
-    PrintLine(text);
+void ChatUi::OnLoggedIn(const std::string& nick) {
+    loggedIn_ = true;
+    PrintLine("\x1b[1m已登录：\x1b[0m" + nick);
+    ShowHint();
 }
+
+void ChatUi::OnDisconnected(const std::string& reason) {
+    PrintLine(std::string(kAnsiError) + "[断开] " +
+              (reason.empty() ? std::string("与服务器的连接已断开") : reason) + kAnsiReset);
+}
+
+void ChatUi::OnOnlineNicks(const std::vector<std::string>& nicks) {
+    // 补全用 ChatCore 内部那份（含 KNOWN 名单），这里不用再存
+    (void)nicks;
+}
+
+void ChatUi::OnTransferProgress(const std::string& text) { PrintLine(text); }
+
+void ChatUi::OnColorSettingChanged(bool enabled, const std::string& rawRest) {
+    // rawRest 为空表示是本地开关（/chatcolor）改的，不用重复提示
+    if (!rawRest.empty()) {
+        PrintLine(std::string(kAnsiDim) + "[规则] " +
+                  (enabled ? "彩色聊天：开" : "彩色聊天：关") + AnsiReset());
+    }
+}
+
+void ChatUi::OnVoiceCommand(const std::string& arg) {
+    if (!loggedIn_) {
+        PrintLine("还没登录完成，稍等一下再发");
+        return;
+    }
+    if (recorder_.Recording()) {
+        // 再敲一次 /voice 就是停
+        std::string path;
+        std::string error;
+        if (!recorder_.StopAndSave(&path, &error)) {
+            PrintLine(std::string(kAnsiError) + "录音失败：" + error + AnsiReset());
+            return;
+        }
+        SendRecordedVoice(path);
+        return;
+    }
+    const int seconds = arg.empty() ? 0 : std::atoi(arg.c_str());
+    std::string error;
+    if (!recorder_.Start(seconds, &error)) {
+        PrintLine(std::string(kAnsiError) + "录不了音：" + error + AnsiReset());
+        return;
+    }
+    PrintLine("🎤 正在录音…再敲一次 /voice 就停（最长 " +
+              std::to_string(seconds > 0 ? seconds : 64) + " 秒）");
+}
+
+// ---------------------------------------------------------------------------
+// 终端输出
+// ---------------------------------------------------------------------------
 
 void ChatUi::PrintLine(const std::string& text) {
     // 历史区输出和输入行是"抢"同一块终端的：必须先把输入行擦掉再打印，
@@ -70,124 +126,49 @@ void ChatUi::PrintLine(const std::string& text) {
     terminal_->PrintAbove(text, kPrompt, input_, 0);
 }
 
-/** 把服务器来的一行渲染成带 ANSI 颜色的终端文字。 */
-std::string ChatUi::RenderServerLine(const std::string& line) {
-    const Message message = ParseLine(line);
-    if (message.command == "ENC" || message.command == "PONG" ||
-        message.command == "FILE_CHUNK") {
-        return std::string();
+void ChatUi::PrintWrapped(const std::string& text) {
+    // 自己按终端宽度折行：终端自己也会折，但我们得知道"输入行被推到了第几行"，
+    // 所以自己折更可控。折行不能把 ANSI 序列截断（见 WrapAnsi 的注释）。
+    for (const std::string& piece : WrapAnsi(text, terminal_->Width())) {
+        PrintLine(piece);
     }
-
-    std::string text;
-    if (message.command == "SAY") {
-        SayInfo info;
-        if (!ParseSay(line, selfNick_, &info)) return std::string();
-        const bool mention = !selfNick_.empty() && MentionsNick(info.text, selfNick_);
-        if (mention) text += "\x1b[1;33m";  // 有人叫我：加粗黄
-        text += "[" + info.time + "] <" + info.nick + "> ";
-        if (mention) text += AnsiReset();
-        // 正文按色码切段上色
-        for (const ColorSegment& segment : ParseColorSegments(info.text, 0xDDDDDD, colorEnabled_)) {
-            if (segment.hasColor) text += AnsiForeground(segment.rgb);
-            text += segment.text;
-            if (segment.hasColor) text += AnsiReset();
-        }
-        return text;
-    }
-
-    if (message.command == "SYS" || message.command == "ERROR") {
-        std::vector<std::string> words = message.Words();
-        if (!words.empty() && LooksLikeTime(words[0])) words.erase(words.begin());
-        std::string body;
-        for (const std::string& word : words) {
-            if (!body.empty()) body += " ";
-            body += word;
-        }
-        const char* color = message.command == "ERROR" ? "\x1b[31m" : "\x1b[36m";
-        return std::string(color) + "[系统] " + body + AnsiReset();
-    }
-
-    if (message.command == "RULES") {
-        // 里面带 chatcolor=0|1，决定要不要解析色码
-        std::vector<std::string> words = message.Words();
-        if (!words.empty() && LooksLikeTime(words[0])) words.erase(words.begin());
-        std::string body;
-        for (const std::string& word : words) {
-            if (!body.empty()) body += " ";
-            body += word;
-        }
-        colorEnabled_ = ChatColorEnabledFromRules(body);
-        return std::string("\x1b[90m[规则] ") +
-               (colorEnabled_ ? "彩色聊天：开" : "彩色聊天：关") + AnsiReset();
-    }
-
-    std::vector<std::string> words = message.Words();
-    if (!words.empty() && LooksLikeTime(words[0])) words.erase(words.begin());
-    std::string body;
-    for (const std::string& word : words) {
-        if (!body.empty()) body += " ";
-        body += word;
-    }
-    return "\x1b[90m[" + message.command + "] " + body + AnsiReset();
 }
 
-void ChatUi::HandleServerLine(const std::string& line) {
-    const Message message = ParseLine(line);
-    if (message.command == "LOGGEDIN") {
-        loggedIn_ = true;
-        std::vector<std::string> words = message.Words();
-        if (!words.empty() && LooksLikeTime(words[0])) words.erase(words.begin());
-        if (!words.empty()) selfNick_ = words[0];
-    } else if (message.command == "NAMES") {
-        std::vector<std::string> words = message.Words();
-        if (!words.empty() && LooksLikeTime(words[0])) words.erase(words.begin());
-        onlineNicks_.clear();
-        for (const std::string& word : words) {
-            if (word != selfNick_) onlineNicks_.push_back(word);
-        }
-    }
+void ChatUi::ShowHint() {
+    PrintLine("\x1b[1mdchat\x1b[0m 输入内容回车发送，Tab 补全指令与昵称，/help 看帮助，"
+              "/quit 退出。");
+}
 
-    std::string rendered = RenderServerLine(line);
-    if (rendered.empty()) return;
-
-    // 按终端宽度硬折行：终端自己也会折，但我们得知道"输入行被推到了第几行"，
-    // 所以自己折更可控。
-    const int width = terminal_->Width();
-    if (width <= 0) {
-        PrintLine(rendered);
+void ChatUi::SendRecordedVoice(const std::string& path) {
+    const int seconds = WavDurationSeconds(path);
+    PrintLine("🎤 录好了（" + FormatDuration(seconds) + "），正在上传…");
+    std::string error;
+    // kind 传 "voice"：服务器和另外三端就靠这一格判断"这是语音"，
+    // **不看扩展名**（安卓录的是 .m4a、桌面是 .wav，扩展名不可靠）
+    const std::string localId = core_->Files().Upload(path, "voice", &error);
+    if (localId.empty()) {
+        PrintLine(std::string(kAnsiError) + "语音发送失败：" + error + AnsiReset());
         return;
     }
-    std::string current;
-    int visible = 0;
-    for (std::size_t i = 0; i < rendered.size(); ++i) {
-        if (rendered[i] == '\x1b') {  // ANSI 序列不算宽度，原样抄进当前行
-            const std::size_t end = rendered.find('m', i);
-            if (end == std::string::npos) break;
-            current += rendered.substr(i, end - i + 1);
-            i = end;
-            continue;
-        }
-        current.push_back(rendered[i]);
-        ++visible;
-        if (visible >= width) {
-            PrintLine(current);
-            current.clear();
-            visible = 0;
-        }
-    }
-    if (!current.empty() || rendered.empty()) PrintLine(current);
+    const std::string serverId = core_->Files().ServerIdFor(localId);
+    PrintLine(serverId.empty() ? "✅ 语音已发出，等服务器确认附件 id…"
+                               : ("✅ 语音已发出（id=" + serverId + "）"));
 }
 
+// ---------------------------------------------------------------------------
+// 输入行
+// ---------------------------------------------------------------------------
+
 void ChatUi::CompleteInput() {
-    dchat::CompletionResult result = completer_.Next(input_, onlineNicks_, knownNicks_);
+    const CompletionResult result = core_->Complete(input_);
     if (result.picked < 0) return;
     input_ = result.text;
     // 候选多于一个时提示一句，让用户知道多按几下能循环
     if (result.matches.size() > 1) {
-        std::string hint = "\x1b[90m[候选] ";
+        std::string hint = std::string(kAnsiDim) + "[候选] ";
         for (std::size_t i = 0; i < result.matches.size(); ++i) {
             if (i > 0) hint += "  ";
-            hint += (static_cast<int>(i) == result.picked) ? "\x1b[1;36m" : "\x1b[90m";
+            hint += (static_cast<int>(i) == result.picked) ? "\x1b[1;36m" : kAnsiDim;
             hint += result.matches[i];
         }
         hint += AnsiReset();
@@ -195,145 +176,25 @@ void ChatUi::CompleteInput() {
     }
 }
 
-bool ChatUi::HandleLocalCommand(const std::string& text) {
+/** 本地指令里只剩"纯终端"的那两个：清屏和退出。其余在 ChatCore 里。 */
+bool ChatUi::HandleTerminalOnlyCommand(const std::string& text) {
     if (text.empty() || text[0] != '/') return false;
     const std::size_t space = text.find(' ');
     const std::string name = text.substr(0, space == std::string::npos ? text.size() : space);
-
-    if (name == "/quit" || name == "/exit") {
-        wantQuit_ = true;
+    if (name == "/clear") {
+        terminal_->Write("\x1b[2J\x1b[H");
+        terminal_->RedrawInput(kPrompt, input_, 0);
         return true;
     }
-    if (name == "/help") {
-        PrintLine("\x1b[1m可用指令：\x1b[0m");
-        std::string row = "  ";
-        for (const std::string& command : dchat::AllCommandNames()) {
-            row += "/" + command + "  ";
-            if (row.size() > 72) {
-                PrintLine(row);
-                row = "  ";
-            }
-        }
-        if (row.size() > 2) PrintLine(row);
-        PrintLine("  本地指令：/send <路径> 发文件   /get <id> 下载附件");
-        PrintLine("            /voice [秒数] 录音（再敲一次停）  /play <id> 播放");
-        PrintLine("            /quit 退出  /clear 清屏  /chatcolor on|off 彩色开关");
-        return true;
-    }
+    // /voice 和 /send 在登录前拦一下：服务器会直接拒绝（"请先登录后再传文件"），
+    // 用户看到的却只是一句莫名其妙的失败。本地先拦，提示更直白。
     if (name == "/voice" || name == "/send") {
         if (!loggedIn_) {
             PrintLine("还没登录完成，稍等一下再发");
             return true;
         }
     }
-    if (name == "/voice") {
-        const std::string arg = space == std::string::npos ? std::string() : text.substr(space + 1);
-        if (recorder_.Recording()) {
-            // 再敲一次 /voice 就是停
-            std::string path;
-            std::string error;
-            if (!recorder_.StopAndSave(&path, &error)) {
-                PrintLine("\x1b[31m录音失败：" + error + "\x1b[0m");
-                return true;
-            }
-            SendRecordedVoice(path);
-            return true;
-        }
-        int seconds = 0;
-        if (!arg.empty()) seconds = std::atoi(arg.c_str());
-        std::string error;
-        if (!recorder_.Start(seconds, &error)) {
-            PrintLine("\x1b[31m录不了音：" + error + "\x1b[0m");
-            return true;
-        }
-        PrintLine("🎤 正在录音…再敲一次 /voice 就停（最长 " +
-                  std::to_string(seconds > 0 ? seconds : 64) + " 秒）");
-        return true;
-    }
-    if (name == "/play") {
-        const std::string id = space == std::string::npos ? std::string() : text.substr(space + 1);
-        if (id.empty()) {
-            PrintLine("用法：/play <附件 id>（语音会自动下载，也可以手动放别的音频）");
-            return true;
-        }
-        const std::string path = files_->LocalPathFor(id);
-        std::string target = path;
-        if (target.empty()) {
-            // 还没下过：先请求下载，等落盘后再让用户敲一次；直接提示比默默等待好
-            std::string error;
-            if (!files_->RequestDownload(id, &error)) {
-                PrintLine("\x1b[31m" + error + "\x1b[0m");
-            } else {
-                PrintLine("正在下载 " + id + "…下好后再敲一次 /play " + id);
-            }
-            return true;
-        }
-        PrintLine("▶ 播放 " + target);
-        std::string error;
-        if (!PlayAudioFile(target, 120000, &error)) {
-            PrintLine("\x1b[31m播放失败：" + error + "\x1b[0m");
-        }
-        return true;
-    }
-    if (name == "/send") {
-        const std::string path =
-            space == std::string::npos ? std::string() : text.substr(space + 1);
-        if (path.empty()) {
-            PrintLine("用法：/send <文件路径> [voice|sticker]");
-            return true;
-        }
-        PrintLine("正在上传 " + path + " …");
-        std::string error;
-        const std::string localId = files_->Upload(path, std::string(), &error);
-        if (localId.empty()) {
-            PrintLine("\x1b[31m上传失败：" + error + "\x1b[0m");
-        } else {
-            // 服务器会自己分配附件 ID（形如 F1）并在 FILE_OFFER 里广播回来；
-            // 那条广播很快就会到，界面上会显示正确的 /get id
-            const std::string serverId = files_->ServerIdFor(localId);
-            PrintLine(serverId.empty()
-                          ? "✅ 文件已上传，等服务器确认附件 id…"
-                          : ("✅ 文件已上传（id=" + serverId + "），可以 /get " + serverId +
-                             " 下载"));
-        }
-        return true;
-    }
-    if (name == "/get") {
-        const std::string id = space == std::string::npos ? std::string() : text.substr(space + 1);
-        if (id.empty()) {
-            PrintLine("用法：/get <附件 id>（收到附件时消息里会带 id）");
-            return true;
-        }
-        std::string error;
-        if (!files_->RequestDownload(id, &error)) {
-            PrintLine("\x1b[31m下载请求失败：" + error + "\x1b[0m");
-        } else {
-            PrintLine("已请求下载 " + id + "，保存到 " + files_->DownloadDir() + "/");
-        }
-        return true;
-    }
-    if (name == "/clear") {
-        terminal_->Write("\x1b[2J\x1b[H");
-        terminal_->RedrawInput(kPrompt, input_, 0);
-        return true;
-    }
-    if (name == "/chatcolor") {
-        // 本机开关：服务器没关的话，让用户能自己关掉彩色显示
-        const std::string rest = space == std::string::npos ? std::string() : text.substr(space + 1);
-        if (rest == "on" || rest == "1") {
-            colorEnabled_ = true;
-            PrintLine("彩色聊天：开");
-        } else if (rest == "off" || rest == "0") {
-            colorEnabled_ = false;
-            PrintLine("彩色聊天：关");
-        } else {
-            PrintLine(colorEnabled_ ? "彩色聊天当前是开的（/chatcolor off 关掉）"
-                                    : "彩色聊天当前是关的（/chatcolor on 打开）");
-            PrintLine("颜色写法：&0-&f 是十六个快捷色，&#rrggbb 是真彩色，&& 是一个 &");
-        }
-        return true;
-    }
-    return false;  // 其余（/ban /kick /say ...）交给服务器处理
+    return false;
 }
 
 int ChatUi::Run() {
@@ -345,8 +206,7 @@ int ChatUi::Run() {
         return 1;
     }
 
-    PrintLine("\x1b[1mdchat\x1b[0m 已连接。输入内容回车发送，Tab 补全指令与昵称，/help 看帮助，"
-              "/quit 退出。");
+    ShowHint();
 
     InputHistory history;
     const int keyUp = EncodeSequence("\x1b[A");
@@ -356,8 +216,8 @@ int ChatUi::Run() {
 
     terminal_->RedrawInput(kPrompt, input_, 0);
     while (!wantQuit_) {
-        if (!connection_->Running()) {
-            PrintLine("\x1b[31m[断开] 与服务器的连接已断开\x1b[0m");
+        if (!core_->Connected()) {
+            // 断开提示由 OnDisconnected 打过了；这里只退出循环
             break;
         }
         const int key = terminal_->ReadKey(120);
@@ -368,11 +228,12 @@ int ChatUi::Run() {
             input_.clear();
             terminal_->RedrawInput(kPrompt, input_, 0);
             if (text.empty()) continue;
-            if (!HandleLocalCommand(text)) {
+            if (!HandleTerminalOnlyCommand(text)) {
                 history.Add(text);
-                if (!connection_->SendLine(dchat::BuildLine("MSG", dchat::EscapeText(text)))) {
-                    PrintLine("\x1b[31m[失败] 发不出去（连接可能已断开）\x1b[0m");
-                }
+                // 指令派发（本地指令 + 发给服务器）全在 ChatCore 里，
+                // 和 macOS 界面走的是同一条路径
+                core_->SubmitInput(text);
+                if (text == "/quit" || text == "/exit") wantQuit_ = true;
             }
             continue;
         }

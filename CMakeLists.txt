@@ -167,7 +167,9 @@ if(NOT WIN32)
         client_core/chat_color.cpp
         client_core/files.cpp
         client_core/files_parse.cpp
-        client_core/voice.cpp)
+        client_core/voice.cpp
+        client_core/chat_core.cpp     # 会话逻辑：两个界面共用同一套指令解析
+        client_core/cli_render.cpp)   # ANSI 渲染：纯函数，可单测、可交叉编译
     target_link_libraries(dchat_client_core PUBLIC dchat_protocol Threads::Threads)
     target_include_directories(dchat_client_core PUBLIC client_core)
 
@@ -177,6 +179,12 @@ if(NOT WIN32)
         linux/client/ui.cpp)
     target_link_libraries(dchat_client_linux PRIVATE dchat_client_core)
     target_include_directories(dchat_client_linux PRIVATE linux/client)
+
+    # 终端渲染层单独建一个库，好让 test_cli_render 直接链它。
+    # 渲染错了不报错、只是"显示不对"，所以必须能单测。
+    add_library(dchat_cli_render STATIC client_core/cli_render.cpp)
+    target_link_libraries(dchat_cli_render PUBLIC dchat_protocol)
+    target_include_directories(dchat_cli_render PUBLIC client_core)
 
     # 客户端核心的纯逻辑测试（色码解析 / TOFU / 附件解析 / 语音判定）。
     # 这几块错了不会报错，只会"显示不对"或"安全判定悄悄错"，所以单独钉住。
@@ -190,6 +198,16 @@ if(NOT WIN32)
         client_core/voice.cpp)
     target_link_libraries(test_linux_client PRIVATE dchat_protocol)
     target_include_directories(test_linux_client PRIVATE client_core)
+
+    # 终端渲染层的测试：折行不能截断 ANSI、@我 高亮、色码按段上色、
+    # 服务器关掉彩色时色码要原样显示。这些错了都只是"显示不对"，
+    # 不测就只能在真终端里靠眼睛发现。
+    add_executable(test_cli_render
+        tests/test_cli_render.cpp
+        client_core/cli_render.cpp
+        client_core/chat_color.cpp)
+    target_link_libraries(test_cli_render PRIVATE dchat_protocol)
+    target_include_directories(test_cli_render PRIVATE client_core)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -211,7 +229,8 @@ if(APPLE)
         client_core/files.cpp
         client_core/files_parse.cpp
         client_core/voice.cpp
-        client_core/chat_core.cpp)
+        client_core/chat_core.cpp
+        client_core/cli_render.cpp)
     target_link_libraries(dchat_client_core PUBLIC dchat_protocol Threads::Threads)
     target_include_directories(dchat_client_core PUBLIC client_core)
 
@@ -333,3 +352,4 @@ dchat_add_test(chat_color_tests test_chat_color)
 dchat_add_test(color_picker_tests test_color_picker)
 dchat_add_test(linux_client_tests test_linux_client)
 dchat_add_test(client_core_tests test_client_core)
+dchat_add_test(cli_render_tests test_cli_render)

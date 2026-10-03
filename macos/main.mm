@@ -158,6 +158,17 @@ public:
           [strong setColorEnabled:enabled ? YES : NO];
         });
     }
+
+    void OnVoiceCommand(const std::string& arg) override {
+        // Cocoa 版的录音还没做（macos/main.mm 本来就没法在本机编译验证，
+        // 不想再往里塞没验证过的音频采集代码）。如实告诉用户，别让他以为是坏了。
+        (void)arg;
+        DChatWindowController* strong = controller;
+        if (!strong) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [strong appendSystemText:@"这个界面暂不支持录音（终端版可以：/voice）"];
+        });
+    }
 };
 
 CocoaDelegate g_delegate;

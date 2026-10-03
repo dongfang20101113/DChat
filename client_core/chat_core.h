@@ -55,6 +55,14 @@ public:
     virtual void OnOnlineNicks(const std::vector<std::string>& nicks) = 0;
     virtual void OnTransferProgress(const std::string& text) = 0;
     virtual void OnColorSettingChanged(bool enabled, const std::string& rawRest) = 0;
+    /**
+     * 用户敲了 /voice。
+     *
+     * 录音本身留给界面做（要起子进程、要管"再敲一次停"的状态），核心只把这件事
+     * 转交出去 —— 这样终端版和 Cocoa 版共用同一套指令解析，界面各自实现录音。
+     * @param arg /voice 后面的参数（秒数，可为空）
+     */
+    virtual void OnVoiceCommand(const std::string& arg) = 0;
 };
 
 /** 连接参数。 */
@@ -77,9 +85,25 @@ public:
     /** 连上并登录（阻塞到握手完成；之后的收发在接收线程里）。 */
     bool Connect(const ConnectOptions& options, std::string* error);
 
+    /**
+     * 只连接、先不登录（交互模式用：可能连上了才问用户名密码）。
+     *
+     * 和 Connect() 的区别只有一个：不发登录请求。TOFU 检查、指纹文件更新、
+     * 接收线程的挂载都一样 —— 这段顺序不能改（**必须先比对指纹再发密码**）。
+     */
+    bool ConnectOnly(const ConnectOptions& options, std::string* error);
+
+    /** 记下账号，稍后由 SubmitCredentials() 发出去（交互模式：连接与登录分两步）。 */
+    void SetCredentials(const std::string& user, const std::string& password, bool wantRegister);
+
+    /** 把 SetCredentials 记下的账号发出去。返回 false 表示连接已断。 */
+    bool SubmitCredentials();
+
     void Disconnect();
     bool Connected() const { return connection_.Running(); }
     bool Welcomed() const { return welcomed_; }
+    /** 登录完成没有。界面据此在发文件/语音前先拦一下，给更直白的提示。 */
+    bool LoggedIn() const { return !selfNick_.empty(); }
 
     /** 发一条聊天消息（会自动走多行转义）。 */
     bool SendMessage(const std::string& text);
@@ -119,6 +143,10 @@ private:
     bool colorEnabled_ = true;
     bool welcomed_ = false;
     std::string knownServersPath_ = "dchat-known-servers.txt";
+    // 交互模式：连接与登录分两步，账号先记在这里，SubmitCredentials() 再发
+    std::string pendingUser_;
+    std::string pendingPassword_;
+    bool pendingRegister_ = false;
 };
 
 }  // namespace dchat

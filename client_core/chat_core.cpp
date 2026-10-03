@@ -53,6 +53,17 @@ ChatCore::ChatCore(ChatCoreDelegate* delegate)
 ChatCore::~ChatCore() { connection_.Close(); }
 
 bool ChatCore::Connect(const ConnectOptions& options, std::string* error) {
+    if (!ConnectOnly(options, error)) return false;
+    if (options.user.empty()) return true;
+    SetCredentials(options.user, options.password, options.wantRegister);
+    if (!SubmitCredentials()) {
+        if (error) *error = "登录请求发不出去（连接可能已断开）";
+        return false;
+    }
+    return true;
+}
+
+bool ChatCore::ConnectOnly(const ConnectOptions& options, std::string* error) {
     host_ = options.host;
     port_ = options.port;
 
@@ -83,16 +94,21 @@ bool ChatCore::Connect(const ConnectOptions& options, std::string* error) {
 
     // ---- 接收线程：先挂上回调，再发登录请求，避免漏掉第一行 ----
     connection_.StartReceiveLoop([this](const std::string& line) { HandleLine(line); });
-
-    if (!options.user.empty()) {
-        const std::string command = options.wantRegister ? "REGISTER" : "LOGIN";
-        if (!connection_.SendLine(BuildLine(command, EscapeText(options.user + " " +
-                                                                 options.password)))) {
-            if (error) *error = "登录请求发不出去（连接可能已断开）";
-            return false;
-        }
-    }
     return true;
+}
+
+void ChatCore::SetCredentials(const std::string& user, const std::string& password,
+                              bool wantRegister) {
+    pendingUser_ = user;
+    pendingPassword_ = password;
+    pendingRegister_ = wantRegister;
+}
+
+bool ChatCore::SubmitCredentials() {
+    if (pendingUser_.empty()) return true;
+    const std::string command = pendingRegister_ ? "REGISTER" : "LOGIN";
+    return connection_.SendLine(
+        BuildLine(command, EscapeText(pendingUser_ + " " + pendingPassword_)));
 }
 
 void ChatCore::Disconnect() { connection_.Close(); }
@@ -258,6 +274,17 @@ void ChatCore::SubmitInput(const std::string& text) {
         Disconnect();
         return;
     }
+    if (name == "/voice") {
+        // 录音是**界面层**的事：终端版用 MicRecorder 起 sox/arecord 子进程，
+        // Cocoa 版还没做（会回一句"这个界面暂不支持录音"）。
+        // 核心只负责"把这件事转交给界面"，这样两个界面共用同一套指令解析。
+        if (delegate_) {
+            delegate_->OnVoiceCommand(arg);
+        } else {
+            Notice("这个界面还不支持录音", ChatMessage::Kind::Error);
+        }
+        return;
+    }
     if (name == "/send") {
         if (arg.empty()) {
             Notice("用法：/send <文件路径>", ChatMessage::Kind::Error);
@@ -266,8 +293,16 @@ void ChatCore::SubmitInput(const std::string& text) {
         Notice("正在上传 " + arg + " …");
         std::string error;
         const std::string localId = files_->Upload(arg, std::string(), &error);
-        Notice(localId.empty() ? ("上传失败：" + error) : "文件已上传，等服务器确认附件 id…",
-               localId.empty() ? ChatMessage::Kind::Error : ChatMessage::Kind::Notice);
+        if (localId.empty()) {
+            Notice("上传失败：" + error, ChatMessage::Kind::Error);
+            return;
+        }
+        // 服务器会自己分配附件 id（形如 F1）并在 FILE_OFFER 里广播回来；
+        // 那条广播很快就到。能立刻拿到 id 就说清楚怎么下载。
+        const std::string serverId = files_->ServerIdFor(localId);
+        Notice(serverId.empty()
+                   ? "文件已上传，等服务器确认附件 id…"
+                   : ("文件已上传（id=" + serverId + "），可以 /get " + serverId + " 下载"));
         return;
     }
     if (name == "/get") {

@@ -37,7 +37,7 @@ SHARED="src/protocol.cpp src/render.cpp src/input_history.cpp src/server_command
 # 客户端核心（已从 linux/client/ 提升到 client_core/，两端共用）
 CLIENT_CORE="client_core/net.cpp client_core/trust.cpp client_core/files_parse.cpp \
              client_core/chat_color.cpp client_core/files.cpp client_core/voice.cpp \
-             client_core/chat_core.cpp"
+             client_core/chat_core.cpp client_core/cli_render.cpp"
 
 fail=0
 for target in x86_64-macos aarch64-macos; do
