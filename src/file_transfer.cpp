@@ -1,9 +1,19 @@
 #include "file_transfer.h"
 
+// 这一层是纯计算（解析、校验、附件种类判定）；windows.h 只是历史遗留，
+// Linux 端没有这个头、编不过，所以按平台条件包含。
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#endif
 
 #include <cstdio>
+#include <cstdlib>  // _waccess
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>  // access
+#endif
 
 namespace dchat {
 
@@ -170,7 +180,16 @@ std::wstring MakeUniquePathW(const std::wstring& directory, const std::wstring& 
     if (!prefix.empty() && prefix.back() != L'/' && prefix.back() != L'\\') prefix.push_back(L'\\');
 
     auto exists = [](const std::wstring& path) {
-        return ::GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+        // 用 C 的 _waccess 而不是 Windows API：两端都能编，语义也一样（存在即可读）
+#ifdef _WIN32
+        return _waccess(path.c_str(), 0) == 0;
+#else
+        // Linux 端这个函数只用 ASCII 路径（下载目录 + 文件名），wstring 直接按字节转
+        std::string narrow;
+        narrow.reserve(path.size());
+        for (wchar_t ch : path) narrow.push_back(ch < 128 ? static_cast<char>(ch) : '?');
+        return access(narrow.c_str(), F_OK) == 0;
+#endif
     };
 
     const std::wstring first = prefix + fileName;

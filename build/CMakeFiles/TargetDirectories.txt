@@ -12,7 +12,6 @@ D:/codes/dchat/build/CMakeFiles/test_ui_layout.dir
 D:/codes/dchat/build/CMakeFiles/test_chat_color.dir
 D:/codes/dchat/build/CMakeFiles/test_color_picker.dir
 D:/codes/dchat/build/CMakeFiles/picker_mockup.dir
-D:/codes/dchat/build/CMakeFiles/cc_probe.dir
 D:/codes/dchat/build/CMakeFiles/icon_probe.dir
 D:/codes/dchat/build/CMakeFiles/ui_mockup.dir
 D:/codes/dchat/build/CMakeFiles/test_server_rules.dir
