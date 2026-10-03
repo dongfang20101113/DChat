@@ -80,7 +80,10 @@ bool ClientConnection::Connect(const std::string& host, int port, std::string* e
     }
 
     socket_ = handle;
-    sock::SetNoDelay(socket_);  // 聊天都是小包，禁用 Nagle 才没有人为延迟
+    sock::SetNoDelay(socket_);   // 聊天都是小包，禁用 Nagle 才没有人为延迟
+    // macOS 上必须设这个：那边没有 MSG_NOSIGNAL，靠 SO_NOSIGPIPE 才不会被
+    // 「往已断开的连接写」产生的信号杀掉进程。Linux 上是空操作。
+    sock::SetNoSigpipe(socket_);
 
     // 握手失败**不等于连不上**：老服务器不认识 HELLO 时会把这行当普通聊天内容，
     // 我们等超时之后就当明文连接继续用（Windows 端和安卓端都是这个约定）。

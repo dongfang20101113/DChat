@@ -311,9 +311,22 @@ void EnableKeepAlive(dchat::sock::Handle handle) {
     const int idle = 30;     // 秒
     const int interval = 5;  // 秒
     const int count = 3;     // 探测几次算断
+    // 「空闲多久开始探测」这个选项三端三个名字：
+    //   Windows 走上面的 WSAIoctl 分支
+    //   Linux   TCP_KEEPIDLE
+    //   macOS   TCP_KEEPALIVE（含义相同，宏名不同）
+#ifdef __APPLE__
+    ::setsockopt(handle, IPPROTO_TCP, TCP_KEEPALIVE, &idle, sizeof(idle));
+#else
     ::setsockopt(handle, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+#endif
     ::setsockopt(handle, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+    // macOS 没有 TCP_KEEPCNT（探测次数由系统定），有就设、没有就跳过
+#ifndef __APPLE__
     ::setsockopt(handle, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
+#else
+    (void)count;
+#endif
 #endif
 }
 
@@ -1924,9 +1937,10 @@ int main(int argc, char** argv) {
         if (sock == dchat::sock::kInvalid) break;
 
         // 关掉 Nagle：聊天都是小消息，等合并会让人感觉卡顿
-        const bool noDelay = true; (void)noDelay;
-        ::setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&noDelay),
-                     sizeof(noDelay));
+        dchat::sock::SetNoDelay(sock);
+        // macOS 上必须在这里就把 SO_NOSIGPIPE 设上：那边没有 MSG_NOSIGNAL 标志，
+        // 漏了它的后果是「第一个断开的客户端把整个服务器打死」。Linux 上是空操作。
+        dchat::sock::SetNoSigpipe(sock);
         EnableKeepAlive(sock);  // 公网 / NAT 环境下尽早发现断掉的连接
 
         char host[64] = {0};

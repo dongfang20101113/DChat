@@ -53,6 +53,34 @@ using Address = sockaddr_in;
 inline constexpr Handle kInvalid = -1;
 #endif
 
+/**
+ * 「往已关闭的连接写不要杀进程」这个能力，三个平台的表达方式都不同：
+ *
+ *   Windows  完全没有 SIGPIPE 这个概念，不用管
+ *   Linux    send() 时传 MSG_NOSIGNAL 标志（per-call）
+ *   macOS    没有 MSG_NOSIGNAL，改成给 socket 设 SO_NOSIGPIPE 选项（per-socket），
+ *            所以**必须在建连/收连接之后就设上**，不能等到 send 时才管
+ *
+ * 抽成常量 + 一个设置函数，是为了让调用点不用到处写 #ifdef —— 漏掉一处的后果
+ * 是整个服务器被一个已断开的客户端打死，而这种崩溃在测试里很难碰到。
+ */
+#ifdef _WIN32
+inline constexpr int kSendFlags = 0;
+#elif defined(__APPLE__)
+inline constexpr int kSendFlags = 0;  // macOS 靠 SO_NOSIGPIPE，不是靠标志
+#else
+inline constexpr int kSendFlags = MSG_NOSIGNAL;
+#endif
+
+/**
+ * 给一个 socket 设上「写已关闭连接不产生 SIGPIPE」。
+ *
+ * Linux 上是空操作（那边用 kSendFlags 解决），macOS 上设 SO_NOSIGPIPE。
+ * **新建立的连接都要调它**，否则 macOS 上第一次写死连接就会收到 SIGPIPE
+ * 而直接终止进程。
+ */
+bool SetNoSigpipe(Handle handle);
+
 /** 进程启动时调一次；Windows 需要 WSAStartup，Linux 是空操作。 */
 bool Startup();
 

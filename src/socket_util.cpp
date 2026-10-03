@@ -48,6 +48,12 @@ void ShutdownWrite(Handle handle) {
 
 Handle CreateTcp() { return ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP); }
 
+// Windows 没有 SIGPIPE，空实现
+bool SetNoSigpipe(Handle handle) {
+    (void)handle;
+    return true;
+}
+
 bool SetReuseAddress(Handle handle) {
     const BOOL on = TRUE;
     return ::setsockopt(handle, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&on),
@@ -121,7 +127,11 @@ std::string PeerIp(const Address& address) { return ::inet_ntoa(address.sin_addr
 Address MakeAddress(const std::string& host, int port) {
     Address address{};
     address.sin_family = AF_INET;
-    address.sin_port = ::htons(static_cast<unsigned short>(port));
+    // 注意：**不能写 ::htons**。macOS 上 htons 是宏
+    // （#define htons(x) __DARWIN_OSSwapInt16(x)），加了 :: 会展开成
+    // "::((__uint16_t)...)" 这种非法语法。Windows / Linux 上它是函数，
+    // 加不加 :: 都行 —— 所以统一不加，三端通吃。
+    address.sin_port = htons(static_cast<unsigned short>(port));
     if (host.empty() || host == "0.0.0.0" || host == "*") {
         address.sin_addr.s_addr = INADDR_ANY;
     } else {
@@ -145,6 +155,20 @@ void ShutdownWrite(Handle handle) {
 }
 
 Handle CreateTcp() { return ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP); }
+
+bool SetNoSigpipe(Handle handle) {
+#ifdef __APPLE__
+    // macOS 没有 MSG_NOSIGNAL，只能给 socket 设 SO_NOSIGPIPE。
+    // 不设的话：往已断开的连接写 -> SIGPIPE -> 进程直接被杀。
+    const int on = 1;
+    return ::setsockopt(handle, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on)) == 0;
+#else
+    // Linux 上用 send 的 MSG_NOSIGNAL 标志解决，这里不用做事。
+    // 但入口保留：调用点不必区分平台。
+    (void)handle;
+    return true;
+#endif
+}
 
 bool SetReuseAddress(Handle handle) {
     const int on = 1;
@@ -177,8 +201,9 @@ Handle Accept(Handle listener, Address* peer) {
 }
 
 std::ptrdiff_t Send(Handle handle, const void* data, std::size_t length) {
-    // MSG_NOSIGNAL：对端已关闭时不要让进程收到 SIGPIPE（默认会直接杀掉进程）
-    const ssize_t written = ::send(handle, data, length, MSG_NOSIGNAL);
+    // kSendFlags 在 Linux 上是 MSG_NOSIGNAL（对端关闭时不产生 SIGPIPE），
+    // 在 macOS 上是 0 —— 那边靠 SetNoSigpipe 设的 SO_NOSIGPIPE 解决。
+    const ssize_t written = ::send(handle, data, length, kSendFlags);
     return written < 0 ? -1 : written;
 }
 
@@ -202,7 +227,11 @@ std::string PeerIp(const Address& address) {
 Address MakeAddress(const std::string& host, int port) {
     Address address{};
     address.sin_family = AF_INET;
-    address.sin_port = ::htons(static_cast<unsigned short>(port));
+    // 注意：**不能写 ::htons**。macOS 上 htons 是宏
+    // （#define htons(x) __DARWIN_OSSwapInt16(x)），加了 :: 会展开成
+    // "::((__uint16_t)...)" 这种非法语法。Windows / Linux 上它是函数，
+    // 加不加 :: 都行 —— 所以统一不加，三端通吃。
+    address.sin_port = htons(static_cast<unsigned short>(port));
     if (host.empty() || host == "0.0.0.0" || host == "*") {
         address.sin_addr.s_addr = INADDR_ANY;
     } else {

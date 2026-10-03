@@ -1,0 +1,4 @@
+# shell 脚本必须用 LF 换行：从 Windows 打包传进 Linux 后，
+# CRLF 会让 bash 把 \r 当成命令的一部分，出现很难懂的怪错
+# （实际踩过：脚本里一段 if 判断整个被跳过，报出无关的"找不到 zig"）。
+*.sh text eol=lf
