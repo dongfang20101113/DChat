@@ -61,7 +61,9 @@ int main() {
     {
         const std::vector<dchat::MenuItem> items =
             dchat::LayoutMenuItems(dc, g_font, kWidth, /*connected=*/false);
-        check(items.size() == 3, "三项：连接 / 设置 / 帮助");
+        // 只有两项：**「设置」只在右上角齿轮那里**——菜单栏再摆一个「设置」，
+        // 用户第一反应就是"怎么有两个设置"
+        check(items.size() == 2, "两项：连接 / 帮助（设置在齿轮里）");
         check(items[0].label == L"连接", "没连上时第一项是「连接」");
         check(items[0].rect.left >= 0 && items[0].rect.top >= 0, "第一项不出界");
         check(items[0].rect.bottom <= dchat::kMenuBarHeight, "菜单项不超出菜单栏高度");

@@ -20,7 +20,9 @@ namespace dchat {
 struct ServerRules {
     int chatIntervalMs = 0;        // chatinterval：两条消息之间最少间隔（毫秒），0 = 不限制
     int documentSizeMb = 64;       // documentsize：单个文件最大 MB（默认 64，和以前一致）
-    bool keepChatHistory = false;  // keepchathistory：新加入的人能否看到之前的聊天记录和文件
+    bool keepChatHistory = false;  // keepchathistory
+    bool chatColor = true;         // chatcolor：允不允许聊天里用彩色代码（#RRGGBB / &a）。
+                                   // 关掉后客户端的色码**原样显示**，不是把它删掉
     int maxServerTempMb = 1048;    // maxservertemp：服务端保存文件 + 聊天记录缓存的总上限（MB）
 
     // ---- 2026-10 新增：公网接入需要的限速与文本限制 ----

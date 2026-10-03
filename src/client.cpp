@@ -50,6 +50,7 @@
 #include "rounded.h"
 #include "server_command.h"  // LooksLikePasswordCommand：改密码那一行不进输入历史
 #include "server_rules.h"    // RuleMbToBytes / 服务器规则
+#include "chat_color.h"       // 彩色文字代码（#rrggbb / &a）
 #include "ui_layout.h"       // 菜单栏 / 状态条 / 输入行的几何与图标
 #include "voice_notes.h"     // 语音消息：录音、播放、判定
 
@@ -167,6 +168,9 @@ bool g_chipHover = false;
 int g_contentTop = 0;          // 记录区上边界（菜单栏底边）
 std::string g_statusLine;      // 状态条上的只读文字
 int g_voiceLimitSeconds = 60;  // 语音最长时长（设置里可改；上限还受 2 MB 约束）
+bool g_chatColorEnabled = true;  // 彩色文字代码是否生效（服务器用 chatcolor 规则控制）
+// 排版时的"还没被色码上色"哨兵色：真正用什么色要等绘制时看气泡（自己的/别人的）
+constexpr COLORREF kAutoColor = 0xFFFFFFFF;
 
 std::map<HWND, bool> g_hover;
 
@@ -201,6 +205,7 @@ void DrawWindowChrome(HWND hwnd, HDC dc, const RECT& client);  // 定义在下�
 void OpenSettings(HWND parent);      // 定义在下面：打开设置窗口
 std::string StatusChipText();        // 定义在下面：菜单栏右侧胶囊上的字
 std::string BuildStatusLine();       // 定义在下面：状态条上的只读文字
+bool HandleLocalCommand(const std::wstring& text);  // 定义在下面：/chatcolor 这类本机指令
 void DoSendFile(HWND hwnd);          // 定义在下面：选一个文件发出去
 void DoConnect(HWND hwnd);           // 定义在下面：连接
 void DoDisconnect(HWND hwnd);        // 定义在下面：断开
@@ -465,6 +470,10 @@ struct BubbleRow {
     int fileState = 0;
     int fileProgress = 0;
     RECT buttonRect{};
+    // 带颜色的正文：**排版在测量时就做好存下来**，绘制时直接用。
+    // 自己排版是因为要一段一段换色画，DrawText 的 DT_WORDBREAK 帮不上忙
+    // （它一次只认一个颜色）。
+    dchat::ColorLayout colored;
     RECT previewRect{};  // 缩略图（没有预览时是空矩形）
     std::shared_ptr<void> preview;  // 缩略图位图（HBITMAP）
     // 语音气泡专用（isVoice 时 fileButton 里放的是时长文字）
@@ -595,11 +604,13 @@ std::vector<BubbleRow> LayoutRows(HDC dc, int width, int* contentHeight) {
                 row.time = say.time;
                 row.text = say.text;
 
-                const SIZE size = dchat::MeasureWrappedText(dc, Utf8ToWide(say.text),
-                                                           maxBubble - padX * 2, ui.font);
+                // 正文自己排版（要一段一段换色）：宽度和以前一样，高度用它算出来的
+                row.colored = dchat::LayoutColoredText(dc, Utf8ToWide(say.text),
+                                                       g_palette->text, g_chatColorEnabled,
+                                                       maxBubble - padX * 2, ui.font);
                 RECT area{0, y + headerH, width, y + headerH};
                 const dchat::BubblePlacement place = dchat::PlaceBubble(
-                    area, size.cx, size.cy,
+                    area, row.colored.width, row.colored.height,
                     say.own ? dchat::BubbleAlign::Right : dchat::BubbleAlign::Left, padX, padY, margin,
                     maxBubble);
                 row.bubble = place.bubble;
@@ -914,8 +925,24 @@ void DrawRow(HDC dc, const BubbleRow& row) {
         borderWidth = 2.0f;
     }
     ui::FillRoundedRect(dc, row.bubble, 12, fill, border, borderWidth);
-    DrawTextIn(dc, Utf8ToWide(row.text), row.textRect, ui.font, bodyColor,
-               DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_NOPREFIX | DT_EDITCONTROL);
+    // 正文一段一段画（每段一个颜色）。默认色用气泡自己的文字色——
+    // 关掉彩色聊天或服务器禁用时，ParseChatColors 会把色码原样留在文字里，
+    // 而且这时候不该再用用户的颜色（统一成气泡文字色）。
+    const bool colorsOn = g_chatColorEnabled;
+    const dchat::ColorLayout& layout = row.colored;
+    int lineTop = row.textRect.top;
+    for (const dchat::ColorLine& line : layout.lines) {
+        for (const dchat::ColoredSpan& span : line.spans) {
+            if (span.text.empty()) continue;
+            const COLORREF color =
+                (colorsOn && span.color != kAutoColor) ? span.color : bodyColor;
+            RECT spanRect{row.textRect.left + span.x, lineTop, row.textRect.right,
+                          lineTop + layout.lineHeight};
+            DrawTextIn(dc, span.text, spanRect, ui.font, color,
+                       DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        lineTop += layout.lineHeight;
+    }
 }
 
 void ViewScrollToBottom(HWND view) {
@@ -1195,6 +1222,21 @@ ButtonKind KindOf(int id) {
     }
 }
 
+constexpr const wchar_t* kSettingsClass = L"DchatSettingsDlg";  // 设置窗口类名（下面判断底色要用）
+
+// 自绘控件"圆角外面那一圈"该涂什么色：**必须和控件所在窗口的底色一致**。
+// 以前这里写死 g_palette->windowBg：主窗口的底色确实是它，但设置窗口底色是
+// g_palette->panel（更亮），于是「取消 / 完成」圆角外被涂成暗色方块，
+// 看起来就是"边缘不平滑、有方框"。
+COLORREF ParentBackgroundOf(HWND control) {
+    const HWND parent = control ? GetParent(control) : nullptr;
+    if (!parent) return g_palette->windowBg;
+    wchar_t cls[128] = {0};
+    GetClassNameW(parent, cls, 128);
+    if (wcscmp(cls, kSettingsClass) == 0) return g_palette->panel;
+    return g_palette->windowBg;
+}
+
 void DrawOwnerButton(const DRAWITEMSTRUCT* item) {
     if (!item) return;
     const RECT rect = item->rcItem;
@@ -1222,7 +1264,8 @@ void DrawOwnerButton(const DRAWITEMSTRUCT* item) {
 
     HDC dc = item->hDC;
     const int radius = (rect.bottom - rect.top) / 2;
-    ui::DrawRoundedControl(dc, rect, radius, g_palette->windowBg, fill, border);
+    ui::DrawRoundedControl(dc, rect, radius, g_palette->windowBg, fill, border,
+                           ParentBackgroundOf(item->hwndItem));
 
     wchar_t label[64] = {0};
     GetWindowTextW(item->hwndItem, label, 64);
@@ -1397,6 +1440,7 @@ void LayoutWindowChrome(HWND hwnd) {
 }
 
 void DrawWindowChrome(HWND hwnd, HDC dc, const RECT& client) {
+    (void)hwnd;  // 外壳完全按 client 矩形画，不需要窗口句柄（签名保持一致，方便以后用）
     const int width = client.right;
 
     // ---- 菜单栏 ----
@@ -3534,7 +3578,6 @@ bool PromptAuth(HWND parent, AuthDialogState& state) {
 // 天天占着一条，还让人分不清哪个是"状态"、哪个是"操作"。
 //
 // 样式和连接/登录窗口保持一致：自绘圆角、系统标题栏下不刺眼。
-constexpr const wchar_t* kSettingsClass = L"DchatSettingsDlg";
 constexpr int IDS_HOST = 200;
 constexpr int IDS_PORT = 201;
 constexpr int IDS_OK = 202;
@@ -3566,7 +3609,7 @@ struct SettingsState {
 void DrawSegment(HDC dc, const RECT& rect, const wchar_t* const* labels, int count, int selected,
                  HFONT font, int hovered) {
     ui::DrawRoundedControl(dc, rect, 8, g_palette->panel, g_palette->neutral,
-                           g_palette->neutralBorder);
+                           g_palette->neutralBorder, g_palette->panel);
     const int width = (rect.right - rect.left) / (count > 0 ? count : 1);
     for (int i = 0; i < count; ++i) {
         RECT part{rect.left + i * width + 2, rect.top + 2, rect.left + (i + 1) * width - 2,
@@ -3724,63 +3767,82 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             HDC dc = BeginPaint(hwnd, &ps);
             RECT client{};
             GetClientRect(hwnd, &client);
+
+            // **双缓冲**：整窗内容先画到内存 DC，最后一次性贴上去。
+            // 直接画屏幕的话，悬停高亮这种"整窗重画"会露出没画完的一帧
+            // ——用户看到的就是"鼠标移上去黑一闪"。
+            HDC buffer = CreateCompatibleDC(dc);
+            HBITMAP canvas = CreateCompatibleBitmap(dc, client.right, client.bottom);
+            HGDIOBJ oldBitmap = SelectObject(buffer, canvas);
+            const int saved = SaveDC(buffer);
+
             HBRUSH bg = CreateSolidBrush(g_palette->panel);
-            FillRect(dc, &client, bg);
+            FillRect(buffer, &client, bg);
             DeleteObject(bg);
             if (!state) {
+                RestoreDC(buffer, saved);
+                SelectObject(buffer, oldBitmap);
+                DeleteObject(canvas);
+                DeleteDC(buffer);
                 EndPaint(hwnd, &ps);
                 return 0;
             }
             const dchat::SettingsLayout& layout = state->layout;
 
-            DrawTextIn(dc, L"设置", layout.title, ui.fontLarge, g_palette->text,
+            DrawTextIn(buffer, L"设置", layout.title, ui.fontLarge, g_palette->text,
                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            DrawTextIn(dc, L"✕", layout.closeButton, ui.font, g_palette->system,
-                       DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            // 关闭只有标题栏那一个：在标题正下方再画一个 ✕ 会让人以为有两个关闭键
             HBRUSH line = CreateSolidBrush(g_palette->border);
-            FillRect(dc, &layout.separator, line);
+            FillRect(buffer, &layout.separator, line);
             DeleteObject(line);
 
             auto section = [&](const wchar_t* text, int top) {
                 RECT rect{layout.title.left, top, layout.title.right, top + 22};
-                DrawTextIn(dc, text, rect, ui.fontSmall, g_palette->system,
+                DrawTextIn(buffer, text, rect, ui.fontSmall, g_palette->system,
                            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
             };
             auto label = [&](const wchar_t* text, const RECT& control) {
                 RECT rect{layout.title.left, control.top, layout.themeSegment.left - 16,
                           control.bottom};
-                DrawTextIn(dc, text, rect, ui.font, g_palette->text,
+                DrawTextIn(buffer, text, rect, ui.font, g_palette->text,
                            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
             };
 
             section(L"外观", layout.themeSegment.top - 34);
             label(L"主题", layout.themeSegment);
-            DrawSegment(dc, layout.themeSegment, kThemeChoiceLabels, 3, state->themeChoice, ui.font,
+            DrawSegment(buffer, layout.themeSegment, kThemeChoiceLabels, 3, state->themeChoice, ui.font,
                         state->themeHover);
             label(L"彩色聊天", layout.colorToggle);
-            DrawToggle(dc, layout.colorToggle, state->colorEnabled);
-            DrawTextIn(dc, L"给昵称和气泡上色", layout.colorToggleLabel, ui.fontSmall,
+            DrawToggle(buffer, layout.colorToggle, state->colorEnabled);
+            DrawTextIn(buffer, L"给昵称和气泡上色", layout.colorToggleLabel, ui.fontSmall,
                        g_palette->system, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
             section(L"服务器", layout.hostField.top - 34);
             label(L"地址", layout.hostField);
-            ui::DrawRoundedControl(dc, layout.hostField, 8, g_palette->panel,
+            ui::DrawRoundedControl(buffer, layout.hostField, 8, g_palette->panel,
                                    g_palette->bubbleOther,
                                    GetFocus() == state->hostEdit ? g_palette->accent
-                                                                 : g_palette->border);
+                                                                 : g_palette->border,
+                                   g_palette->panel);
             label(L"端口", layout.portField);
-            ui::DrawRoundedControl(dc, layout.portField, 8, g_palette->panel,
+            ui::DrawRoundedControl(buffer, layout.portField, 8, g_palette->panel,
                                    g_palette->bubbleOther,
                                    GetFocus() == state->portEdit ? g_palette->accent
-                                                                 : g_palette->border);
+                                                                 : g_palette->border,
+                                   g_palette->panel);
 
             section(L"语音", layout.voiceSegment.top - 34);
             label(L"最长时长", layout.voiceSegment);
-            DrawSegment(dc, layout.voiceSegment, kVoiceLimitLabels, 3, state->voiceChoice, ui.font,
+            DrawSegment(buffer, layout.voiceSegment, kVoiceLimitLabels, 3, state->voiceChoice, ui.font,
                         state->voiceHover);
-            DrawTextIn(dc, L"当前是未压缩 PCM，2 MB 上限大约 1 分钟", layout.voiceHint,
+            DrawTextIn(buffer, L"当前是未压缩 PCM，2 MB 上限大约 1 分钟", layout.voiceHint,
                        ui.fontSmall, g_palette->system,
                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+            RestoreDC(buffer, saved);
+            BitBlt(dc, 0, 0, client.right, client.bottom, buffer, 0, 0, SRCCOPY);
+            SelectObject(buffer, oldBitmap);
+            DeleteObject(canvas);
+            DeleteDC(buffer);
             EndPaint(hwnd, &ps);
             return 0;
         }
@@ -3970,6 +4032,9 @@ void SendCurrentInput() {
     if (length <= 0) return;
     std::wstring text(static_cast<std::size_t>(length), L'\0');
     GetWindowTextW(ui.hInput, &text[0], length + 1);
+    // 本机指令（/chatcolor 之类）就地处理，不发到服务器——
+    // 它们只是改输入框内容或往记录区写帮助，不需要联网
+    if (HandleLocalCommand(text)) return;
     SetWindowTextW(ui.hInput, L"");
     const std::string utf8 = WideToUtf8(text);
     if (utf8.empty()) return;
@@ -4001,6 +4066,210 @@ void SetInputText(const std::wstring& text) {
     SetWindowTextW(ui.hInput, text.c_str());
     const int length = GetWindowTextLengthW(ui.hInput);
     SendMessageW(ui.hInput, EM_SETSEL, static_cast<WPARAM>(length), static_cast<LPARAM>(length));
+}
+
+// ---------------- /chatcolor：彩色文字代码 ----------------
+//
+// 三个入口（`/charcolor` 是常见的手误写法，一并认）：
+//   /chatcolor            和 help 一样
+//   /chatcolor help       常用色码对照表（同时把表放进聊天记录，方便对照）
+//   /chatcolor choose     弹色板；选一个颜色就把 `#rrggbb` 放进输入框
+//
+// 色板那条"未确定就再选一次"的约定：**没按确定键之前，上一次挑的色码会被这次覆盖**，
+// 不会越堆越长（用户明确要求过）。
+std::wstring g_lastPickedCode;  // 上一次放进输入框、还没确定的那段色码
+constexpr int kPickerCell = 34;    // 色板一格
+constexpr int kPickerPad = 12;
+constexpr int kPickerRows = 4;     // 色板行数（色板一共 32 色 = 8 列 x 4 行）
+int g_pickerHover = -1;
+
+void ChatColorCommand(HWND hwnd, const std::wstring& argument);
+
+LRESULT CALLBACK ColorPickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* chosen = reinterpret_cast<COLORREF*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+        case WM_CREATE: {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                              reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+            return 0;
+        }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            HBRUSH bg = CreateSolidBrush(g_palette->panel);
+            FillRect(dc, &client, bg);
+            DeleteObject(bg);
+
+            const std::vector<dchat::PaletteSwatch>& palette = dchat::ColorPalette();
+            const int cell = kPickerCell;
+            for (std::size_t i = 0; i < palette.size(); ++i) {
+                const int col = static_cast<int>(i) % dchat::kPaletteColumns;
+                const int row = static_cast<int>(i) / dchat::kPaletteColumns;
+                const RECT swatch{kPickerPad + col * cell, kPickerPad + row * cell,
+                                  kPickerPad + col * cell + cell - 8,
+                                  kPickerPad + row * cell + cell - 8};
+                ui::FillRoundedRect(dc, swatch, 6, palette[i].color, palette[i].color, 0.0f);
+                if (static_cast<int>(i) == g_pickerHover) {
+                    ui::OutlineRoundedRect(dc, swatch, 6, g_palette->text);
+                }
+            }
+            const int footer = kPickerPad * 2 + kPickerRows * cell;
+            DrawTextIn(dc, L"点一个颜色 → 色码放进输入框（再选会覆盖上一个）",
+                       RECT{kPickerPad, footer - kPickerPad + 2, client.right - kPickerPad,
+                            client.bottom - 4},
+                       ui.fontSmall, g_palette->system,
+                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_MOUSEMOVE: {
+            const int x = GET_X_LPARAM(lp);
+            const int y = GET_Y_LPARAM(lp);
+            const int col = (x - kPickerPad) / kPickerCell;
+            const int row = (y - kPickerPad) / kPickerCell;
+            int hover = -1;
+            if (col >= 0 && col < dchat::kPaletteColumns && row >= 0) {
+                const int index = row * dchat::kPaletteColumns + col;
+                if (index >= 0 && index < static_cast<int>(dchat::ColorPalette().size())) {
+                    hover = index;
+                }
+            }
+            if (hover != g_pickerHover) {
+                g_pickerHover = hover;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+        case WM_LBUTTONDOWN: {
+            const int x = GET_X_LPARAM(lp);
+            const int y = GET_Y_LPARAM(lp);
+            const int col = (x - kPickerPad) / kPickerCell;
+            const int row = (y - kPickerPad) / kPickerCell;
+            const int index = row * dchat::kPaletteColumns + col;
+            if (col >= 0 && col < dchat::kPaletteColumns && row >= 0 && index >= 0 &&
+                index < static_cast<int>(dchat::ColorPalette().size())) {
+                if (chosen) *chosen = dchat::ColorPalette()[index].color;
+            }
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        case WM_KILLFOCUS:
+            DestroyWindow(hwnd);
+            return 0;
+        default:
+            break;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// 弹色板；用户点了颜色返回 true，把颜色写进 *out
+bool PickColor(HWND parent, COLORREF* out) {
+    constexpr const wchar_t* kPickerClass = L"DchatColorPicker";
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;
+        wc.lpfnWndProc = ColorPickerProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hbrBackground = nullptr;
+        wc.lpszClassName = kPickerClass;
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+    COLORREF chosen = kAutoColor;
+    const int width = kPickerPad * 2 + dchat::kPaletteColumns * kPickerCell;
+    const int height = kPickerPad * 2 + kPickerRows * kPickerCell + 14;
+
+    // 摆在主窗口上方居中（和「＋」菜单一样是独立弹出窗口，不受客户区布局限制）
+    RECT parentRect{};
+    GetWindowRect(parent, &parentRect);
+    const int x = parentRect.left + ((parentRect.right - parentRect.left) - width) / 2;
+    const int y = parentRect.top + 80;
+
+    HWND picker = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, kPickerClass, L"选择颜色",
+                                  WS_POPUP, x, y, width, height, parent, nullptr,
+                                  GetModuleHandleW(nullptr), &chosen);
+    if (!picker) return false;
+    g_pickerHover = -1;
+    ShowWindow(picker, SW_SHOW);
+    SetForegroundWindow(picker);
+
+    MSG msg;
+    while (IsWindow(picker) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (!IsDialogMessageW(picker, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    if (IsWindow(picker)) DestroyWindow(picker);
+    SetForegroundWindow(parent);
+    SetFocus(ui.hInput);
+    if (chosen == kAutoColor) return false;
+    *out = chosen;
+    return true;
+}
+
+// 把色码放进输入框：先删掉上一次"还没确定"的那段，再插入这次的
+void InsertColorCode(const std::wstring& code) {
+    std::wstring text = CurrentInputText();
+    if (!g_lastPickedCode.empty()) {
+        const std::size_t at = text.find(g_lastPickedCode);
+        if (at != std::wstring::npos) text.erase(at, g_lastPickedCode.size());
+    }
+    text = code + text;  // 色码放最前面：后面的文字都用这个颜色
+    SetInputText(text);
+    g_lastPickedCode = code;
+}
+
+void ChatColorCommand(HWND hwnd, const std::wstring& argument) {
+    std::wstring action = argument;
+    for (wchar_t& ch : action) ch = static_cast<wchar_t>(towlower(ch));
+    while (!action.empty() && action.front() == L' ') action.erase(action.begin());
+    while (!action.empty() && action.back() == L' ') action.pop_back();
+
+    if (action.empty() || action == L"help" || action == L"?" || action == L"列表") {
+        ViewAddItem(ItemKind::Notice, WideToUtf8(dchat::ChatColorHelpText()),
+                    dchat::NowTimeString());
+        return;
+    }
+    if (action == L"choose" || action == L"choose " || action == L"色板" || action == L"pick") {
+        COLORREF color = 0;
+        if (!PickColor(hwnd, &color)) return;  // 用户没选就关掉了
+        InsertColorCode(dchat::ColorToHex(color));
+        return;
+    }
+    ViewAddItem(ItemKind::Error, "用法：/chatcolor help 看色码表，/chatcolor choose 弹色板",
+                dchat::NowTimeString());
+}
+
+// 发送前拦一道：`/chatcolor ...` / `/charcolor ...` 是本机指令，不发到服务器
+bool HandleLocalCommand(const std::wstring& text) {
+    if (text.size() < 2 || text[0] != L'/') return false;
+    std::wstring name = text.substr(1);
+    const std::size_t space = name.find(L' ');
+    std::wstring argument;
+    if (space != std::wstring::npos) {
+        argument = name.substr(space + 1);
+        name = name.substr(0, space);
+    }
+    for (wchar_t& ch : name) ch = static_cast<wchar_t>(towlower(ch));
+    // 两种拼写都认（用户可能按英式/美式习惯打）
+    if (name == L"chatcolor" || name == L"charcolor" || name == L"chatcolour" ||
+        name == L"color" || name == L"colour") {
+        ChatColorCommand(ui.hwnd, argument);
+        g_inputHistory.Add(WideToUtf8(text));
+        SetWindowTextW(ui.hInput, L"");
+        g_lastPickedCode.clear();  // 指令走完了，不再"未确定"
+        return true;
+    }
+    return false;
 }
 
 WNDPROC g_oldInputProc = nullptr;
@@ -4087,10 +4356,24 @@ void Layout(HWND hwnd) {
     // （这样文字天然有内边距，圆角也不会被方形底色盖住）
     g_inputPill = g_bottom.inputPill;
     const int innerPadX = dchat::kMessagePaddingX;
-    const int innerPadY = 5;
-    MoveWindow(ui.hInput, g_inputPill.left + innerPadX, g_inputPill.top + innerPadY,
-               (g_inputPill.right - g_inputPill.left) - innerPadX * 2,
-               (g_inputPill.bottom - g_inputPill.top) - innerPadY * 2, TRUE);
+    // **编辑框的高度要贴住文字本身**，再整体竖直居中。
+    // 以前是"胶囊高度减去上下各 5 像素"，那个高度比文字行高大，单行编辑框默认把文字
+    // 顶在上边，看起来就是"文字偏上"。
+    int textHeight = 0;
+    {
+        HDC dc = GetDC(hwnd);
+        HGDIOBJ oldFont = SelectObject(dc, ui.font);
+        TEXTMETRICW metrics{};
+        GetTextMetricsW(dc, &metrics);
+        textHeight = metrics.tmHeight;
+        SelectObject(dc, oldFont);
+        ReleaseDC(hwnd, dc);
+    }
+    const int pillHeight = g_inputPill.bottom - g_inputPill.top;
+    const int editHeight = textHeight > 0 && textHeight < pillHeight ? textHeight : pillHeight - 10;
+    const int editTop = g_inputPill.top + (pillHeight - editHeight) / 2;
+    MoveWindow(ui.hInput, g_inputPill.left + innerPadX, editTop,
+               (g_inputPill.right - g_inputPill.left) - innerPadX * 2, editHeight, TRUE);
     MoveWindow(ui.hSend, g_bottom.sendButton.left, g_bottom.sendButton.top,
                g_bottom.sendButton.right - g_bottom.sendButton.left,
                g_bottom.sendButton.bottom - g_bottom.sendButton.top, TRUE);
@@ -4476,6 +4759,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     if (!fields.empty()) {
                         const int mb = std::atoi(fields[0].c_str());
                         if (mb >= 1 && mb <= 4096) g_maxFileMb = mb;
+                    }
+                    // chatcolor=1|0 是**具名**字段（追加在末尾），按名字找，
+                    // 这样以后服务器再加字段也不会读错位置
+                    for (const std::string& field : fields) {
+                        if (field.compare(0, 10, "chatcolor=") == 0) {
+                            const bool on = field.substr(10) != "0";
+                            if (on != g_chatColorEnabled) {
+                                g_chatColorEnabled = on;
+                                if (ui.hView) InvalidateRect(ui.hView, nullptr, TRUE);
+                                ViewAddItem(ItemKind::Notice,
+                                            on ? "服务器已开启彩色文字代码"
+                                               : "服务器已关闭彩色文字代码（色码会原样显示）",
+                                            dchat::NowTimeString());
+                            }
+                        }
                     }
                     delete payload;
                     return 0;  // 这是给客户端用的控制行，不显示在聊天记录里

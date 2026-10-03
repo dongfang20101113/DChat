@@ -31,7 +31,7 @@ target_link_libraries(dchat_server PRIVATE dchat_protocol ws2_32 Threads::Thread
 # 预览用 Windows 自带的缩略图提供者（shell32/ole32），所以放在 dchat_ui 里
 # 语音：录音（waveIn/winmm）、压缩（ACM/msacm32）、播放（PlaySound/winmm）。
 # 放在 dchat_ui 里是因为它和预览一样属于"系统能力"，不属于聊天协议。
-add_library(dchat_ui STATIC src/rounded.cpp src/bubble.cpp src/image_preview.cpp src/voice_notes.cpp src/ui_layout.cpp)
+add_library(dchat_ui STATIC src/rounded.cpp src/bubble.cpp src/image_preview.cpp src/voice_notes.cpp src/ui_layout.cpp src/chat_color.cpp)
 target_include_directories(dchat_ui PUBLIC src)
 target_link_libraries(dchat_ui PUBLIC gdiplus gdi32 user32 shell32 ole32 winmm)
 
@@ -76,6 +76,10 @@ target_link_libraries(test_voice_notes PRIVATE dchat_ui dchat_protocol)
 # 主窗口外壳的布局测试（菜单栏 / 状态条 / 输入行 / 加号菜单 / 设置窗口的几何）
 add_executable(test_ui_layout tests/test_ui_layout.cpp)
 target_link_libraries(test_ui_layout PRIVATE dchat_ui)
+
+# 彩色文字代码：解析与排版是纯计算，单独测
+add_executable(test_chat_color tests/test_chat_color.cpp)
+target_link_libraries(test_chat_color PRIVATE dchat_ui)
 
 # 界面改版效果图：把提议的新布局离屏画成 PNG（复用真界面的配色/字号/圆角绘制）
 # 不是测试目标，只在改版讨论时用：build\ui_mockup.exe [输出目录]
@@ -159,5 +163,6 @@ add_test(NAME file_transfer_tests COMMAND test_file_transfer)
 add_test(NAME crypto_tests COMMAND test_crypto)
 add_test(NAME voice_notes_tests COMMAND test_voice_notes)
 add_test(NAME ui_layout_tests COMMAND test_ui_layout)
+add_test(NAME chat_color_tests COMMAND test_chat_color)
 
 

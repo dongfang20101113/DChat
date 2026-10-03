@@ -25,6 +25,9 @@ void Shutdown() {
 
 namespace {
 
+// parentBackground 的默认值：表示"和 background 一样"（老调用点的行为）
+constexpr COLORREF kSameAsBackground = 0xFFFFFFFF;
+
 Gdiplus::Color ToGdiColor(COLORREF color) {
     return Gdiplus::Color(255, GetRValue(color), GetGValue(color), GetBValue(color));
 }
@@ -52,9 +55,12 @@ void BuildPath(Gdiplus::GraphicsPath& path, const RECT& rect, int radius) {
 }  // namespace
 
 void DrawRoundedControl(HDC dc, const RECT& rect, int radius, COLORREF background, COLORREF fill,
-                        COLORREF border) {
-    // 先铺底色，把圆角外面那部分也一起覆盖掉
-    HBRUSH backgroundBrush = CreateSolidBrush(background);
+                        COLORREF border, COLORREF parentBackground) {
+    // 先铺底色，把圆角外面那部分也一起覆盖掉。
+    // parentBackground 默认取 background（向后兼容）；**窗口底色和控件周围的颜色不一样时
+    // 必须显式传**，否则圆角外那圈会被涂成另一种颜色，看起来就是"边缘不平滑/有方块"。
+    const COLORREF outside = parentBackground == kSameAsBackground ? background : parentBackground;
+    HBRUSH backgroundBrush = CreateSolidBrush(outside);
     FillRect(dc, &rect, backgroundBrush);
     DeleteObject(backgroundBrush);
 

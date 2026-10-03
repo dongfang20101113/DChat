@@ -442,7 +442,7 @@ int main() {
         const dchat::CompletionResult rules = dchat::Suggest("/chatrule ", noNicks);
         check(rules.isArgument && rules.matches.size() == dchat::AllRuleNames().size(),
               "打 /chatrule + 空格 会列出全部规则名");
-        check(rules.matches.size() == 12 && rules.matches[0] == "chatinterval" &&
+        check(rules.matches.size() == 13 && rules.matches[0] == "chatinterval" &&
                   rules.groups[0] == "服务器规则",
               "规则名按顺序给出，并分到「服务器规则」组");
         bool hintsOk = rules.hints.size() == rules.matches.size();
@@ -451,8 +451,12 @@ int main() {
         }
         check(hintsOk, "每个规则名都带灰色用法说明");
 
-        const dchat::CompletionResult one = dchat::Suggest("/chatrule ch", noNicks);
-        check(one.matches.size() == 1 && one.matches[0] == "chatinterval", "按前缀过滤规则名");
+        // `/chatrule ch` 现在会同时匹配 chatcolor 和 chatinterval（两个都以 ch 开头），
+        // 所以用一个仍然唯一的前缀验证"按前缀过滤"，再单独验证"不唯一时都给出"
+        const dchat::CompletionResult one = dchat::Suggest("/chatrule chatc", noNicks);
+        check(one.matches.size() == 1 && one.matches[0] == "chatcolor", "按前缀过滤规则名");
+        check(dchat::Suggest("/chatrule ch", noNicks).matches.size() == 2,
+              "前缀不唯一时把两个都列出来（chatcolor / chatinterval）");
         check(dchat::Suggest("/chatrule keep", noNicks).matches[0] == "keepchathistory",
               "keep 前缀能补到 keepchathistory");
 

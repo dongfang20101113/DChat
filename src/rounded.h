@@ -15,7 +15,7 @@ void Shutdown();
 // 2) 再用 fill 填充圆角形状，并用 border 描 1px 边。
 // 使用 GDI+ 的抗锯齿绘制，圆角边缘不会有锯齿。
 void DrawRoundedControl(HDC dc, const RECT& rect, int radius, COLORREF background, COLORREF fill,
-                        COLORREF border);
+                        COLORREF border, COLORREF parentBackground = 0xFFFFFFFF);
 
 // 只填充圆角形状（不铺底色、可指定边框粗细、可传 0 表示不要边框）。
 // 适合画在已经绘制好背景的画布上，例如聊天气泡。

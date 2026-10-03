@@ -1,10 +1,10 @@
-Start testing: Oct 02 20:38 �й���׼ʱ��
+Start testing: Oct 03 11:08 �й���׼ʱ��
 ----------------------------------------------------------
-1/13 Testing: protocol_tests
-1/13 Test: protocol_tests
+1/14 Testing: protocol_tests
+1/14 Test: protocol_tests
 Command: "D:/codes/dchat/build/test_protocol.exe"
 Directory: D:/codes/dchat/build
-"protocol_tests" start time: Oct 02 20:38 �й���׼ʱ��
+"protocol_tests" start time: Oct 03 11:08 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat protocol tests ==
@@ -87,15 +87,15 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"protocol_tests" end time: Oct 02 20:38 �й���׼ʱ��
+"protocol_tests" end time: Oct 03 11:08 �й���׼ʱ��
 "protocol_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-2/13 Testing: render_tests
-2/13 Test: render_tests
+2/14 Testing: render_tests
+2/14 Test: render_tests
 Command: "D:/codes/dchat/build/test_render.exe"
 Directory: D:/codes/dchat/build
-"render_tests" start time: Oct 02 20:38 �й���׼ʱ��
+"render_tests" start time: Oct 03 11:08 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat render tests ==
@@ -162,15 +162,15 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"render_tests" end time: Oct 02 20:38 �й���׼ʱ��
+"render_tests" end time: Oct 03 11:08 �й���׼ʱ��
 "render_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-3/13 Testing: rounded_tests
-3/13 Test: rounded_tests
+3/14 Testing: rounded_tests
+3/14 Test: rounded_tests
 Command: "D:/codes/dchat/build/test_rounded.exe"
 Directory: D:/codes/dchat/build
-"rounded_tests" start time: Oct 02 20:38 �й���׼ʱ��
+"rounded_tests" start time: Oct 03 11:08 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == rounded control tests ==
@@ -195,18 +195,18 @@ Output:
 
 15 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.02 sec
 ----------------------------------------------------------
 Test Passed.
-"rounded_tests" end time: Oct 02 20:38 �й���׼ʱ��
+"rounded_tests" end time: Oct 03 11:08 �й���׼ʱ��
 "rounded_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-4/13 Testing: bubble_tests
-4/13 Test: bubble_tests
+4/14 Testing: bubble_tests
+4/14 Test: bubble_tests
 Command: "D:/codes/dchat/build/test_bubble.exe"
 Directory: D:/codes/dchat/build
-"bubble_tests" start time: Oct 02 20:38 �й���׼ʱ��
+"bubble_tests" start time: Oct 03 11:08 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat bubble tests ==
@@ -244,18 +244,18 @@ Output:
 
 26 checks, 0 failures
 <end of output>
-Test time =   0.05 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"bubble_tests" end time: Oct 02 20:38 �й���׼ʱ��
+"bubble_tests" end time: Oct 03 11:08 �й���׼ʱ��
 "bubble_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-5/13 Testing: image_preview_tests
-5/13 Test: image_preview_tests
+5/14 Testing: image_preview_tests
+5/14 Test: image_preview_tests
 Command: "D:/codes/dchat/build/test_image_preview.exe"
 Directory: D:/codes/dchat/build
-"image_preview_tests" start time: Oct 02 20:38 �й���׼ʱ��
+"image_preview_tests" start time: Oct 03 11:08 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat image preview tests ==
@@ -282,15 +282,15 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"image_preview_tests" end time: Oct 02 20:38 �й���׼ʱ��
+"image_preview_tests" end time: Oct 03 11:08 �й���׼ʱ��
 "image_preview_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-6/13 Testing: server_rules_tests
-6/13 Test: server_rules_tests
+6/14 Testing: server_rules_tests
+6/14 Test: server_rules_tests
 Command: "D:/codes/dchat/build/test_server_rules.exe"
 Directory: D:/codes/dchat/build
-"server_rules_tests" start time: Oct 02 20:38 �й���׼ʱ��
+"server_rules_tests" start time: Oct 03 11:08 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat server rules tests ==
@@ -307,8 +307,8 @@ Output:
   ok   maxconnsperip 默认 0（不限制）
   ok   loginfails 默认 0（不限制）
   ok   handshaketimeout 默认 30 秒（不是 0）
-  ok   一共 12 条规则
-  ok   十二条规则名都能识别（大小写不敏感）
+  ok   一共 13 条规则（12 条 + chatcolor）
+  ok   十三条规则名都能识别（大小写不敏感）
   ok   不认识的规则名返回非法
   ok   MB 转字节
 [2] set / add / remove
@@ -342,7 +342,7 @@ Output:
   ok   序列化出来的文件以注释行开头
   ok   数值规则写进去了
   ok   布尔规则写进去了
-  ok   十二条规则都能读回来（8 条 + 4 条加固）
+  ok   十三条规则都能读回来（9 条 + 4 条加固）
   ok   写出去再读回来完全一致（往返正确）
   ok   只认有效行：注释 / 坏值 / 未知规则都被跳过
   ok   行尾注释不影响取值
@@ -353,7 +353,7 @@ Output:
   ok   空文件读到 0 条（保持原值）
   ok   传空指针不会崩
 [9] 规则元数据（Tab 补全用）
-  ok   十二条规则各有一份元数据
+  ok   十三条规则各有一份元数据
   ok   每条规则都带一句灰色说明
   ok   元数据里的规则名和 AllRuleNames 顺序一致
   ok   只有 keepchathistory 是布尔规则
@@ -375,8 +375,8 @@ Output:
   ok   Show 能读出当前值
 [11] RULES 下发行的向后兼容
   ok   前 3 个字段仍是 documentsize/chatinterval/keepchathistory，位置不变
-  ok   新增字段按顺序追加在末尾
-  ok   一共 8 个字段（7 个空格）
+  ok   新增字段按顺序追加在末尾（chatcolor 具名）
+  ok   一共 9 个字段（8 个空格），末尾是 chatcolor=1
   ok   默认值的下发行
 [12] 新增规则的序列化 / 解析往返
   ok   序列化含 uploadrate
@@ -401,7 +401,7 @@ Output:
   ok   handshaketimeout 可以设回 0（不限制）
   ok   maxconns 上限 100000
   ok   handshaketimeout 上限 600 秒
-  ok   加固规则不占用 RULES 下发行的字段（仍是 8 个字段）
+  ok   加固规则不占用 RULES 下发行的字段（仍是 9 个，含末尾 chatcolor）
   ok   加固规则的值确实没出现在下发行里
   ok   DescribeRule 能读出 maxconns
   ok   loginfails 的说明里写清窗口是 300 秒
@@ -427,15 +427,15 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"server_rules_tests" end time: Oct 02 20:38 �й���׼ʱ��
+"server_rules_tests" end time: Oct 03 11:08 �й���׼ʱ��
 "server_rules_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-7/13 Testing: history_tests
-7/13 Test: history_tests
+7/14 Testing: history_tests
+7/14 Test: history_tests
 Command: "D:/codes/dchat/build/test_history.exe"
 Directory: D:/codes/dchat/build
-"history_tests" start time: Oct 02 20:38 �й���׼ʱ��
+"history_tests" start time: Oct 03 11:08 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat input history tests ==
@@ -478,15 +478,15 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"history_tests" end time: Oct 02 20:38 �й���׼ʱ��
+"history_tests" end time: Oct 03 11:08 �й���׼ʱ��
 "history_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-8/13 Testing: server_command_tests
-8/13 Test: server_command_tests
+8/14 Testing: server_command_tests
+8/14 Test: server_command_tests
 Command: "D:/codes/dchat/build/test_server_command.exe"
 Directory: D:/codes/dchat/build
-"server_command_tests" start time: Oct 02 20:38 �й���׼ʱ��
+"server_command_tests" start time: Oct 03 11:08 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat server command tests ==
@@ -682,6 +682,7 @@ Output:
   ok   规则名按顺序给出，并分到「服务器规则」组
   ok   每个规则名都带灰色用法说明
   ok   按前缀过滤规则名
+  ok   前缀不唯一时把两个都列出来（chatcolor / chatinterval）
   ok   keep 前缀能补到 keepchathistory
   ok   Tab 把规则名补进输入框
   ok   规则名也能按 Tab 循环
@@ -708,20 +709,20 @@ Output:
   ok   没给已注册名单时只补在线成员（老行为不变）
   ok   /say 仍然不补昵称
 
-202 checks, 0 failures
+203 checks, 0 failures
 <end of output>
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"server_command_tests" end time: Oct 02 20:38 �й���׼ʱ��
+"server_command_tests" end time: Oct 03 11:08 �й���׼ʱ��
 "server_command_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-9/13 Testing: auth_tests
-9/13 Test: auth_tests
+9/14 Testing: auth_tests
+9/14 Test: auth_tests
 Command: "D:/codes/dchat/build/test_auth.exe"
 Directory: D:/codes/dchat/build
-"auth_tests" start time: Oct 02 20:38 �й���׼ʱ��
+"auth_tests" start time: Oct 03 11:08 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat auth tests ==
@@ -772,18 +773,18 @@ Output:
 
 39 checks, 0 failures
 <end of output>
-Test time =   0.06 sec
+Test time =   0.05 sec
 ----------------------------------------------------------
 Test Passed.
-"auth_tests" end time: Oct 02 20:38 �й���׼ʱ��
+"auth_tests" end time: Oct 03 11:08 �й���׼ʱ��
 "auth_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-10/13 Testing: file_transfer_tests
-10/13 Test: file_transfer_tests
+10/14 Testing: file_transfer_tests
+10/14 Test: file_transfer_tests
 Command: "D:/codes/dchat/build/test_file_transfer.exe"
 Directory: D:/codes/dchat/build
-"file_transfer_tests" start time: Oct 02 20:38 �й���׼ʱ��
+"file_transfer_tests" start time: Oct 03 11:08 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat file transfer tests ==
@@ -859,15 +860,15 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"file_transfer_tests" end time: Oct 02 20:38 �й���׼ʱ��
+"file_transfer_tests" end time: Oct 03 11:08 �й���׼ʱ��
 "file_transfer_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-11/13 Testing: crypto_tests
-11/13 Test: crypto_tests
+11/14 Testing: crypto_tests
+11/14 Test: crypto_tests
 Command: "D:/codes/dchat/build/test_crypto.exe"
 Directory: D:/codes/dchat/build
-"crypto_tests" start time: Oct 02 20:38 �й���׼ʱ��
+"crypto_tests" start time: Oct 03 11:08 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat crypto tests ==
@@ -988,15 +989,15 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"crypto_tests" end time: Oct 02 20:38 �й���׼ʱ��
+"crypto_tests" end time: Oct 03 11:08 �й���׼ʱ��
 "crypto_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-12/13 Testing: voice_notes_tests
-12/13 Test: voice_notes_tests
+12/14 Testing: voice_notes_tests
+12/14 Test: voice_notes_tests
 Command: "D:/codes/dchat/build/test_voice_notes.exe"
 Directory: D:/codes/dchat/build
-"voice_notes_tests" start time: Oct 02 20:38 �й���׼ʱ��
+"voice_notes_tests" start time: Oct 03 11:08 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat voice notes tests ==
@@ -1077,23 +1078,23 @@ Output:
 
 64 checks, 0 failures
 <end of output>
-Test time =   3.11 sec
+Test time =   3.17 sec
 ----------------------------------------------------------
 Test Passed.
-"voice_notes_tests" end time: Oct 02 20:38 �й���׼ʱ��
+"voice_notes_tests" end time: Oct 03 11:09 �й���׼ʱ��
 "voice_notes_tests" time elapsed: 00:00:03
 ----------------------------------------------------------
 
-13/13 Testing: ui_layout_tests
-13/13 Test: ui_layout_tests
+13/14 Testing: ui_layout_tests
+13/14 Test: ui_layout_tests
 Command: "D:/codes/dchat/build/test_ui_layout.exe"
 Directory: D:/codes/dchat/build
-"ui_layout_tests" start time: Oct 02 20:38 �й���׼ʱ��
+"ui_layout_tests" start time: Oct 03 11:09 �й���׼ʱ��
 Output:
 ----------------------------------------------------------
 == dchat UI layout tests ==
 [1] 菜单栏
-  ok   三项：连接 / 设置 / 帮助
+  ok   两项：连接 / 帮助（设置在齿轮里）
   ok   没连上时第一项是「连接」
   ok   第一项不出界
   ok   菜单项不超出菜单栏高度
@@ -1160,8 +1161,55 @@ Output:
 Test time =   0.02 sec
 ----------------------------------------------------------
 Test Passed.
-"ui_layout_tests" end time: Oct 02 20:38 �й���׼ʱ��
+"ui_layout_tests" end time: Oct 03 11:09 �й���׼ʱ��
 "ui_layout_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-End testing: Oct 02 20:38 �й���׼ʱ��
+14/14 Testing: chat_color_tests
+14/14 Test: chat_color_tests
+Command: "D:/codes/dchat/build/test_chat_color.exe"
+Directory: D:/codes/dchat/build
+"chat_color_tests" start time: Oct 03 11:09 �й���׼ʱ��
+Output:
+----------------------------------------------------------
+  ok    #rrggbb 解析成一段
+  ok    色码本身不显示
+  ok    #ff0000 = 纯红
+  ok    这一段被上过色
+  ok    三段：默认 + 绿 + 蓝
+  ok    第一段用默认色
+  ok    &绿段正确
+  ok    新色码覆盖旧色码
+  ok    #AbCdEf 大小写都能认
+  ok    &c 和 &a 各成一段
+  ok    &c / &a 取到对的颜色
+  ok    快捷码本身不显示
+  ok    认不出来的 &z 原样显示，不吞字
+  ok    认不出来就不改颜色
+  ok    && 转义成一个 &
+  ok    关闭时只有一段
+  ok    **关闭后色码原样显示（一个字符都不少）**
+  ok    关闭时用默认色
+  ok    关闭时不算上色
+  ok    位数不够的 #ff00 原样显示
+  ok    有非十六进制字符就不当色码
+  ok    结尾单独的 & 原样显示
+  ok    ColorToHex 纯红
+  ok    ColorToHex 小写六位
+  ok    色板至少 24 色（覆盖常见颜色）
+  ok    色板行数整齐（每行 8 个）
+  ok    色板含红/蓝/白/黑
+  ok    帮助里有 #rrggbb 写法
+  ok    帮助里有 &a 这种快捷码
+  ok    帮助里列出了快捷码对应的十六进制
+  ok    16 个快捷色互不重复
+31 checks, 0 failures
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"chat_color_tests" end time: Oct 03 11:09 �й���׼ʱ��
+"chat_color_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Oct 03 11:09 �й���׼ʱ��

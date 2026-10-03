@@ -43,7 +43,7 @@ int main() {
         check(rules.maxConnectionsPerIp == 0, "maxconnsperip 默认 0（不限制）");
         check(rules.loginFailLimit == 0, "loginfails 默认 0（不限制）");
         check(rules.handshakeTimeoutSec == 30, "handshaketimeout 默认 30 秒（不是 0）");
-        check(dchat::AllRuleNames().size() == 12, "一共 12 条规则");
+        check(dchat::AllRuleNames().size() == 13, "一共 13 条规则（12 条 + chatcolor）");
         check(dchat::IsKnownRule("chatinterval") && dchat::IsKnownRule("DOCUMENTSIZE") &&
                   dchat::IsKnownRule("keepchathistory") &&
                   dchat::IsKnownRule("maxservertemp") && dchat::IsKnownRule("UPLOADRATE") &&
@@ -51,7 +51,7 @@ int main() {
                   dchat::IsKnownRule("maxtextlines") && dchat::IsKnownRule("maxconns") &&
                   dchat::IsKnownRule("maxconnsperip") && dchat::IsKnownRule("loginfails") &&
                   dchat::IsKnownRule("handshaketimeout"),
-              "十二条规则名都能识别（大小写不敏感）");
+              "十三条规则名都能识别（大小写不敏感）");
         check(!dchat::IsKnownRule("nope"), "不认识的规则名返回非法");
         check(dchat::RuleMbToBytes(1) == 1024ull * 1024ull, "MB 转字节");
     }
@@ -125,10 +125,11 @@ int main() {
               "说明里带当前值");
         check(dchat::DescribeRule(rules, "keepchathistory").find("true") != std::string::npos,
               "布尔规则显示 true/false");
-        check(dchat::RulesLineForClient(rules) == "RULES 8 300 1 0 0 0 0",
+        check(dchat::RulesLineForClient(rules) == "RULES 8 300 1 0 0 0 0 chatcolor=1",
               "发给客户端的 RULES 行格式正确（新字段默认 0）");
         rules.keepChatHistory = false;
-        check(dchat::RulesLineForClient(rules) == "RULES 8 300 0 0 0 0 0", "关闭时第 3 位是 0");
+        check(dchat::RulesLineForClient(rules) == "RULES 8 300 0 0 0 0 0 chatcolor=1",
+              "关闭时第 3 位是 0");
         check(dchat::RuleRangeText("chatinterval").find("60000") != std::string::npos,
               "取值范围说明里有上限");
         check(dchat::RuleRangeText("keepchathistory") == "true / false", "布尔规则的范围说明");
@@ -147,7 +148,7 @@ int main() {
         check(text.find("keepchathistory true") != std::string::npos, "布尔规则写进去了");
 
         ServerRules loaded;
-        check(dchat::ParseRules(text, &loaded) == 12, "十二条规则都能读回来（8 条 + 4 条加固）");
+        check(dchat::ParseRules(text, &loaded) == 13, "十三条规则都能读回来（9 条 + 4 条加固）");
         check(loaded.chatIntervalMs == 400 && loaded.documentSizeMb == 8 &&
                   loaded.keepChatHistory && loaded.maxServerTempMb == 512,
               "写出去再读回来完全一致（往返正确）");
@@ -179,7 +180,7 @@ int main() {
     {
         std::printf("[9] 规则元数据（Tab 补全用）\n");
         const std::vector<dchat::RuleInfo>& infos = dchat::AllRuleInfos();
-        check(infos.size() == 12, "十二条规则各有一份元数据");
+        check(infos.size() == 13, "十三条规则各有一份元数据");
         bool hintsOk = true;
         bool namesOk = true;
         for (std::size_t i = 0; i < infos.size(); ++i) {
@@ -255,18 +256,20 @@ int main() {
         // 前三个字段的位置和含义**绝对不能变**，否则老客户端会读错
         check(line.rfind("RULES 32 500 1 ", 0) == 0,
               "前 3 个字段仍是 documentsize/chatinterval/keepchathistory，位置不变");
-        check(line == "RULES 32 500 1 128 256 1000 10", "新增字段按顺序追加在末尾");
+        // chatcolor 用**具名**字段追加在末尾，不挤占位置序列
+    check(line == "RULES 32 500 1 128 256 1000 10 chatcolor=1", "新增字段按顺序追加在末尾（chatcolor 具名）");
 
         // 字段总数
         std::size_t spaces = 0;
         for (char c : line) {
             if (c == ' ') ++spaces;
         }
-        check(spaces == 7, "一共 8 个字段（7 个空格）");
+        check(spaces == 8, "一共 9 个字段（8 个空格），末尾是 chatcolor=1");
 
         // 默认值下也要能生成合法行
         ServerRules plain;
-        check(dchat::RulesLineForClient(plain) == "RULES 64 0 0 0 0 0 0", "默认值的下发行");
+        check(dchat::RulesLineForClient(plain) == "RULES 64 0 0 0 0 0 0 chatcolor=1",
+              "默认值的下发行");
     }
 
     {
@@ -361,8 +364,8 @@ int main() {
         out.loginFailLimit = 10;
         out.handshakeTimeoutSec = 15;
         const std::string line = dchat::RulesLineForClient(out);
-        check(line == "RULES 64 0 0 0 0 0 0",
-              "加固规则不占用 RULES 下发行的字段（仍是 8 个字段）");
+        check(line == "RULES 64 0 0 0 0 0 0 chatcolor=1",
+              "加固规则不占用 RULES 下发行的字段（仍是 9 个，含末尾 chatcolor）");
         check(line.find("200") == std::string::npos && line.find("15") == std::string::npos,
               "加固规则的值确实没出现在下发行里");
 

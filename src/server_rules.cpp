@@ -62,6 +62,7 @@ const std::vector<RuleInfo>& AllRuleInfos() {
         {"chatinterval", "<毫秒> 两条消息之间的最小间隔，0 = 不限", false},
         {"documentsize", "<MB> 单个文件最大大小", false},
         {"keepchathistory", "true|false 新加入的人能否看到之前的记录", true},
+        {"chatcolor", "true|false 聊天里能否用彩色代码（#RRGGBB / &a）", true},
         {"maxservertemp", "<MB> 服务端缓存（文件 + 记录）总上限", false},
         {"uploadrate", "<KB/s> 单客户端上传限速，0 = 不限", false},
         {"downloadrate", "<KB/s> 单客户端下载限速，0 = 不限", false},
@@ -94,7 +95,7 @@ bool IsBoolRule(const std::string& name) {
 
 std::string RuleRangeText(const std::string& name) {
     const std::string lower = ToLowerAscii(name);
-    if (lower == "keepchathistory") {
+    if (lower == "keepchathistory" || lower == "chatcolor") {
         return "true / false";
     }
     const RuleRange* range = FindRange(lower);
@@ -116,6 +117,10 @@ std::string DescribeRule(const ServerRules& rules, const std::string& name) {
     if (lower == "keepchathistory") {
         return std::string("keepchathistory = ") + (rules.keepChatHistory ? "true" : "false") +
                "（新加入的客户端能否看到之前的聊天记录和文件）";
+    }
+    if (lower == "chatcolor") {
+        return std::string("chatcolor = ") + (rules.chatColor ? "true" : "false") +
+               "（聊天里能否用彩色代码；关掉后色码原样显示，不会把字删掉）";
     }
     if (lower == "maxservertemp") {
         return "maxservertemp = " + std::to_string(rules.maxServerTempMb) +
@@ -183,6 +188,20 @@ RuleChange ApplyRule(ServerRules* rules, const std::string& name, RuleAction act
     if (action == RuleAction::Show) {
         change.ok = true;
         change.message = DescribeRule(*rules, lower);
+        return change;
+    }
+
+    if (lower == "chatcolor") {
+        if (action == RuleAction::Add || action == RuleAction::Remove) {
+            change.message = "chatcolor 是布尔规则，只能用 true / false（或 set true/false）";
+            return change;
+        }
+        const bool next = (action == RuleAction::SetBool) ? boolValue : (value != 0);
+        change.ok = true;
+        change.changed = (next != rules->chatColor);
+        rules->chatColor = next;
+        change.message = std::string("chatcolor = ") + (next ? "true" : "false") +
+                         (next ? "（允许彩色代码）" : "（禁止；用户打进去的色码会原样显示）");
         return change;
     }
 
@@ -284,7 +303,10 @@ std::string RulesLineForClient(const ServerRules& rules) {
     return "RULES " + std::to_string(rules.documentSizeMb) + " " +
            std::to_string(rules.chatIntervalMs) + " " + (rules.keepChatHistory ? "1" : "0") + " " +
            std::to_string(rules.uploadRateKbps) + " " + std::to_string(rules.downloadRateKbps) +
-           " " + std::to_string(rules.maxTextLength) + " " + std::to_string(rules.maxTextLines);
+           " " + std::to_string(rules.maxTextLength) + " " + std::to_string(rules.maxTextLines) +
+           // chatcolor 用**具名**追加而不是插进位置序列里：老客户端按位置读前面几个字段，
+           // 追加在末尾不影响它们；新客户端按名字找，顺序以后再变也不会错。
+           " chatcolor=" + (rules.chatColor ? "1" : "0");
 }
 
 int RateLimiter::Consume(std::size_t bytes) {
@@ -319,6 +341,8 @@ std::string SerializeRules(const ServerRules& rules) {
     out += "documentsize " + std::to_string(rules.documentSizeMb) + "        # 单个文件最大大小（MB）\n";
     out += std::string("keepchathistory ") + (rules.keepChatHistory ? "true" : "false") +
            "  # 新加入的客户端能否看到之前的聊天记录和文件\n";
+    out += std::string("chatcolor ") + (rules.chatColor ? "true" : "false") +
+           "        # 聊天里能否用彩色代码（#RRGGBB / &a）；关掉后色码原样显示\n";
     out += "maxservertemp " + std::to_string(rules.maxServerTempMb) +
            "      # 服务端保存文件 + 聊天记录缓存的总上限（MB）\n";
     out += "uploadrate " + std::to_string(rules.uploadRateKbps) +
@@ -375,6 +399,17 @@ int ParseRules(const std::string& text, ServerRules* rules) {
         value = value.substr(0, valueEnd);
         if (!IsKnownRule(name) || value.empty()) continue;
 
+        if (name == "chatcolor") {
+            const std::string lower = ToLowerAscii(value);
+            if (lower == "true" || lower == "1") {
+                parsed.chatColor = true;
+                ++count;
+            } else if (lower == "false" || lower == "0") {
+                parsed.chatColor = false;
+                ++count;
+            }
+            continue;
+        }
         if (name == "keepchathistory") {
             const std::string lower = ToLowerAscii(value);
             if (lower == "true" || lower == "1") {

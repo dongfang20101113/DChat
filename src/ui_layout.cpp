@@ -32,7 +32,8 @@ std::vector<MenuItem> LayoutMenuItems(HDC dc, HFONT font, int windowWidth, bool 
     // 第一项是"连接/断开"：**它跟着状态变文字**，不再像以前那样两个按钮都摆着
     // （两个按钮永远只有一个能用，占地方还让人犹豫点哪个）
     items.push_back({MenuAction::Connect, connected ? L"断开" : L"连接", {}, false});
-    items.push_back({MenuAction::Settings, L"设置", {}, false});
+    // 这里**没有「设置」**：右上角的齿轮就是设置入口，两个入口并排摆着，
+    // 用户第一反应是"怎么有两个设置"。菜单栏只留"连接 / 帮助"这类偶尔点一次的。
     items.push_back({MenuAction::Help, L"帮助", {}, false});
 
     int x = 10;
@@ -132,7 +133,8 @@ SettingsLayout LayoutSettings(int clientWidth, int clientHeight) {
     SettingsLayout layout;
     const int left = kSettingsPadX;
     const int right = clientWidth - kSettingsPadX;
-    const int labelLeft = left;
+    // 标签左边界（当前布局里由 title 决定，这里只是文档作用）
+    [[maybe_unused]] const int labelLeft = left;
     const int ctrlLeft = left + kSettingsLabelWidth + 16;
     const int ctrlRight = right;
 
