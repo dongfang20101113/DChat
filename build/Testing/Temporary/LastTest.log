@@ -1,10 +1,10 @@
-Start testing: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+Start testing: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 ----------------------------------------------------------
-1/14 Testing: protocol_tests
-1/14 Test: protocol_tests
+1/15 Testing: protocol_tests
+1/15 Test: protocol_tests
 Command: "D:/codes/dchat/build/test_protocol.exe"
 Directory: D:/codes/dchat/build
-"protocol_tests" start time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"protocol_tests" start time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 Output:
 ----------------------------------------------------------
 == dchat protocol tests ==
@@ -84,18 +84,18 @@ Output:
 
 63 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.02 sec
 ----------------------------------------------------------
 Test Passed.
-"protocol_tests" end time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"protocol_tests" end time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 "protocol_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-2/14 Testing: render_tests
-2/14 Test: render_tests
+2/15 Testing: render_tests
+2/15 Test: render_tests
 Command: "D:/codes/dchat/build/test_render.exe"
 Directory: D:/codes/dchat/build
-"render_tests" start time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"render_tests" start time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 Output:
 ----------------------------------------------------------
 == dchat render tests ==
@@ -159,18 +159,18 @@ Output:
 
 51 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.02 sec
 ----------------------------------------------------------
 Test Passed.
-"render_tests" end time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"render_tests" end time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 "render_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-3/14 Testing: rounded_tests
-3/14 Test: rounded_tests
+3/15 Testing: rounded_tests
+3/15 Test: rounded_tests
 Command: "D:/codes/dchat/build/test_rounded.exe"
 Directory: D:/codes/dchat/build
-"rounded_tests" start time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"rounded_tests" start time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 Output:
 ----------------------------------------------------------
 == rounded control tests ==
@@ -195,18 +195,18 @@ Output:
 
 15 checks, 0 failures
 <end of output>
-Test time =   0.02 sec
+Test time =   0.07 sec
 ----------------------------------------------------------
 Test Passed.
-"rounded_tests" end time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"rounded_tests" end time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 "rounded_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-4/14 Testing: bubble_tests
-4/14 Test: bubble_tests
+4/15 Testing: bubble_tests
+4/15 Test: bubble_tests
 Command: "D:/codes/dchat/build/test_bubble.exe"
 Directory: D:/codes/dchat/build
-"bubble_tests" start time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"bubble_tests" start time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 Output:
 ----------------------------------------------------------
 == dchat bubble tests ==
@@ -244,18 +244,18 @@ Output:
 
 26 checks, 0 failures
 <end of output>
-Test time =   0.02 sec
+Test time =   0.06 sec
 ----------------------------------------------------------
 Test Passed.
-"bubble_tests" end time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"bubble_tests" end time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 "bubble_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-5/14 Testing: image_preview_tests
-5/14 Test: image_preview_tests
+5/15 Testing: image_preview_tests
+5/15 Test: image_preview_tests
 Command: "D:/codes/dchat/build/test_image_preview.exe"
 Directory: D:/codes/dchat/build
-"image_preview_tests" start time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"image_preview_tests" start time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 Output:
 ----------------------------------------------------------
 == dchat image preview tests ==
@@ -279,18 +279,18 @@ Output:
 
 14 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.06 sec
 ----------------------------------------------------------
 Test Passed.
-"image_preview_tests" end time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"image_preview_tests" end time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 "image_preview_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-6/14 Testing: server_rules_tests
-6/14 Test: server_rules_tests
+6/15 Testing: server_rules_tests
+6/15 Test: server_rules_tests
 Command: "D:/codes/dchat/build/test_server_rules.exe"
 Directory: D:/codes/dchat/build
-"server_rules_tests" start time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"server_rules_tests" start time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 Output:
 ----------------------------------------------------------
 == dchat server rules tests ==
@@ -427,15 +427,15 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"server_rules_tests" end time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"server_rules_tests" end time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 "server_rules_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-7/14 Testing: history_tests
-7/14 Test: history_tests
+7/15 Testing: history_tests
+7/15 Test: history_tests
 Command: "D:/codes/dchat/build/test_history.exe"
 Directory: D:/codes/dchat/build
-"history_tests" start time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"history_tests" start time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 Output:
 ----------------------------------------------------------
 == dchat input history tests ==
@@ -478,15 +478,15 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"history_tests" end time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"history_tests" end time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 "history_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-8/14 Testing: server_command_tests
-8/14 Test: server_command_tests
+8/15 Testing: server_command_tests
+8/15 Test: server_command_tests
 Command: "D:/codes/dchat/build/test_server_command.exe"
 Directory: D:/codes/dchat/build
-"server_command_tests" start time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"server_command_tests" start time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 Output:
 ----------------------------------------------------------
 == dchat server command tests ==
@@ -719,15 +719,15 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"server_command_tests" end time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"server_command_tests" end time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 "server_command_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-9/14 Testing: auth_tests
-9/14 Test: auth_tests
+9/15 Testing: auth_tests
+9/15 Test: auth_tests
 Command: "D:/codes/dchat/build/test_auth.exe"
 Directory: D:/codes/dchat/build
-"auth_tests" start time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"auth_tests" start time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 Output:
 ----------------------------------------------------------
 == dchat auth tests ==
@@ -778,18 +778,18 @@ Output:
 
 39 checks, 0 failures
 <end of output>
-Test time =   0.07 sec
+Test time =   0.06 sec
 ----------------------------------------------------------
 Test Passed.
-"auth_tests" end time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"auth_tests" end time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 "auth_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-10/14 Testing: file_transfer_tests
-10/14 Test: file_transfer_tests
+10/15 Testing: file_transfer_tests
+10/15 Test: file_transfer_tests
 Command: "D:/codes/dchat/build/test_file_transfer.exe"
 Directory: D:/codes/dchat/build
-"file_transfer_tests" start time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"file_transfer_tests" start time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 Output:
 ----------------------------------------------------------
 == dchat file transfer tests ==
@@ -865,15 +865,15 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"file_transfer_tests" end time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"file_transfer_tests" end time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 "file_transfer_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-11/14 Testing: crypto_tests
-11/14 Test: crypto_tests
+11/15 Testing: crypto_tests
+11/15 Test: crypto_tests
 Command: "D:/codes/dchat/build/test_crypto.exe"
 Directory: D:/codes/dchat/build
-"crypto_tests" start time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"crypto_tests" start time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 Output:
 ----------------------------------------------------------
 == dchat crypto tests ==
@@ -994,15 +994,15 @@ Output:
 Test time =   0.02 sec
 ----------------------------------------------------------
 Test Passed.
-"crypto_tests" end time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"crypto_tests" end time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 "crypto_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-12/14 Testing: voice_notes_tests
-12/14 Test: voice_notes_tests
+12/15 Testing: voice_notes_tests
+12/15 Test: voice_notes_tests
 Command: "D:/codes/dchat/build/test_voice_notes.exe"
 Directory: D:/codes/dchat/build
-"voice_notes_tests" start time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"voice_notes_tests" start time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 Output:
 ----------------------------------------------------------
 == dchat voice notes tests ==
@@ -1083,18 +1083,18 @@ Output:
 
 64 checks, 0 failures
 <end of output>
-Test time =   3.10 sec
+Test time =   3.16 sec
 ----------------------------------------------------------
 Test Passed.
-"voice_notes_tests" end time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"voice_notes_tests" end time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 "voice_notes_tests" time elapsed: 00:00:03
 ----------------------------------------------------------
 
-13/14 Testing: ui_layout_tests
-13/14 Test: ui_layout_tests
+13/15 Testing: ui_layout_tests
+13/15 Test: ui_layout_tests
 Command: "D:/codes/dchat/build/test_ui_layout.exe"
 Directory: D:/codes/dchat/build
-"ui_layout_tests" start time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"ui_layout_tests" start time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 Output:
 ----------------------------------------------------------
 == dchat UI layout tests ==
@@ -1163,18 +1163,18 @@ Output:
 
 57 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.05 sec
 ----------------------------------------------------------
 Test Passed.
-"ui_layout_tests" end time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"ui_layout_tests" end time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 "ui_layout_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-14/14 Testing: chat_color_tests
-14/14 Test: chat_color_tests
+14/15 Testing: chat_color_tests
+14/15 Test: chat_color_tests
 Command: "D:/codes/dchat/build/test_chat_color.exe"
 Directory: D:/codes/dchat/build
-"chat_color_tests" start time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"chat_color_tests" start time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 Output:
 ----------------------------------------------------------
   ok    #rrggbb è§£ææˆä¸€æ®µ
@@ -1210,11 +1210,82 @@ Output:
   ok    16 ä¸ªå¿«æ·è‰²äº’ä¸é‡å¤
 31 checks, 0 failures
 <end of output>
-Test time =   0.01 sec
+Test time =   0.05 sec
 ----------------------------------------------------------
 Test Passed.
-"chat_color_tests" end time: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+"chat_color_tests" end time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
 "chat_color_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-End testing: Oct 03 11:18 ÖĞ¹ú±ê×¼Ê±¼ä
+15/15 Testing: color_picker_tests
+15/15 Test: color_picker_tests
+Command: "D:/codes/dchat/build/test_color_picker.exe"
+Directory: D:/codes/dchat/build
+"color_picker_tests" start time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
+Output:
+----------------------------------------------------------
+[1] HSV <-> RGB
+  ok    è‰²ç›¸ 0 = çº¯çº¢
+  ok    è‰²ç›¸ 120 = çº¯ç»¿
+  ok    è‰²ç›¸ 240 = çº¯è“
+  ok    é¥±å’Œåº¦ 0 + æ˜åº¦ 1 = ç™½
+  ok    æ˜åº¦ 0 = é»‘ï¼ˆè‰²ç›¸æ— å…³ï¼‰
+  ok    æ˜åº¦ 0.5 çš„çº¯çº¢æ˜¯æš—çº¢
+  ok    è´Ÿè§’åº¦ç­‰ä»·äº +240
+  ok    è¶…è¿‡ 360 ä¼šç»•å›æ¥
+  ok    8 ä¸ªé¢œè‰² RGB -> HSV -> RGB éƒ½èƒ½è¿˜åŸ
+[2] è‰²ç›¸ä¸è§’åº¦
+  ok    è§’åº¦ç›´æ¥å°±æ˜¯è‰²ç›¸
+  ok    è´Ÿè§’åº¦ç»•åˆ° 270
+  ok    è¶…è¿‡ä¸€åœˆä¹Ÿæ”¶æ•›
+  ok    è‰²ç›¸åç®—æˆè§’åº¦
+[3] è‰²ç›˜å‡ ä½•
+  ok    è‰²ç›˜æ°´å¹³å±…ä¸­
+  ok    å†…å¤–åŠå¾„æŒ‰å¸¸é‡
+  ok    æ–¹å—æ¯”ç¯çš„å†…åœˆå°ï¼ˆä¸ä¼šç›–ä½ç¯ï¼‰
+  ok    æ–¹å—åœ¨çª—å£é‡Œ
+  ok    åº•éƒ¨è‰²å—å’Œå¸¸ç”¨è‰²éƒ½åœ¨çª—å£é‡Œ
+  ok    åº•éƒ¨åœ¨è‰²ç›˜ä¸‹æ–¹ï¼Œä¸é‡å 
+[4] å‘½ä¸­åˆ¤æ–­
+  ok    ç¯å¤–æ²¿å†…ä¾§ç®—å‘½ä¸­
+  ok    æ­£ä¸­å¿ƒä¸æ˜¯ç¯
+  ok    ç¯å¤–ä¸ç®—
+  ok    æ­£ä¸­å¿ƒåœ¨æ–¹å—é‡Œ
+  ok    æ–¹å—å·¦è¾¹å¤–ä¸ç®—
+  ok    æ–¹å—å³è¾¹ç•Œä¸ç®—ï¼ˆå·¦é—­å³å¼€ï¼‰
+  ok    å¸¸ç”¨è‰²é‚£ä¸€æ’èƒ½ç‚¹ä¸­
+  ok    å¸¸ç”¨è‰²ä¸‹è¾¹ç•Œå¤–ä¸ç®—
+[5] ç¯ä¸Šå–è‰²ï¼ˆä½ç½® <-> é¢œè‰² ä¸€è‡´ï¼‰
+  ok    ç¯ä¸Šæ­£å³æ–¹å–åˆ°çº¯çº¢
+  ok    ç¯ä¸Šæ­£å·¦æ–¹å–åˆ°é’è‰²ï¼ˆè‰²ç›¸ 180ï¼‰
+  ok    ç¯ä¸Šçš„æ ‡è®°ç‚¹ç¡®å®è½åœ¨ç¯ä¸Š
+  ok    æ ‡è®°ç‚¹åè§£å‡ºæ¥çš„è‰²ç›¸ = åŸæ¥çš„è‰²ç›¸
+[6] æ–¹å—å–è‰²
+  ok    æ–¹å—å·¦ä¸Š = ä¸é¥±å’Œ + æœ€äº®ï¼ˆç™½ï¼‰
+  ok    æ–¹å—å³ä¸Š = æœ€é¥±å’Œ + æœ€äº®ï¼ˆçº¯è‰²ï¼‰
+  ok    æ–¹å—å·¦ä¸‹ = é»‘
+  ok    æ–¹å—å³ä¸‹ = æœ€é¥±å’Œ + æœ€æš—
+  ok    æ–¹å—é‡Œæ¯ä¸ªé‡‡æ ·ç‚¹ï¼šç”»å‡ºæ¥çš„é¢œè‰²å’Œç‚¹ä¸‹å»å–åˆ°çš„é¢œè‰²è½åœ¨åŒä¸€ä½ç½®
+  ok    æ–¹å—é‡Œçš„æ ‡è®°ç‚¹åœ¨æ–¹å—å†…
+  ok    æ ‡è®°ç‚¹åè§£å‡ºçš„ s/v = åŸé¢œè‰²çš„ s/v
+[7] è‰²ç è§£æ
+  ok    #rrggbb
+  ok    ä¸å¸¦ # ä¹Ÿè¡Œ
+  ok    #rgb ç®€å†™
+  ok    ä¸¤è¾¹ç©ºæ ¼ + å¤§å†™éƒ½è®¤
+  ok    éåå…­è¿›åˆ¶å­—ç¬¦æ‹’ç»
+  ok    ä½æ•°ä¸å¯¹æ‹’ç»
+  ok    ç©ºä¸²æ‹’ç»
+[8] å¸¸ç”¨è‰²
+  ok    å¸¸ç”¨è‰² 16 ä¸ª
+  ok    å¸¸ç”¨è‰²å«é»‘/ç™½/çº¢
+47 checks, 0 failures
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"color_picker_tests" end time: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä
+"color_picker_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Oct 03 13:28 ÖĞ¹ú±ê×¼Ê±¼ä

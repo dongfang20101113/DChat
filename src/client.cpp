@@ -51,6 +51,8 @@
 #include "server_command.h"  // LooksLikePasswordCommand：改密码那一行不进输入历史
 #include "server_rules.h"    // RuleMbToBytes / 服务器规则
 #include "chat_color.h"       // 彩色文字代码（#rrggbb / &a）
+#include "color_picker.h"    // 取色盘（色相环 + 饱和度/明度方块）
+#include "picker_dialog.h"   // 取色盘窗口
 #include "ui_layout.h"       // 菜单栏 / 状态条 / 输入行的几何与图标
 #include "voice_notes.h"     // 语音消息：录音、播放、判定
 
@@ -4077,144 +4079,18 @@ void SetInputText(const std::wstring& text) {
 //
 // 色板那条"未确定就再选一次"的约定：**没按确定键之前，上一次挑的色码会被这次覆盖**，
 // 不会越堆越长（用户明确要求过）。
-std::wstring g_lastPickedCode;  // 上一次放进输入框、还没确定的那段色码
-constexpr int kPickerCell = 34;    // 色板一格
-constexpr int kPickerPad = 12;
-constexpr int kPickerRows = 4;     // 色板行数（色板一共 32 色 = 8 列 x 4 行）
-int g_pickerHover = -1;
+// ---------------- 取色盘（Windows 画图那种色相环 + 饱和度/明度方块）----------------
+//
+// 以前这里是一个 32 格的固定色板，颜色太少。现在是真色盘：
+//   - 外圈色相环：点哪儿取哪个色相
+//   - 中间方块：横轴饱和度、纵轴明度，色相沿用环上选的
+//   - 底部：当前色 / 原色对比、十六进制输入框、一排常用色
+// 几何与 HSV 换算全在 src/color_picker.cpp（纯计算 + 47 项单测）。
+// 取色盘在 src/picker_dialog.cpp（绘制也在一起：几何和绘制必须共用一套）
 
-void ChatColorCommand(HWND hwnd, const std::wstring& argument);
-
-LRESULT CALLBACK ColorPickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    auto* chosen = reinterpret_cast<COLORREF*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    switch (msg) {
-        case WM_CREATE: {
-            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA,
-                              reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
-            return 0;
-        }
-        case WM_ERASEBKGND:
-            return 1;
-        case WM_PAINT: {
-            PAINTSTRUCT ps;
-            HDC dc = BeginPaint(hwnd, &ps);
-            RECT client{};
-            GetClientRect(hwnd, &client);
-            HBRUSH bg = CreateSolidBrush(g_palette->panel);
-            FillRect(dc, &client, bg);
-            DeleteObject(bg);
-
-            const std::vector<dchat::PaletteSwatch>& palette = dchat::ColorPalette();
-            const int cell = kPickerCell;
-            for (std::size_t i = 0; i < palette.size(); ++i) {
-                const int col = static_cast<int>(i) % dchat::kPaletteColumns;
-                const int row = static_cast<int>(i) / dchat::kPaletteColumns;
-                const RECT swatch{kPickerPad + col * cell, kPickerPad + row * cell,
-                                  kPickerPad + col * cell + cell - 8,
-                                  kPickerPad + row * cell + cell - 8};
-                ui::FillRoundedRect(dc, swatch, 6, palette[i].color, palette[i].color, 0.0f);
-                if (static_cast<int>(i) == g_pickerHover) {
-                    ui::OutlineRoundedRect(dc, swatch, 6, g_palette->text);
-                }
-            }
-            const int footer = kPickerPad * 2 + kPickerRows * cell;
-            DrawTextIn(dc, L"点一个颜色 → 色码放进输入框（再选会覆盖上一个）",
-                       RECT{kPickerPad, footer - kPickerPad + 2, client.right - kPickerPad,
-                            client.bottom - 4},
-                       ui.fontSmall, g_palette->system,
-                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-            EndPaint(hwnd, &ps);
-            return 0;
-        }
-        case WM_MOUSEMOVE: {
-            const int x = GET_X_LPARAM(lp);
-            const int y = GET_Y_LPARAM(lp);
-            const int col = (x - kPickerPad) / kPickerCell;
-            const int row = (y - kPickerPad) / kPickerCell;
-            int hover = -1;
-            if (col >= 0 && col < dchat::kPaletteColumns && row >= 0) {
-                const int index = row * dchat::kPaletteColumns + col;
-                if (index >= 0 && index < static_cast<int>(dchat::ColorPalette().size())) {
-                    hover = index;
-                }
-            }
-            if (hover != g_pickerHover) {
-                g_pickerHover = hover;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            return 0;
-        }
-        case WM_LBUTTONDOWN: {
-            const int x = GET_X_LPARAM(lp);
-            const int y = GET_Y_LPARAM(lp);
-            const int col = (x - kPickerPad) / kPickerCell;
-            const int row = (y - kPickerPad) / kPickerCell;
-            const int index = row * dchat::kPaletteColumns + col;
-            if (col >= 0 && col < dchat::kPaletteColumns && row >= 0 && index >= 0 &&
-                index < static_cast<int>(dchat::ColorPalette().size())) {
-                if (chosen) *chosen = dchat::ColorPalette()[index].color;
-            }
-            DestroyWindow(hwnd);
-            return 0;
-        }
-        case WM_KILLFOCUS:
-            DestroyWindow(hwnd);
-            return 0;
-        default:
-            break;
-    }
-    return DefWindowProcW(hwnd, msg, wp, lp);
-}
-
-// 弹色板；用户点了颜色返回 true，把颜色写进 *out
-bool PickColor(HWND parent, COLORREF* out) {
-    constexpr const wchar_t* kPickerClass = L"DchatColorPicker";
-    static bool registered = false;
-    if (!registered) {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.style = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;
-        wc.lpfnWndProc = ColorPickerProc;
-        wc.hInstance = GetModuleHandleW(nullptr);
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = nullptr;
-        wc.lpszClassName = kPickerClass;
-        RegisterClassExW(&wc);
-        registered = true;
-    }
-    COLORREF chosen = kAutoColor;
-    const int width = kPickerPad * 2 + dchat::kPaletteColumns * kPickerCell;
-    const int height = kPickerPad * 2 + kPickerRows * kPickerCell + 14;
-
-    // 摆在主窗口上方居中（和「＋」菜单一样是独立弹出窗口，不受客户区布局限制）
-    RECT parentRect{};
-    GetWindowRect(parent, &parentRect);
-    const int x = parentRect.left + ((parentRect.right - parentRect.left) - width) / 2;
-    const int y = parentRect.top + 80;
-
-    HWND picker = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, kPickerClass, L"选择颜色",
-                                  WS_POPUP, x, y, width, height, parent, nullptr,
-                                  GetModuleHandleW(nullptr), &chosen);
-    if (!picker) return false;
-    g_pickerHover = -1;
-    ShowWindow(picker, SW_SHOW);
-    SetForegroundWindow(picker);
-
-    MSG msg;
-    while (IsWindow(picker) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        if (!IsDialogMessageW(picker, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-    if (IsWindow(picker)) DestroyWindow(picker);
-    SetForegroundWindow(parent);
-    SetFocus(ui.hInput);
-    if (chosen == kAutoColor) return false;
-    *out = chosen;
-    return true;
-}
+// 上一次放进输入框、还没确定的那段色码：**没按确定之前再选一次要覆盖它**，
+// 不然色码会越堆越长（用户明确要求过）
+std::wstring g_lastPickedCode;
 
 // 把色码放进输入框：先删掉上一次"还没确定"的那段，再插入这次的
 void InsertColorCode(const std::wstring& code) {
@@ -4240,12 +4116,20 @@ void ChatColorCommand(HWND hwnd, const std::wstring& argument) {
         return;
     }
     if (action == L"choose" || action == L"choose " || action == L"色板" || action == L"pick") {
+        // 打开时以输入框里已有的色码为起点（没有就用白色）
+        COLORREF initial = RGB(255, 255, 255);
+        const std::wstring existing = CurrentInputText();
+        const std::size_t at = existing.find(L'#');
+        if (at != std::wstring::npos) {
+            dchat::ParseHexColor(existing.substr(at, 7), &initial);
+        }
         COLORREF color = 0;
-        if (!PickColor(hwnd, &color)) return;  // 用户没选就关掉了
+        dchat::SetPickerFonts(ui.font, ui.fontSmall);
+        if (!dchat::ShowColorPicker(hwnd, initial, &color)) return;  // 取消 = 这次不选
         InsertColorCode(dchat::ColorToHex(color));
         return;
     }
-    ViewAddItem(ItemKind::Error, "用法：/chatcolor help 看色码表，/chatcolor choose 弹色板",
+    ViewAddItem(ItemKind::Error, "用法：/chatcolor help 看色码表，/chatcolor choose 弹色盘",
                 dchat::NowTimeString());
 }
 

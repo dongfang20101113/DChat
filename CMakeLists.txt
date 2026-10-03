@@ -31,7 +31,7 @@ target_link_libraries(dchat_server PRIVATE dchat_protocol ws2_32 Threads::Thread
 # 预览用 Windows 自带的缩略图提供者（shell32/ole32），所以放在 dchat_ui 里
 # 语音：录音（waveIn/winmm）、压缩（ACM/msacm32）、播放（PlaySound/winmm）。
 # 放在 dchat_ui 里是因为它和预览一样属于"系统能力"，不属于聊天协议。
-add_library(dchat_ui STATIC src/rounded.cpp src/bubble.cpp src/image_preview.cpp src/voice_notes.cpp src/ui_layout.cpp src/chat_color.cpp)
+add_library(dchat_ui STATIC src/rounded.cpp src/bubble.cpp src/image_preview.cpp src/voice_notes.cpp src/ui_layout.cpp src/chat_color.cpp src/color_picker.cpp src/picker_dialog.cpp)
 target_include_directories(dchat_ui PUBLIC src)
 target_link_libraries(dchat_ui PUBLIC gdiplus gdi32 user32 shell32 ole32 winmm)
 
@@ -81,8 +81,15 @@ target_link_libraries(test_ui_layout PRIVATE dchat_ui)
 add_executable(test_chat_color tests/test_chat_color.cpp)
 target_link_libraries(test_chat_color PRIVATE dchat_ui)
 
+# 取色盘：HSV 换算、几何与命中的纯计算
+add_executable(test_color_picker tests/test_color_picker.cpp)
+target_link_libraries(test_color_picker PRIVATE dchat_ui)
+
 # 界面改版效果图：把提议的新布局离屏画成 PNG（复用真界面的配色/字号/圆角绘制）
 # 不是测试目标，只在改版讨论时用：build\ui_mockup.exe [输出目录]
+add_executable(picker_mockup tools/picker_mockup.cpp)
+target_link_libraries(picker_mockup PRIVATE dchat_ui gdiplus gdi32 user32)
+
 add_executable(icon_probe tools/icon_probe.cpp)
 target_link_libraries(icon_probe PRIVATE dchat_ui gdiplus gdi32 user32)
 
@@ -164,5 +171,6 @@ add_test(NAME crypto_tests COMMAND test_crypto)
 add_test(NAME voice_notes_tests COMMAND test_voice_notes)
 add_test(NAME ui_layout_tests COMMAND test_ui_layout)
 add_test(NAME chat_color_tests COMMAND test_chat_color)
+add_test(NAME color_picker_tests COMMAND test_color_picker)
 
 

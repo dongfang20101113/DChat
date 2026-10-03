@@ -241,6 +241,24 @@ build CMakeFiles/dchat_ui.dir/src/chat_color.cpp.obj: CXX_COMPILER__dchat_ui_uns
   OBJECT_FILE_DIR = CMakeFiles\dchat_ui.dir\src
   TARGET_SUPPORT_DIR = CMakeFiles\dchat_ui.dir
 
+build CMakeFiles/dchat_ui.dir/src/color_picker.cpp.obj: CXX_COMPILER__dchat_ui_unscanned_Release D$:/codes/dchat/src/color_picker.cpp || cmake_object_order_depends_target_dchat_ui
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\dchat_ui.dir\src\color_picker.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\dchat_ui.dir
+  OBJECT_FILE_DIR = CMakeFiles\dchat_ui.dir\src
+  TARGET_SUPPORT_DIR = CMakeFiles\dchat_ui.dir
+
+build CMakeFiles/dchat_ui.dir/src/picker_dialog.cpp.obj: CXX_COMPILER__dchat_ui_unscanned_Release D$:/codes/dchat/src/picker_dialog.cpp || cmake_object_order_depends_target_dchat_ui
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\dchat_ui.dir\src\picker_dialog.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\dchat_ui.dir
+  OBJECT_FILE_DIR = CMakeFiles\dchat_ui.dir\src
+  TARGET_SUPPORT_DIR = CMakeFiles\dchat_ui.dir
+
 
 # =============================================================================
 # Link build statements for STATIC_LIBRARY target dchat_ui
@@ -249,7 +267,7 @@ build CMakeFiles/dchat_ui.dir/src/chat_color.cpp.obj: CXX_COMPILER__dchat_ui_uns
 #############################################
 # Link the static library libdchat_ui.a
 
-build libdchat_ui.a: CXX_STATIC_LIBRARY_LINKER__dchat_ui_Release CMakeFiles/dchat_ui.dir/src/rounded.cpp.obj CMakeFiles/dchat_ui.dir/src/bubble.cpp.obj CMakeFiles/dchat_ui.dir/src/image_preview.cpp.obj CMakeFiles/dchat_ui.dir/src/voice_notes.cpp.obj CMakeFiles/dchat_ui.dir/src/ui_layout.cpp.obj CMakeFiles/dchat_ui.dir/src/chat_color.cpp.obj
+build libdchat_ui.a: CXX_STATIC_LIBRARY_LINKER__dchat_ui_Release CMakeFiles/dchat_ui.dir/src/rounded.cpp.obj CMakeFiles/dchat_ui.dir/src/bubble.cpp.obj CMakeFiles/dchat_ui.dir/src/image_preview.cpp.obj CMakeFiles/dchat_ui.dir/src/voice_notes.cpp.obj CMakeFiles/dchat_ui.dir/src/ui_layout.cpp.obj CMakeFiles/dchat_ui.dir/src/chat_color.cpp.obj CMakeFiles/dchat_ui.dir/src/color_picker.cpp.obj CMakeFiles/dchat_ui.dir/src/picker_dialog.cpp.obj
   CONFIG = Release
   LANGUAGE_COMPILE_FLAGS = -O3 -DNDEBUG
   OBJECT_DIR = CMakeFiles\dchat_ui.dir
@@ -619,6 +637,84 @@ build test_chat_color.exe: CXX_EXECUTABLE_LINKER__test_chat_color_Release CMakeF
   TARGET_SUPPORT_DIR = CMakeFiles\test_chat_color.dir
 
 # =============================================================================
+# Object build statements for EXECUTABLE target test_color_picker
+
+
+#############################################
+# Order-only phony target for test_color_picker
+
+build cmake_object_order_depends_target_test_color_picker: phony || cmake_object_order_depends_target_dchat_ui
+
+build CMakeFiles/test_color_picker.dir/tests/test_color_picker.cpp.obj: CXX_COMPILER__test_color_picker_unscanned_Release D$:/codes/dchat/tests/test_color_picker.cpp || cmake_object_order_depends_target_test_color_picker
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\test_color_picker.dir\tests\test_color_picker.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\test_color_picker.dir
+  OBJECT_FILE_DIR = CMakeFiles\test_color_picker.dir\tests
+  TARGET_SUPPORT_DIR = CMakeFiles\test_color_picker.dir
+
+
+# =============================================================================
+# Link build statements for EXECUTABLE target test_color_picker
+
+
+#############################################
+# Link the executable test_color_picker.exe
+
+build test_color_picker.exe: CXX_EXECUTABLE_LINKER__test_color_picker_Release CMakeFiles/test_color_picker.dir/tests/test_color_picker.cpp.obj | libdchat_ui.a || libdchat_ui.a
+  CONFIG = Release
+  FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
+  LINK_LIBRARIES = libdchat_ui.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lwinmm  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  OBJECT_DIR = CMakeFiles\test_color_picker.dir
+  POST_BUILD = cd .
+  PRE_LINK = cd .
+  TARGET_FILE = test_color_picker.exe
+  TARGET_IMPLIB = libtest_color_picker.dll.a
+  TARGET_PDB = test_color_picker.exe.dbg
+  TARGET_SUPPORT_DIR = CMakeFiles\test_color_picker.dir
+
+# =============================================================================
+# Object build statements for EXECUTABLE target picker_mockup
+
+
+#############################################
+# Order-only phony target for picker_mockup
+
+build cmake_object_order_depends_target_picker_mockup: phony || cmake_object_order_depends_target_dchat_ui
+
+build CMakeFiles/picker_mockup.dir/tools/picker_mockup.cpp.obj: CXX_COMPILER__picker_mockup_unscanned_Release D$:/codes/dchat/tools/picker_mockup.cpp || cmake_object_order_depends_target_picker_mockup
+  CONFIG = Release
+  DEP_FILE = CMakeFiles\picker_mockup.dir\tools\picker_mockup.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17
+  INCLUDES = -ID:/codes/dchat/src
+  OBJECT_DIR = CMakeFiles\picker_mockup.dir
+  OBJECT_FILE_DIR = CMakeFiles\picker_mockup.dir\tools
+  TARGET_SUPPORT_DIR = CMakeFiles\picker_mockup.dir
+
+
+# =============================================================================
+# Link build statements for EXECUTABLE target picker_mockup
+
+
+#############################################
+# Link the executable picker_mockup.exe
+
+build picker_mockup.exe: CXX_EXECUTABLE_LINKER__picker_mockup_Release CMakeFiles/picker_mockup.dir/tools/picker_mockup.cpp.obj | libdchat_ui.a || libdchat_ui.a
+  CONFIG = Release
+  FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -static -static-libgcc -static-libstdc++
+  LINK_LIBRARIES = libdchat_ui.a  -lgdiplus  -lgdi32  -luser32  -lshell32  -lole32  -lwinmm  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  OBJECT_DIR = CMakeFiles\picker_mockup.dir
+  POST_BUILD = cd .
+  PRE_LINK = cd .
+  TARGET_FILE = picker_mockup.exe
+  TARGET_IMPLIB = libpicker_mockup.dll.a
+  TARGET_PDB = picker_mockup.exe.dbg
+  TARGET_SUPPORT_DIR = CMakeFiles\picker_mockup.dir
+
+# =============================================================================
 # Object build statements for EXECUTABLE target icon_probe
 
 
@@ -978,11 +1074,15 @@ build dchat_ui: phony libdchat_ui.a
 
 build icon_probe: phony icon_probe.exe
 
+build picker_mockup: phony picker_mockup.exe
+
 build test_auth: phony test_auth.exe
 
 build test_bubble: phony test_bubble.exe
 
 build test_chat_color: phony test_chat_color.exe
+
+build test_color_picker: phony test_color_picker.exe
 
 build test_crypto: phony test_crypto.exe
 
@@ -1016,7 +1116,7 @@ build ui_mockup: phony ui_mockup.exe
 #############################################
 # Folder: D:/codes/dchat/build
 
-build all: phony libdchat_protocol.a dchat_server.exe libdchat_ui.a dchat_client.exe test_protocol.exe test_render.exe test_rounded.exe test_bubble.exe test_image_preview.exe test_voice_notes.exe test_ui_layout.exe test_chat_color.exe icon_probe.exe ui_mockup.exe test_server_rules.exe test_history.exe test_server_command.exe test_auth.exe test_file_transfer.exe test_crypto.exe
+build all: phony libdchat_protocol.a dchat_server.exe libdchat_ui.a dchat_client.exe test_protocol.exe test_render.exe test_rounded.exe test_bubble.exe test_image_preview.exe test_voice_notes.exe test_ui_layout.exe test_chat_color.exe test_color_picker.exe picker_mockup.exe icon_probe.exe ui_mockup.exe test_server_rules.exe test_history.exe test_server_command.exe test_auth.exe test_file_transfer.exe test_crypto.exe
 
 # =============================================================================
 # Built-in targets
