@@ -15,9 +15,7 @@ from pptx.util import Inches, Pt, Emu
 # 否则从别的目录调用就会找不到图（踩过一次）
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(REPO, "build", "ppt-assets")
-# 输出文件名固定成 v3：前两版还有人在开着（PowerPoint 占用会写不进去），
-# 保留旧文件避免覆盖出问题；确认新版没问题后可以删掉旧的。
-OUT = os.environ.get("DCHAT_PPT_OUT", os.path.join(REPO, "dchat-项目介绍-v3.pptx"))
+OUT = os.environ.get("DCHAT_PPT_OUT", os.path.join(REPO, "dchat-项目介绍.pptx"))
 
 FONT = "微软雅黑"
 NAVY = RGBColor(0x16, 0x28, 0x4A)
