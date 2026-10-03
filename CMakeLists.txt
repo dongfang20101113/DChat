@@ -149,6 +149,31 @@ target_link_libraries(test_crypto PRIVATE dchat_protocol)
 endif()  # 界面层 & 只依赖它的测试到此为止；下面是跨平台目标
 
 # ---------------------------------------------------------------------------
+# Linux 客户端（终端界面 + 批处理模式）。
+# 和 Windows 客户端共用协议层；界面那一套（GDI+）Linux 上没有，所以单独写一份。
+# ---------------------------------------------------------------------------
+if(NOT WIN32)
+    add_executable(dchat_client_linux
+        linux/client/main.cpp
+        linux/client/net.cpp
+        linux/client/trust.cpp
+        linux/client/terminal.cpp
+        linux/client/chat_color.cpp
+        linux/client/ui.cpp)
+    target_link_libraries(dchat_client_linux PRIVATE dchat_protocol Threads::Threads)
+    target_include_directories(dchat_client_linux PRIVATE linux/client)
+
+    # Linux 客户端纯逻辑部分的测试（色码解析 / TOFU / 补全）。
+    # 这几块错了不会报错，只会"显示不对"或"安全判定悄悄错"，所以单独钉住。
+    add_executable(test_linux_client
+        tests/test_linux_client.cpp
+        linux/client/chat_color.cpp
+        linux/client/trust.cpp)
+    target_link_libraries(test_linux_client PRIVATE dchat_protocol)
+    target_include_directories(test_linux_client PRIVATE linux/client)
+endif()
+
+# ---------------------------------------------------------------------------
 # 跨平台的测试目标：只依赖 dchat_protocol，Windows / Linux 都构建。
 # Windows 上它们已经在上面（界面层区里）建过了，这里用 if(NOT TARGET) 兜住，
 # 免得两边重复定义。
@@ -234,3 +259,4 @@ dchat_add_test(voice_notes_tests test_voice_notes)
 dchat_add_test(ui_layout_tests test_ui_layout)
 dchat_add_test(chat_color_tests test_chat_color)
 dchat_add_test(color_picker_tests test_color_picker)
+dchat_add_test(linux_client_tests test_linux_client)
