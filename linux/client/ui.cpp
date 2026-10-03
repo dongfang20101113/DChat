@@ -42,6 +42,22 @@ void ChatUi::SetSelfNick(const std::string& nick) { selfNick_ = nick; }
 
 void ChatUi::SetOnlineNicks(const std::vector<std::string>& nicks) { onlineNicks_ = nicks; }
 
+void ChatUi::SendRecordedVoice(const std::string& path) {
+    const int seconds = WavDurationSeconds(path);
+    PrintLine("🎤 录好了（" + FormatDuration(seconds) + "），正在上传…");
+    std::string error;
+    // kind 传 "voice"：服务器和另外两端就靠这一格判断"这是语音"，
+    // **不看扩展名**（安卓录的是 .m4a、桌面是 .wav，扩展名不可靠）
+    const std::string localId = files_->Upload(path, "voice", &error);
+    if (localId.empty()) {
+        PrintLine("\x1b[31m语音发送失败：" + error + "\x1b[0m");
+        return;
+    }
+    const std::string serverId = files_->ServerIdFor(localId);
+    PrintLine(serverId.empty() ? "✅ 语音已发出，等服务器确认附件 id…"
+                               : ("✅ 语音已发出（id=" + serverId + "）"));
+}
+
 void ChatUi::ShowStatus(const std::string& text) {
     // 接收线程调过来的：PrintAbove 只碰 stdout 和输入行，不碰别的状态，
     // 所以这里不需要额外加锁（界面主线程也在跑，但两者都只做"擦行+打印"）
@@ -118,6 +134,7 @@ std::string ChatUi::RenderServerLine(const std::string& line) {
 void ChatUi::HandleServerLine(const std::string& line) {
     const Message message = ParseLine(line);
     if (message.command == "LOGGEDIN") {
+        loggedIn_ = true;
         std::vector<std::string> words = message.Words();
         if (!words.empty() && LooksLikeTime(words[0])) words.erase(words.begin());
         if (!words.empty()) selfNick_ = words[0];
@@ -198,8 +215,64 @@ bool ChatUi::HandleLocalCommand(const std::string& text) {
             }
         }
         if (row.size() > 2) PrintLine(row);
-        PrintLine("  本地指令：/send <路径> 发文件  /get <id> 下载附件");
+        PrintLine("  本地指令：/send <路径> 发文件   /get <id> 下载附件");
+        PrintLine("            /voice [秒数] 录音（再敲一次停）  /play <id> 播放");
         PrintLine("            /quit 退出  /clear 清屏  /chatcolor on|off 彩色开关");
+        return true;
+    }
+    if (name == "/voice" || name == "/send") {
+        if (!loggedIn_) {
+            PrintLine("还没登录完成，稍等一下再发");
+            return true;
+        }
+    }
+    if (name == "/voice") {
+        const std::string arg = space == std::string::npos ? std::string() : text.substr(space + 1);
+        if (recorder_.Recording()) {
+            // 再敲一次 /voice 就是停
+            std::string path;
+            std::string error;
+            if (!recorder_.StopAndSave(&path, &error)) {
+                PrintLine("\x1b[31m录音失败：" + error + "\x1b[0m");
+                return true;
+            }
+            SendRecordedVoice(path);
+            return true;
+        }
+        int seconds = 0;
+        if (!arg.empty()) seconds = std::atoi(arg.c_str());
+        std::string error;
+        if (!recorder_.Start(seconds, &error)) {
+            PrintLine("\x1b[31m录不了音：" + error + "\x1b[0m");
+            return true;
+        }
+        PrintLine("🎤 正在录音…再敲一次 /voice 就停（最长 " +
+                  std::to_string(seconds > 0 ? seconds : 64) + " 秒）");
+        return true;
+    }
+    if (name == "/play") {
+        const std::string id = space == std::string::npos ? std::string() : text.substr(space + 1);
+        if (id.empty()) {
+            PrintLine("用法：/play <附件 id>（语音会自动下载，也可以手动放别的音频）");
+            return true;
+        }
+        const std::string path = files_->LocalPathFor(id);
+        std::string target = path;
+        if (target.empty()) {
+            // 还没下过：先请求下载，等落盘后再让用户敲一次；直接提示比默默等待好
+            std::string error;
+            if (!files_->RequestDownload(id, &error)) {
+                PrintLine("\x1b[31m" + error + "\x1b[0m");
+            } else {
+                PrintLine("正在下载 " + id + "…下好后再敲一次 /play " + id);
+            }
+            return true;
+        }
+        PrintLine("▶ 播放 " + target);
+        std::string error;
+        if (!PlayAudioFile(target, 120000, &error)) {
+            PrintLine("\x1b[31m播放失败：" + error + "\x1b[0m");
+        }
         return true;
     }
     if (name == "/send") {

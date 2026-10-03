@@ -74,6 +74,13 @@ public:
     /** 请求下载某个附件。 */
     bool RequestDownload(const std::string& id, std::string* error);
 
+    /** 附件落地后的本地路径（用于播放语音）；没下过或已删返回空。 */
+    std::string LocalPathFor(const std::string& id) const;
+
+    /** 自动下载的开关（语音默认开，普通文件默认关——和另外两端一致）。 */
+    void SetAutoDownloadPid(const std::string& id, bool on) { (void)id; autoDownloadOwner_ = on; }
+    bool autoDownloadOwner() const { return autoDownloadOwner_; }
+
     /**
      * 处理服务器来的一行。返回 true 表示这行被文件模块吃掉了（界面不用管）。
      * 参数 progress 用来把进度回调给界面。
@@ -95,6 +102,9 @@ private:
     std::map<std::string, std::string> serverIds_;
     // 最近一次广播出来的附件（供 UI 显示"刚上传的是哪个 id"）
     std::string lastOfferId_;
+    // 附件 ID -> 本地落盘路径（语音要能点一下/自动就开始放）
+    std::map<std::string, std::string> localPaths_;
+    bool autoDownloadOwner_ = true;
     std::uint64_t nextUploadId_ = 1;
 };
 

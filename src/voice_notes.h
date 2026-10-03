@@ -23,8 +23,11 @@
 // 不碰系统 API，能在普通单测里跑；真正碰硬件的是 [VoiceRecorder] / [VoicePlayer]。
 #pragma once
 
-#include <windows.h>
-
+// 这里**不要**引 windows.h：本头文件里的常量和判定函数都是平台无关的纯逻辑，
+// 而 Linux 客户端要用同一套常量（采样率、上限）来保证发出去的语音对方能放。
+// 一旦引入 windows.h，Linux 端就编不了，只能自己抄一份常量——那正是"两端码率
+// 不一致、语音放不出来"的根源。真正的硬件部分在 voice_notes.cpp 里，那份是
+// Windows 专用的（waveIn / PlaySound）。
 #include <cstddef>
 #include <mutex>
 #include <string>

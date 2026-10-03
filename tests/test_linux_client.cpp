@@ -9,6 +9,8 @@
 #include "chat_color.h"
 #include "file_transfer.h"
 #include "files_parse.h"
+#include "voice.h"
+#include "voice_notes.h"  // 语音采样率/上限：三端共用同一套常量
 #include "server_command.h"
 #include "trust.h"
 
@@ -200,6 +202,34 @@ int main() {
                    .valid,
               "0 字节 -> 无效（协议不接受空附件）");
         check(!dchat::ParseFileOffer("").valid, "空行 -> 无效");
+    }
+    {
+        std::printf("[10] 语音判定\n");
+        // 上限和另外两端用的是同一套常量（voice_notes.h），谁都不能自己写死数字
+        check(dchat::kVoiceSampleRate == 16000, "采样率 16 kHz（三端一致）");
+        check(dchat::kVoiceChannels == 1, "单声道");
+        check(dchat::kVoiceBitsPerSample == 16, "16 位");
+        check(dchat::kMaxVoiceSeconds >= 60, "2 MB 上限换算出来至少能录 60 秒");
+
+        // 太短的不能发：点一下也会触发录音，全是噪音
+        check(!dchat::WhyCannotSendVoice("a.wav", 1000, 0).empty(), "0 秒 -> 拒绝");
+        // 负数秒是**时长未知**的哨兵值（读不出 WAV 头时界面会拿到 -1），
+        // 这种情况必须放行：拒了用户就永远发不出"我们算不出时长"的录音，
+        // 而大小那条上限照样兜得住。
+        check(dchat::WhyCannotSendVoice("a.wav", 16000, -1).empty(),
+              "时长未知（-1）-> 放行，交给大小那条兜");
+        check(dchat::WhyCannotSendVoice("a.wav", 16000, 1).empty(), "1 秒可以发");
+        check(dchat::WhyCannotSendVoice("a.wav", 16000, 30).empty(), "30 秒可以发");
+        check(!dchat::WhyCannotSendVoice("a.wav", dchat::kMaxVoiceBytes + 1, 30).empty(),
+              "超过 2 MB -> 拒绝");
+        check(dchat::WhyCannotSendVoice("a.wav", dchat::kMaxVoiceBytes, 64).empty(),
+              "正好 2 MB 可以发（边界不算超）");
+
+        // 时长格式：分钟不补零、秒补零（和另外两端一致）
+        check(dchat::FormatDuration(7) == "0:07", "7 秒 -> 0:07");
+        check(dchat::FormatDuration(83) == "1:23", "83 秒 -> 1:23");
+        check(dchat::FormatDuration(60) == "1:00", "60 秒 -> 1:00");
+        check(dchat::FormatDuration(-3) == "0:00", "负数夹成 0:00");
     }
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

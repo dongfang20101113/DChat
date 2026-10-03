@@ -73,6 +73,11 @@ void FileTransfers::SetDownloadDir(const std::string& dir) {
     EnsureDir(downloadDir_);
 }
 
+std::string FileTransfers::LocalPathFor(const std::string& id) const {
+    const auto it = localPaths_.find(id);
+    return it == localPaths_.end() ? std::string() : it->second;
+}
+
 std::string FileTransfers::ServerIdFor(const std::string& localId) const {
     const auto it = serverIds_.find(localId);
     return it == serverIds_.end() ? std::string() : it->second;
@@ -205,6 +210,12 @@ bool FileTransfers::HandleLine(const std::string& line,
             }
         }
         lastOfferId_ = offer.id;
+        // 语音**自动下载**：语音的意义就是立刻能听，等用户再敲一条命令体验就废了。
+        // 普通文件不自动下（可能是几十 MB），和另外两端的行为一致。
+        if (offer.IsVoice()) {
+            std::string ignoredError;
+            RequestDownload(offer.id, &ignoredError);
+        }
         // 这条一定要带上 id：上传者拿到的就是这一条（服务器现在会把附件 ID 回给上传者），
         // 界面上的 "等服务器确认附件 id…" 就靠它转成真实 ID。
         progress("📎 " + offer.Describe() + "  id=" + offer.id + "   （/get " + offer.id +
@@ -315,6 +326,7 @@ bool FileTransfers::HandleLine(const std::string& line,
         std::string error;
         const bool ok = FinishDownload(job, &error);
         if (ok) {
+            localPaths_[job->id] = job->path;
             progress("✅ 已保存：" + job->path + "（" + FormatBytes(job->total) + "）");
         } else {
             progress("❌ " + job->name + "：" + error);

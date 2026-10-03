@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "files.h"
+#include "voice.h"
 #include "files_parse.h"
 #include "net.h"
 #include "server_command.h"
@@ -33,6 +34,7 @@ public:
 private:
     void PrintLine(const std::string& text);
     std::string RenderServerLine(const std::string& line);
+    void SendRecordedVoice(const std::string& path);
     void CompleteInput();
     bool HandleLocalCommand(const std::string& text);
 
@@ -44,7 +46,11 @@ private:
     std::vector<std::string> onlineNicks_;
     std::vector<std::string> knownNicks_;
     TabCompleter completer_;
+    MicRecorder recorder_;
     bool colorEnabled_ = true;
+    // 登录成功之前不让发文件/语音：服务器会直接拒绝（"请先登录后再传文件"），
+    // 而用户看到的只是一句莫名其妙的失败。本地先拦，提示更直白。
+    bool loggedIn_ = false;
     bool wantQuit_ = false;
 };
 
