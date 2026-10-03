@@ -19,9 +19,41 @@
 namespace dchat {
 namespace {
 
-/** 录音工具的名字（装的是 alsa-utils 里的命令）。 */
+/**
+ * 录音与放音用的外部命令。
+ *
+ * 三个平台的工具不一样，但接口几乎一样（都是"读一个 WAV、写一个 WAV"），
+ * 所以这里只换名字，其余代码（fork/exec、超时、SIGINT 收尾、时长校验）完全共用：
+ *
+ *   Linux   arecord -f S16_LE -r 16000 -c 1 -t wav -d N out.wav      （alsa-utils）
+ *           aplay out.wav
+ *   macOS   rec -q -r 16000 -c 1 -b 16 out.wav trim 0 N            （sox）
+ *           play -q out.wav
+ *
+ * macOS 选 sox 而不是 afrecord/afplay：sox 的 rec 能直接写 16 kHz 单声道 WAV，
+ * 参数写法与 arecord 一一对应；afrecord 的输出格式参数是另一套，且不一定装。
+ */
+#ifdef __APPLE__
+constexpr const char* kRecordTool = "rec";
+constexpr const char* kPlayTool = "play";
+#else
 constexpr const char* kRecordTool = "arecord";
 constexpr const char* kPlayTool = "aplay";
+#endif
+
+/** 录音工具要不要 -d（秒）这种"录多久"参数。sox 用 `trim 0 N` 的位置参数。 */
+#ifdef __APPLE__
+constexpr bool kRecordUsesTrimArgument = true;
+#else
+constexpr bool kRecordUsesTrimArgument = false;
+#endif
+
+/** "有没有声卡"要看的路径：Linux 是 /dev/snd，macOS 走 CoreAudio 没有这个目录。 */
+#ifdef __APPLE__
+constexpr const char* kSoundDevicePath = "/System/Library/Frameworks/CoreAudio.framework";
+#else
+constexpr const char* kSoundDevicePath = "/dev/snd";
+#endif
 
 /** 工具在不在 PATH 里。 */
 bool ToolExists(const char* name) {
@@ -83,12 +115,21 @@ bool MicRecorder::Start(int maxSeconds, std::string* error) {
         return false;
     }
     if (!ToolExists(kRecordTool)) {
-        if (error) *error = std::string("找不到 ") + kRecordTool +
-                            "（装一下：sudo apt-get install alsa-utils）";
+        if (error) {
+            *error = std::string("找不到 ") + kRecordTool + "（装一下：" +
+#ifdef __APPLE__
+                     "brew install sox）";
+#else
+                     "sudo apt-get install alsa-utils）";
+#endif
+        }
         return false;
     }
     if (!HasSoundDevice()) {
-        if (error) *error = "这台机器没有声卡设备（/dev/snd 不存在），录不了音";
+        if (error) {
+            *error = std::string("这台机器没有可用的音频设备（找不到 ") + kSoundDevicePath +
+                     "），录不了音";
+        }
         return false;
     }
     const int limit = maxSeconds > 0 ? maxSeconds : kMaxVoiceSeconds;
@@ -108,13 +149,22 @@ bool MicRecorder::Start(int maxSeconds, std::string* error) {
             ::dup2(devNull, STDERR_FILENO);
             ::close(devNull);
         }
-        // -t wav：直接输出带头的 WAV，省得自己拼头
-        // -d <秒>：到点自己停（我们在界面侧也会调 StopAndSave 兜底）
+        // 录音命令的写法两端不同，但都是"16 kHz / 单声道 / 16 位 / 录 limit 秒"：
+        //   Linux  arecord -q -f S16_LE -r 16000 -c 1 -t wav -d N out.wav
+        //   macOS  rec -q -r 16000 -c 1 -b 16 out.wav trim 0 N
+        const std::string rate = std::to_string(kVoiceSampleRate);
+        const std::string channels = std::to_string(kVoiceChannels);
         const std::string seconds = std::to_string(limit);
-        ::execlp(kRecordTool, kRecordTool, "-q", "-f", "S16_LE", "-r",
-                 std::to_string(kVoiceSampleRate).c_str(), "-c",
-                 std::to_string(kVoiceChannels).c_str(), "-t", "wav", "-d", seconds.c_str(),
-                 path_.c_str(), static_cast<char*>(nullptr));
+        if (kRecordUsesTrimArgument) {
+            // sox 的 rec：`trim 0 N` 表示从 0 秒录到 N 秒
+            ::execlp(kRecordTool, kRecordTool, "-q", "-r", rate.c_str(), "-c", channels.c_str(),
+                     "-b", "16", path_.c_str(), "trim", "0", seconds.c_str(),
+                     static_cast<char*>(nullptr));
+        } else {
+            ::execlp(kRecordTool, kRecordTool, "-q", "-f", "S16_LE", "-r", rate.c_str(), "-c",
+                     channels.c_str(), "-t", "wav", "-d", seconds.c_str(), path_.c_str(),
+                     static_cast<char*>(nullptr));
+        }
         ::_exit(127);  // execlp 失败才会到这
     }
     pid_ = static_cast<int>(pid);
@@ -263,12 +313,21 @@ std::string FormatDuration(int seconds) {
 
 bool PlayAudioFile(const std::string& path, int maxWaitMs, std::string* error) {
     if (!ToolExists(kPlayTool)) {
-        if (error) *error = std::string("找不到 ") + kPlayTool +
-                            "（装一下：sudo apt-get install alsa-utils）";
+        if (error) {
+            *error = std::string("找不到 ") + kPlayTool + "（装一下：" +
+#ifdef __APPLE__
+                     "brew install sox）";
+#else
+                     "sudo apt-get install alsa-utils）";
+#endif
+        }
         return false;
     }
     if (!HasSoundDevice()) {
-        if (error) *error = "这台机器没有声卡设备，放不了音";
+        if (error) {
+            *error = std::string("这台机器没有可用的音频设备（找不到 ") + kSoundDevicePath +
+                     "），放不了音";
+        }
         return false;
     }
     struct stat info {};

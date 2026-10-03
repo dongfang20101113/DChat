@@ -153,31 +153,90 @@ endif()  # 界面层 & 只依赖它的测试到此为止；下面是跨平台目
 # 和 Windows 客户端共用协议层；界面那一套（GDI+）Linux 上没有，所以单独写一份。
 # ---------------------------------------------------------------------------
 if(NOT WIN32)
+    # ---------------------------------------------------------------------------
+    # 客户端代码分两层：
+    #   client_core/  可移植核心（网络 / 信任 / 附件 / 颜色 / 语音）—— Linux 与 macOS 共用
+    #   linux/client/ 终端界面 + 入口（Linux 专有）
+    #
+    # 分层的意义：界面怎么写都不影响逻辑，逻辑都留在能单测、能跨平台编译的核心层。
+    # 后加 macOS 时只补界面，核心一行不用改。
+    # ---------------------------------------------------------------------------
+    add_library(dchat_client_core STATIC
+        client_core/net.cpp
+        client_core/trust.cpp
+        client_core/chat_color.cpp
+        client_core/files.cpp
+        client_core/files_parse.cpp
+        client_core/voice.cpp)
+    target_link_libraries(dchat_client_core PUBLIC dchat_protocol Threads::Threads)
+    target_include_directories(dchat_client_core PUBLIC client_core)
+
     add_executable(dchat_client_linux
         linux/client/main.cpp
-        linux/client/net.cpp
-        linux/client/trust.cpp
         linux/client/terminal.cpp
-        linux/client/chat_color.cpp
-        linux/client/files.cpp
-        linux/client/files_parse.cpp
-        linux/client/voice.cpp
         linux/client/ui.cpp)
-    target_link_libraries(dchat_client_linux PRIVATE dchat_protocol Threads::Threads)
+    target_link_libraries(dchat_client_linux PRIVATE dchat_client_core)
     target_include_directories(dchat_client_linux PRIVATE linux/client)
 
-    # Linux 客户端纯逻辑部分的测试（色码解析 / TOFU / 附件解析 / 语音判定）。
+    # 客户端核心的纯逻辑测试（色码解析 / TOFU / 附件解析 / 语音判定）。
     # 这几块错了不会报错，只会"显示不对"或"安全判定悄悄错"，所以单独钉住。
     # voice.cpp 里的判定函数是纯逻辑，所以一起链进来；它 fork 子进程的那部分
     # 在测试里不会被调用（只链接、不执行）。
     add_executable(test_linux_client
         tests/test_linux_client.cpp
-        linux/client/chat_color.cpp
-        linux/client/trust.cpp
-        linux/client/files_parse.cpp
-        linux/client/voice.cpp)
+        client_core/chat_color.cpp
+        client_core/trust.cpp
+        client_core/files_parse.cpp
+        client_core/voice.cpp)
     target_link_libraries(test_linux_client PRIVATE dchat_protocol)
-    target_include_directories(test_linux_client PRIVATE linux/client)
+    target_include_directories(test_linux_client PRIVATE client_core)
+endif()
+
+# ---------------------------------------------------------------------------
+# macOS：客户端是原生 Cocoa 界面（ObjC++），复用 client_core + dchat_protocol。
+#
+# ⚠️ 这一段**从未被验证过**：开发机上没有 macOS SDK，zig 也不带 AppKit 头，
+#    连语法检查都做不了。macos/main.mm 里刻意只用最保守的 AppKit API，
+#    tools/check_objc_static.py 会在文本层面查"调用了没实现的 selector"，
+#    但真正的编译错误只能在 Mac 上发现。
+#
+# 需要：brew install cmake ninja openssl@3 sox
+# 构建：cmake -S . -B build -G Ninja -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+# ---------------------------------------------------------------------------
+if(APPLE)
+    add_library(dchat_client_core STATIC
+        client_core/net.cpp
+        client_core/trust.cpp
+        client_core/chat_color.cpp
+        client_core/files.cpp
+        client_core/files_parse.cpp
+        client_core/voice.cpp
+        client_core/chat_core.cpp)
+    target_link_libraries(dchat_client_core PUBLIC dchat_protocol Threads::Threads)
+    target_include_directories(dchat_client_core PUBLIC client_core)
+
+    add_executable(dchat_client_macos MACOSX_BUNDLE macos/main.mm)
+    target_link_libraries(dchat_client_macos PRIVATE
+        dchat_client_core
+        "-framework Cocoa"
+        "-framework Foundation"
+        "-framework AppKit")
+    target_compile_options(dchat_client_macos PRIVATE -fobjc-arc)
+    set_target_properties(dchat_client_macos PROPERTIES
+        MACOSX_BUNDLE_BUNDLE_NAME "dchat"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.dongfang20101113.dchat"
+        MACOSX_BUNDLE_BUNDLE_VERSION "1.0"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0")
+
+    # 客户端核心的纯逻辑测试在 macOS 上也能跑 —— 等于把三端一致性再验一次
+    add_executable(test_client_core
+        tests/test_linux_client.cpp
+        client_core/chat_color.cpp
+        client_core/trust.cpp
+        client_core/files_parse.cpp
+        client_core/voice.cpp)
+    target_link_libraries(test_client_core PRIVATE dchat_protocol)
+    target_include_directories(test_client_core PRIVATE client_core)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -273,3 +332,4 @@ dchat_add_test(ui_layout_tests test_ui_layout)
 dchat_add_test(chat_color_tests test_chat_color)
 dchat_add_test(color_picker_tests test_color_picker)
 dchat_add_test(linux_client_tests test_linux_client)
+dchat_add_test(client_core_tests test_client_core)

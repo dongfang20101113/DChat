@@ -34,8 +34,10 @@ echo "zig: $("$ZIG_BIN" version)"
 SHARED="src/protocol.cpp src/render.cpp src/input_history.cpp src/server_command.cpp \
         src/auth.cpp src/file_transfer.cpp src/server_rules.cpp src/register_guard.cpp \
         src/crypto.cpp src/socket_util.cpp"
-CLIENT_CORE="linux/client/net.cpp linux/client/trust.cpp linux/client/files_parse.cpp \
-             linux/client/chat_color.cpp"
+# 客户端核心（已从 linux/client/ 提升到 client_core/，两端共用）
+CLIENT_CORE="client_core/net.cpp client_core/trust.cpp client_core/files_parse.cpp \
+             client_core/chat_color.cpp client_core/files.cpp client_core/voice.cpp \
+             client_core/chat_core.cpp"
 
 fail=0
 for target in x86_64-macos aarch64-macos; do
@@ -44,7 +46,7 @@ for target in x86_64-macos aarch64-macos; do
 
   for f in $SHARED $CLIENT_CORE; do
     printf "  %-34s " "$(basename "$f")"
-    out=$("$ZIG_BIN" c++ -target "$target" -std=c++17 -O1 -Isrc -Ilinux/client \
+    out=$("$ZIG_BIN" c++ -target "$target" -std=c++17 -O1 -Isrc -Iclient_core \
               -c "$f" -o /tmp/macos-verify.o 2>&1)
     if [ -z "$out" ]; then
       echo "OK"
