@@ -29,6 +29,9 @@ const RuleRange kRanges[] = {
     {"maxconnsperip", 0, 10000, "个", "同一 IP 的同时连接数上限（0 = 不限制）"},
     {"loginfails", 0, 10000, "次", "同一 IP 在 5 分钟内允许的登录失败次数（0 = 不限制）"},
     {"handshaketimeout", 0, 600, "秒", "连上后多少秒内必须登录（0 = 不限制）"},
+    // ---- 2026-10 新增：注册路径防护（实测过：没有这两条时，换 IP 疯狂注册可拖死正常用户）----
+    {"registerinterval", 0, 86400, "秒", "同一 IP 两次注册之间的最小间隔（0 = 不限制）"},
+    {"maxaccounts", 0, 10000000, "个", "账号总数上限（0 = 不限制）"},
 };
 
 const RuleRange* FindRange(const std::string& name) {
@@ -72,6 +75,8 @@ const std::vector<RuleInfo>& AllRuleInfos() {
         {"maxconnsperip", "<个> 同一 IP 的连接数上限，0 = 不限", false},
         {"loginfails", "<次> 同 IP 每 5 分钟允许的登录失败次数，0 = 不限", false},
         {"handshaketimeout", "<秒> 连上后多久必须登录，0 = 不限", false},
+        {"registerinterval", "<秒> 同 IP 两次注册的最小间隔，0 = 不限", false},
+        {"maxaccounts", "<个> 账号总数上限，0 = 不限", false},
     };
     return infos;
 }
@@ -159,6 +164,14 @@ std::string DescribeRule(const ServerRules& rules, const std::string& name) {
         return "handshaketimeout = " + std::to_string(rules.handshakeTimeoutSec) +
                " 秒（连上后必须在这个时间内登录，0 = 不限制）";
     }
+    if (lower == "registerinterval") {
+        return "registerinterval = " + std::to_string(rules.registerIntervalSec) +
+               " 秒（同一 IP 两次注册之间的最小间隔，0 = 不限制）";
+    }
+    if (lower == "maxaccounts") {
+        return "maxaccounts = " + std::to_string(rules.maxAccounts) +
+               " 个（账号总数上限，0 = 不限制）";
+    }
     return "未知规则：" + name;
 }
 
@@ -242,6 +255,8 @@ RuleChange ApplyRule(ServerRules* rules, const std::string& name, RuleAction act
     if (lower == "maxconnsperip") current = rules->maxConnectionsPerIp;
     if (lower == "loginfails") current = rules->loginFailLimit;
     if (lower == "handshaketimeout") current = rules->handshakeTimeoutSec;
+    if (lower == "registerinterval") current = rules->registerIntervalSec;
+    if (lower == "maxaccounts") current = rules->maxAccounts;
 
     long long next = current;
     if (action == RuleAction::Set) {
@@ -287,6 +302,8 @@ RuleChange ApplyRule(ServerRules* rules, const std::string& name, RuleAction act
     if (lower == "maxconnsperip") rules->maxConnectionsPerIp = static_cast<int>(next);
     if (lower == "loginfails") rules->loginFailLimit = static_cast<int>(next);
     if (lower == "handshaketimeout") rules->handshakeTimeoutSec = static_cast<int>(next);
+    if (lower == "registerinterval") rules->registerIntervalSec = static_cast<int>(next);
+    if (lower == "maxaccounts") rules->maxAccounts = static_cast<int>(next);
     change.message = lower + " = " + std::to_string(next) + " " + range->unit + note;
     return change;
 }
@@ -361,6 +378,10 @@ std::string SerializeRules(const ServerRules& rules) {
            "      # 同一 IP 每 5 分钟允许的登录失败次数，0 = 不限制（公网建议 10）\n";
     out += "handshaketimeout " + std::to_string(rules.handshakeTimeoutSec) +
            "      # 连上后多少秒内必须登录，0 = 不限制（公网建议 30）\n";
+    out += "registerinterval " + std::to_string(rules.registerIntervalSec) +
+           "      # 同一 IP 两次注册的最小间隔（秒），0 = 不限制（公网建议 60）\n";
+    out += "maxaccounts " + std::to_string(rules.maxAccounts) +
+           "      # 账号总数上限，0 = 不限制（换 IP 也绕不过这道闸）\n";
     return out;
 }
 
@@ -444,6 +465,8 @@ int ParseRules(const std::string& text, ServerRules* rules) {
         if (name == "maxconnsperip") parsed.maxConnectionsPerIp = static_cast<int>(number);
         if (name == "loginfails") parsed.loginFailLimit = static_cast<int>(number);
         if (name == "handshaketimeout") parsed.handshakeTimeoutSec = static_cast<int>(number);
+        if (name == "registerinterval") parsed.registerIntervalSec = static_cast<int>(number);
+        if (name == "maxaccounts") parsed.maxAccounts = static_cast<int>(number);
         ++count;
     }
     // 文件里可能把两个值写成互相矛盾的样子，这里把 documentsize 夹到不超过 maxservertemp

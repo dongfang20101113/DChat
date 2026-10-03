@@ -442,9 +442,17 @@ int main() {
         const dchat::CompletionResult rules = dchat::Suggest("/chatrule ", noNicks);
         check(rules.isArgument && rules.matches.size() == dchat::AllRuleNames().size(),
               "打 /chatrule + 空格 会列出全部规则名");
-        check(rules.matches.size() == 13 && rules.matches[0] == "chatinterval" &&
-                  rules.groups[0] == "服务器规则",
+        // 刻意**不写死规则条数**：每加一条规则就来改测试是纯粹的维护负担，
+        // 而且改的时候很容易顺手把数字改错、把真问题掩盖掉。
+        // 这里只钉"数量与规则表一致 + 顺序与分组正确"。
+        check(rules.matches.size() == dchat::AllRuleNames().size() &&
+                  rules.matches[0] == "chatinterval" && rules.groups[0] == "服务器规则",
               "规则名按顺序给出，并分到「服务器规则」组");
+        bool hasRegisterGuard = false;
+        for (const std::string& name : rules.matches) {
+            if (name == "registerinterval" || name == "maxaccounts") hasRegisterGuard = true;
+        }
+        check(hasRegisterGuard, "注册防护规则出现在 /chatrule 的补全里");
         bool hintsOk = rules.hints.size() == rules.matches.size();
         for (const std::string& hint : rules.hints) {
             if (hint.empty()) hintsOk = false;  // 每个规则名后面都带灰色说明

@@ -15,7 +15,9 @@ from pptx.util import Inches, Pt, Emu
 # 否则从别的目录调用就会找不到图（踩过一次）
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(REPO, "build", "ppt-assets")
-OUT = os.environ.get("DCHAT_PPT_OUT", os.path.join(REPO, "dchat-项目介绍.pptx"))
+# 输出文件名固定成 v3：前两版还有人在开着（PowerPoint 占用会写不进去），
+# 保留旧文件避免覆盖出问题；确认新版没问题后可以删掉旧的。
+OUT = os.environ.get("DCHAT_PPT_OUT", os.path.join(REPO, "dchat-项目介绍-v3.pptx"))
 
 FONT = "微软雅黑"
 NAVY = RGBColor(0x16, 0x28, 0x4A)
@@ -431,8 +433,8 @@ def slide_verification(prs):
     slide = add_slide(prs, "怎么证明它是对的", "这个项目里「验证」和「写代码」花的力气差不多")
     rows = [
         ["验证手段", "规模 / 结果"],
-        ["Windows 端 15 个测试程序", "921 项检查，全部通过；构建 0 告警"],
-        ["Linux 端 9 个测试程序", "741 项检查，全部通过"],
+        ["Windows 端 16 个测试程序", "966 项检查，全部通过；构建 0 告警"],
+        ["Linux 端 10 个测试程序", "785 项检查，全部通过"],
         ["安卓端单元测试", "328 个测试、19 个测试类，全部通过"],
         ["密码学测试向量", "HKDF 对 RFC 5869、AES-GCM 对 NIST、ECDH 固定向量、与 Kotlin 跨语言比对"],
         ["三端互通实测", "Linux 客户端 ↔ Windows 服务端、Windows 协议层 ↔ Linux 服务端，双向加密握手成功"],
@@ -553,8 +555,32 @@ def slide_perf_boundary(prs):
     return slide
 
 
+
+def slide_reg_defense(prs):
+    """注册路径防护：从"发现缺口"到"修好并实测"的完整一页。"""
+    slide = add_slide(prs, "补上注册路径：从发现缺口到实测修复",
+                      "有人问「疯狂注册换 IP 是不是防不住」——实测确实防不住，于是补掉了")
+    add_image_fit(slide, os.path.join(ASSETS, "chart-registration.png"), 0.45, 1.15, 12.5, 4.3)
+    card_text(slide, 0.6, 5.6, 4.0, 1.5, "缺口是什么", [
+        "· 原有防护全部基于 IP：换 IP 即失效",
+        "· 注册路径当时零限制、零拦截记录",
+        "· 洪水期间正常用户消息 105 ms → 超时",
+    ], accent=RED, fill=RED_L, title_size=13, body_size=11)
+    card_text(slide, 4.75, 5.6, 4.0, 1.5, "怎么修的", [
+        "· 新增两条规则：registerinterval / maxaccounts",
+        "· IP 冷却抬成本，总量上限兜底（换 IP 也绕不过）",
+        "· 顺带修掉全量重写账号文件与重复算名单",
+    ], accent=BLUE, fill=BLUE_L, title_size=13, body_size=11)
+    card_text(slide, 8.9, 5.6, 3.85, 1.5, "不误伤验证", [
+        "· 首次 IP 新用户 2 ms 注册成功",
+        "· 已注册用户登录发言不受影响",
+        "· 44 项单测把放行/拒绝两个方向都钉死",
+    ], accent=GREEN, fill=GREEN_L, title_size=13, body_size=11)
+    return slide
+
+
 def slide_rules(prs):
-    slide = add_slide(prs, "可调防护规则", "所有防护都是运行时参数：改一行、重启即生效")
+    slide = add_slide(prs, "可调防护规则", "17 条规则全部是运行时参数：改一行、重启即生效")
     rows = [
         ["规则", "作用", "默认值"],
         ["maxconns", "同时连接总数上限", "0（不限）"],
@@ -564,6 +590,8 @@ def slide_rules(prs):
         ["uploadrate / downloadrate", "单客户端上传 / 下载限速（KB/s）", "0（不限）"],
         ["maxtextlen / maxtextlines", "单条消息最大字符数 / 行数", "0（不限）"],
         ["chatinterval", "发言最小间隔，防刷屏", "0（不限）"],
+        ["registerinterval", "同一 IP 两次注册的最小间隔", "0（不限）"],
+        ["maxaccounts", "账号总数上限（换 IP 也绕不过）", "0（不限）"],
         ["documentsize / maxservertemp", "单文件上限 / 暂存总量上限", "64 MB / 1024 MB"],
     ]
     add_table(slide, 0.62, 1.3, 12.1, 4.4, rows, col_widths=[3.7, 5.9, 2.5], font_size=11.5)
@@ -723,6 +751,7 @@ def main():
     slide_ddos(prs)
     slide_chart_conn(prs)
     slide_chart_timeout(prs)
+    slide_reg_defense(prs)
     slide_perf_boundary(prs)
     slide_rules(prs)
     slide_bugs(prs)

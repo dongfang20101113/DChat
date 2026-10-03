@@ -10,6 +10,7 @@
 #include <deque>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -17,6 +18,7 @@
 #include <vector>
 
 #include "protocol.h"
+#include "register_guard.h"
 #include "auth.h"
 #include "crypto.h"
 #include "file_transfer.h"
@@ -529,6 +531,40 @@ std::mutex g_usersMutex;
 std::vector<dchat::UserRecord> g_users;
 std::string g_usersPath = "dchat-users.txt";
 
+// 账号文件写入节流 + 已知名字缓存。
+//
+// 为什么需要：实测（tools/regflood.cpp）发现每次注册都做两件 O(N) 的事——
+//   1. SaveUsers() 持 g_usersMutex 把**整张表**序列化并重写文件；
+//   2. BroadcastKnownNames() 对**每个在线客户端**各算一遍完整用户名列表。
+// 12 线程并发注册时这两件事把正常用户的消息往返从 105 ms 拖到 10 秒超时。
+//
+// 写入节流：同一窗口内只落盘一次，中间的改动标记为"待写"，
+// 由周期任务补写（见 BanMaintenanceLoop）——**只丢最后不到 1 秒的注册**，
+// 而换来的是一条注册路径不再做文件 I/O。
+std::mutex g_usersIoCtxMutex;
+std::chrono::steady_clock::time_point g_lastUsersWrite{};
+bool g_usersDirty = false;
+inline constexpr int kUsersWriteThrottleMs = 800;
+
+// 已知名字缓存：账号表或操作员/封禁表一变就置脏，下次广播时重算一次，
+// 而不是每个客户端算一遍。
+std::mutex g_knownNamesMutex;
+std::string g_knownNamesCache;
+bool g_knownNamesDirty = true;
+
+void InvalidateKnownNames() {
+    std::lock_guard<std::mutex> lock(g_knownNamesMutex);
+    g_knownNamesDirty = true;
+}
+
+// ---- 注册路径防护 ----
+// 记录每个 IP 上次注册成功的时间。换 IP 能绕开这条，所以它只是"抬高成本"，
+// 真正兜底的是 maxaccounts（总量上限，换多少 IP 都绕不过）。
+// 刻意只保留最近 kRegisterTrackMaxSec 秒的记录：否则长期运行时这张表会无限增长。
+std::mutex g_registerMutex;
+std::map<std::string, std::chrono::steady_clock::time_point> g_lastRegister;
+inline constexpr int kRegisterTrackMaxSec = 86400;
+
 void LoadUsers() {
     std::ifstream in(g_usersPath, std::ios::binary);
     if (!in) {
@@ -542,11 +578,39 @@ void LoadUsers() {
 }
 
 bool SaveUsers() {
+    // 节流：窗口内不重复写盘，只标脏。写盘时必须持 g_usersMutex 保证快照一致。
+    {
+        std::lock_guard<std::mutex> lock(g_usersIoCtxMutex);
+        const auto now = std::chrono::steady_clock::now();
+        const auto sinceWrite = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    now - g_lastUsersWrite)
+                                    .count();
+        if (g_lastUsersWrite.time_since_epoch().count() != 0 &&
+            sinceWrite < kUsersWriteThrottleMs) {
+            g_usersDirty = true;
+            return true;  // 交给周期任务补写，调用方不必关心
+        }
+        g_lastUsersWrite = now;
+        g_usersDirty = false;
+    }
     std::lock_guard<std::mutex> lock(g_usersMutex);
     std::ofstream out(g_usersPath, std::ios::binary | std::ios::trunc);
     if (!out) return false;
     out << dchat::SerializeUsers(g_users);
     return out.good();
+}
+
+/** 周期任务调用：把节流期间攒下的改动补写落盘。 */
+void FlushUsersIfDirty() {
+    {
+        std::lock_guard<std::mutex> lock(g_usersIoCtxMutex);
+        if (!g_usersDirty) return;
+        g_usersDirty = false;
+        g_lastUsersWrite = std::chrono::steady_clock::now();
+    }
+    std::lock_guard<std::mutex> lock(g_usersMutex);
+    std::ofstream out(g_usersPath, std::ios::binary | std::ios::trunc);
+    if (out) out << dchat::SerializeUsers(g_users);
 }
 
 bool UserExists(const std::string& name, dchat::UserRecord* copy) {
@@ -741,9 +805,23 @@ void SendKnownNames(const std::shared_ptr<Client>& client) {
 }
 
 void BroadcastKnownNames() {
+    // 名字列表**只算一次**给所有客户端用。
+    // 原先是循环里调 KnownNameList()——每多一个在线客户端就重算一遍整张账号表，
+    // 于是单次注册的成本变成 O(账号数 × 在线数)。实测能把正常用户拖到超时。
+    // 缓存由 InvalidateKnownNames() 置脏（账号/操作员/封禁表变动时）。
+    std::string names;
+    {
+        std::lock_guard<std::mutex> lock(g_knownNamesMutex);
+        if (g_knownNamesDirty) {
+            g_knownNamesCache = KnownNameList();
+            g_knownNamesDirty = false;
+        }
+        names = g_knownNamesCache;
+    }
+    const std::string line = Timed("KNOWN", names);
     for (const auto& client : ClientSnapshot()) {
         if (client->nick.empty()) continue;
-        client->SendLine(Timed("KNOWN", KnownNameList()));
+        client->SendLine(line);
     }
 }
 
@@ -1020,6 +1098,22 @@ void BanMaintenanceLoop() {
         }
         // 登录失败记录也会过期，顺手清掉，免得长期运行时那张表无限增长
         g_loginFails.Sweep();
+        // 账号文件的写入被节流了（注册路径不做文件 I/O），这里补写落盘
+        FlushUsersIfDirty();
+        // 注册时间记录也要清：只保留窗口内的，否则长期运行时那张表无限增长
+        {
+            const auto now = std::chrono::steady_clock::now();
+            std::lock_guard<std::mutex> lock(g_registerMutex);
+            for (auto it = g_lastRegister.begin(); it != g_lastRegister.end();) {
+                const auto age =
+                    std::chrono::duration_cast<std::chrono::seconds>(now - it->second).count();
+                if (age > kRegisterTrackMaxSec) {
+                    it = g_lastRegister.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
     }
 }
 
@@ -1195,6 +1289,47 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
         }
 
         if (msg.command == "REGISTER") {
+            // ---- 注册路径防护（规则 registerinterval / maxaccounts）----
+            // 这两条是 2026-10 实测之后补的：在此之前注册路径**完全没有限制**，
+            // 换 IP 就能绕开所有基于 IP 的防护（maxconnsperip / loginfails），
+            // 12 线程并发注册能跑到 363 个/秒并把正常用户的消息往返拖到超时。
+            {
+                const dchat::ServerRules rules = CurrentRules();
+                // 先看这个 IP 距上次注册过了多久。没有记录 = 这个 IP 没注册过 -> 放行
+                long long sinceLast = -1;
+                {
+                    std::lock_guard<std::mutex> lock(g_registerMutex);
+                    const auto it = g_lastRegister.find(client->ip);
+                    if (it != g_lastRegister.end()) {
+                        sinceLast = std::chrono::duration_cast<std::chrono::seconds>(
+                                        std::chrono::steady_clock::now() - it->second)
+                                        .count();
+                    }
+                }
+                std::size_t accountCount = 0;
+                {
+                    std::lock_guard<std::mutex> lock(g_usersMutex);
+                    accountCount = g_users.size();
+                }
+                const dchat::RegisterDeny deny = dchat::CheckRegisterAllowed(
+                    accountCount, rules.maxAccounts, sinceLast, rules.registerIntervalSec);
+                if (deny != dchat::RegisterDeny::None) {
+                    client->SendLine(Timed(
+                        "ERROR",
+                        dchat::RegisterDenyText(
+                            deny, rules.maxAccounts,
+                            dchat::RegisterWaitSeconds(sinceLast, rules.registerIntervalSec),
+                            rules.registerIntervalSec)));
+                    Log(std::string("register rejected (") +
+                        (deny == dchat::RegisterDeny::AccountFull ? "accounts full"
+                                                                  : "too soon") +
+                        "): " + client->ip + " -> " + name);
+                    if (deny == dchat::RegisterDeny::AccountFull) {
+                        client->SendLine(Timed("SYS", "服务器已满，请联系管理员"));
+                    }
+                    return true;
+                }
+            }
             if (UserExists(name, nullptr)) {
                 client->SendLine(Timed("ERROR", "用户名已存在，请到「登录」界面直接登录"));
                 return true;
@@ -1202,6 +1337,11 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             {
                 std::lock_guard<std::mutex> lock(g_usersMutex);
                 g_users.push_back(dchat::MakeUser(name, words[1]));
+            }
+            InvalidateKnownNames();  // 名字表变了，下次广播要重算
+            {
+                std::lock_guard<std::mutex> lock(g_registerMutex);
+                g_lastRegister[client->ip] = std::chrono::steady_clock::now();
             }
             if (!SaveUsers()) {
                 client->SendLine(Timed("ERROR", "服务器无法保存账号文件：" + g_usersPath));

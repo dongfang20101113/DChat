@@ -174,6 +174,79 @@ def make_timeout_chart(path):
     return path
 
 
+
+
+# 注册洪水防护的对比数据（实测，来自 tools/regflood.cpp）
+# (配置名, 单线程尝试数, 单线程成功数, 并发尝试数, 并发成功数, 服务端拦截数, 最终账号数)
+REG_DATA = [
+    ("无防护", 30, 30, 80, 80, 0, 111),
+    ("registerinterval 60", 30, 4, 80, 4, 102, 9),
+    ("maxaccounts 20", 30, 20, 80, 0, 120, 21),
+    ("两条一起开", 30, 4, 80, 1, 105, 6),
+]
+
+
+def make_registration_chart(path):
+    """注册洪水：防护前后账号增长对比（左：成功注册数；右：被拦截数）。"""
+    W, H = 2000, 860
+    img = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(img)
+    f_title = load_font(34, bold=True)
+    f_label = load_font(23)
+    f_note = load_font(21)
+    f_small = load_font(20)
+
+    # ---- 左图：成功注册数（尝试 110 个 = 30 单线程 + 80 并发）----
+    d.text((100, 40), "尝试注册 110 个：实际成功了多少", font=f_title, fill=NAVY)
+    box = (200, 130, 1120, 640)
+    attempts = 110
+    setup_axes(d, box, "配置", "成功注册数", f_label, attempts, 140,
+               [0, 35, 70, 105, 140], [0, 1, 2, 3], [""] * 4)
+
+    bar_w = 130
+    for index, (label, single_try, single_ok, par_try, par_ok, blocked, accounts) in enumerate(REG_DATA):
+        total_ok = single_ok + par_ok
+        x = box[0] + 90 + index * 215
+        y_top = to_xy(box, 0, total_ok, attempts, 140)[1]
+        color = RED if index == 0 else GREEN
+        d.rectangle((x, y_top, x + bar_w, box[3]), fill=color)
+        d.text((x + bar_w / 2, y_top - 30), str(total_ok), font=f_title, fill=color, anchor="ma")
+        # x 轴标签分两行放
+        d.text((x + bar_w / 2, box[3] + 16), label.split(" ")[0], font=f_small, fill=TEXT,
+               anchor="ma")
+        if len(label.split(" ")) > 1:
+            d.text((x + bar_w / 2, box[3] + 42), " ".join(label.split(" ")[1:]), font=f_small,
+                   fill=GRAY, anchor="ma")
+    # 参考线：无防护时的成功数
+    # 参考线画在 110 上方并留出间距：柱子正好到 110，压在一起会看不清
+    ref = to_xy(box, 0, 122, attempts, 140)[1]
+    d.line((box[0], ref, box[2], ref), fill=(200, 206, 216), width=3)
+    d.text((box[0] + 12, ref - 30), "参考：110 个全部成功（无防护时）", font=f_note, fill=GRAY)
+
+    # ---- 右图：被服务端拦截的次数 ----
+    d.text((1220, 40), "服务端的拦截记录（条）", font=f_title, fill=NAVY)
+    box2 = (1320, 130, 1900, 640)
+    setup_axes(d, box2, "配置", "拦截次数", f_label, attempts, 150,
+               [0, 50, 100, 150], [0, 1, 2, 3], [""] * 4)
+    for index, (label, single_try, single_ok, par_try, par_ok, blocked, accounts) in enumerate(REG_DATA):
+        x = box2[0] + 30 + index * 138
+        y_top = to_xy(box2, 0, blocked, attempts, 150)[1]
+        color = GRAY if blocked == 0 else BLUE
+        d.rectangle((x, y_top, x + 82, box2[3]), fill=color)
+        d.text((x + 41, y_top - 28), str(blocked), font=f_label, fill=color, anchor="ma")
+        d.text((x + 41, box2[3] + 16), label.split(" ")[0], font=f_small, fill=TEXT, anchor="ma")
+        if len(label.split(" ")) > 1:
+            d.text((x + 41, box2[3] + 42), " ".join(label.split(" ")[1:]), font=f_small,
+                   fill=GRAY, anchor="ma")
+
+    d.text((100, 740),
+           "实测：加上两条规则后，同样 110 次尝试只剩 4~21 个成功；账号总量从 111 压到 6~21",
+           font=f_label, fill=TEXT)
+    d.text((100, 785),
+           "不误伤验证：首次 IP 的新用户 2 ms 成功注册；已注册用户登录与发言完全不受影响",
+           font=f_note, fill=GREEN)
+    img.save(path)
+    return path
 if __name__ == "__main__":
     import os
     out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -181,3 +254,4 @@ if __name__ == "__main__":
     os.makedirs(out, exist_ok=True)
     print(make_conn_chart(os.path.join(out, "chart-conn-limit.png")))
     print(make_timeout_chart(os.path.join(out, "chart-timeout.png")))
+    print(make_registration_chart(os.path.join(out, "chart-registration.png")))

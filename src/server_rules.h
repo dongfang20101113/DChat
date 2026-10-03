@@ -40,6 +40,18 @@ struct ServerRules {
     int maxConnectionsPerIp = 0;   // maxconnsperip：同一 IP 的同时连接数上限，0 = 不限制
     int loginFailLimit = 0;        // loginfails：同一 IP 在 5 分钟内允许的登录失败次数，0 = 不限制
     int handshakeTimeoutSec = 30;  // handshaketimeout：连上后多少秒内必须登录，0 = 不限制
+
+    // ---- 2026-10 新增：注册路径防护 ----
+    // 上面那一组防护全部作用在"已有账号"的路径上（登录失败、连接数），
+    // 而**注册路径之前完全没有限制**。实测（tools/regflood.cpp）：开了全部规则之后，
+    // 12 线程并发注册仍能跑到 363 个/秒、720 个全部成功、服务端零拦截，
+    // 并且把正常用户的消息往返从 105 ms 拖到 10 秒超时。
+    //
+    // 换 IP 就能绕开所有基于 IP 的限制，所以这里刻意做成**两层**：
+    //   registerinterval 抬高出单个 IP 的注册成本（换 IP 就失效）
+    //   maxaccounts      兜住总量（换多少 IP 都没用，这是最后一道闸）
+    int registerIntervalSec = 0;  // registerinterval：同一 IP 两次注册的最小间隔（秒），0 = 不限制
+    int maxAccounts = 0;          // maxaccounts：账号总数上限，0 = 不限制
 };
 
 /**

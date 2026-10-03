@@ -43,7 +43,8 @@ int main() {
         check(rules.maxConnectionsPerIp == 0, "maxconnsperip 默认 0（不限制）");
         check(rules.loginFailLimit == 0, "loginfails 默认 0（不限制）");
         check(rules.handshakeTimeoutSec == 30, "handshaketimeout 默认 30 秒（不是 0）");
-        check(dchat::AllRuleNames().size() == 13, "一共 13 条规则（12 条 + chatcolor）");
+        // 不写死条数：规则表加了新条目就自动跟着走（加注册防护两条时踩过）
+    check(dchat::AllRuleNames().size() >= 15, "规则表至少有 15 条（含注册防护两条）");
         check(dchat::IsKnownRule("chatinterval") && dchat::IsKnownRule("DOCUMENTSIZE") &&
                   dchat::IsKnownRule("keepchathistory") &&
                   dchat::IsKnownRule("maxservertemp") && dchat::IsKnownRule("UPLOADRATE") &&
@@ -148,7 +149,9 @@ int main() {
         check(text.find("keepchathistory true") != std::string::npos, "布尔规则写进去了");
 
         ServerRules loaded;
-        check(dchat::ParseRules(text, &loaded) == 13, "十三条规则都能读回来（9 条 + 4 条加固）");
+        check(dchat::ParseRules(text, &loaded) ==
+              static_cast<int>(dchat::AllRuleNames().size()),
+          "规则文件里的每一条都能读回来");
         check(loaded.chatIntervalMs == 400 && loaded.documentSizeMb == 8 &&
                   loaded.keepChatHistory && loaded.maxServerTempMb == 512,
               "写出去再读回来完全一致（往返正确）");
@@ -180,7 +183,7 @@ int main() {
     {
         std::printf("[9] 规则元数据（Tab 补全用）\n");
         const std::vector<dchat::RuleInfo>& infos = dchat::AllRuleInfos();
-        check(infos.size() == 13, "十三条规则各有一份元数据");
+        check(infos.size() == dchat::AllRuleNames().size(), "每条规则各有一份元数据");
         bool hintsOk = true;
         bool namesOk = true;
         for (std::size_t i = 0; i < infos.size(); ++i) {
