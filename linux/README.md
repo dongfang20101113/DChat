@@ -153,3 +153,66 @@ sudo apt-get install -y alsa-utils
    BIGNUM 是大端。不翻转的话两边"同一个标量"其实是两个数——导入成功、ECDH 也
    算得出 32 字节，但结果完全不同。
 3. **AES-GCM 的输出顺序**：密文在前、16 字节 tag 在后（和 Java 的 `Cipher.doFinal` 一致）。
+
+## 安全与压力测试（实测数据从哪来）
+
+`tools/loadtest.cpp` 是手写的压力/攻击工具（POSIX socket，五个独立场景），
+给安全结论提供**实测数据**而不是估算。编译：
+
+```bash
+g++ -std=c++17 -O2 -pthread -o build/loadtest tools/loadtest.cpp
+```
+
+| 场景 | 命令 | 干什么 |
+| --- | --- | --- |
+| `flood` | `./build/loadtest flood 200` | 并发建 200 条连接，统计存活/被拒 |
+| `slowloris` | `./build/loadtest slowloris 40 25` | 连上不登录占住连接，看握手超时是否清掉 |
+| `badlogin` | `./build/loadtest badlogin 12 victim` | 错误密码连续登录，看封禁是否生效 |
+| `garbage` | `./build/loadtest garbage` | 11 类畸形数据（超长行 / 乱字节 / 伪造 HELLO_OK / 半包即断等） |
+| `echo` | `./build/loadtest echo 用户 密码 500 8` | 持续压测吞吐 |
+
+目标地址用 `DCHAT_HOST` / `DCHAT_PORT` 指定，默认 `127.0.0.1:5555`。
+
+**两个会让结论完全反过来的测量陷阱**（工具第一版都踩了）：
+
+1. **TCP 连上 ≠ 被服务器接受**。服务器可以在应用层检查完连接数上限后立刻关闭连接，
+   此时 `connect()` 仍然成功。必须再等一会儿看对端有没有发 FIN，否则会把
+   「140 条被拒」测成「200 条全通」。
+2. **`send` 成功 ≠ 连接还在**。判断「连接是否被断开」必须读**到 FIN**，而且要先排空
+   缓冲里已有的数据——服务器连上就发 `WELCOME`、超时前还会发一条 `ERROR`，
+   只 recv 一次会拿到这些数据并误判成「没断开」。
+
+修掉这两处之后，实测结论才和服务器日志对得上。
+
+### 加固配置下的实测结果（Kali 虚拟机，真服务端）
+
+```bash
+cat > hardened-rules.txt <<'EOF'
+maxconns 150
+maxconnsperip 60
+loginfails 5
+handshaketimeout 10
+maxtextlen 4096
+maxtextlines 200
+uploadrate 512
+downloadrate 1024
+EOF
+./build/dchat_server --port 5555 --rules hardened-rules.txt
+```
+
+| 攻击 | 结果 |
+| --- | --- |
+| 连接洪泛 200 条（`maxconnsperip=60`） | **正好 60 条存活**、140 条被拒，日志逐条记录拒绝原因 |
+| 慢速耗尽 40 条占 25 秒（`handshaketimeout=10`） | **40/40 被按时断开**，日志出现 72 次 `handshake timeout` |
+| 暴力破解 12 次（`loginfails=5`） | **12/12 被拒**，一次都没登上 |
+| 畸形数据 11 类 | 全部未命中，**服务端未崩溃** |
+| 攻击后正常业务 | 仍能正常注册、登录、收发消息 |
+| 内存 | 全程稳定 **9.3–10.3 MB** |
+| 持续吞吐（16 客户端） | 处理 **474,296 条**消息，墙钟 2.4 秒，服务端 CPU 17 秒 |
+
+> ⚠️ 默认配置里 `maxconns` / `maxconnsperip` / `loginfails` 都是 **0（不限）**，
+> 只有 `handshaketimeout` 默认 30 秒。要上公网请先按上面的例子加固——
+> **默认状态没有连接数上限，也没有暴破封禁**。
+
+> 这些数字证明的是「规则按设计生效」，**不是**「服务器打不死」。网络层的大流量
+> DDoS 需要上游清洗，不在本项目范围内。
