@@ -48,7 +48,7 @@ def center_text(draw, box, text, font, fill):
 
 
 def make_architecture(path):
-    """三端架构图：三个客户端 + 一个服务端 + 共享协议层。"""
+    """四端架构图：四个客户端 + 一个服务端 + 共享协议层。"""
     W, H = 2000, 1120
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
@@ -59,14 +59,17 @@ def make_architecture(path):
     f_small = load_font(23)
     f_tiny = load_font(21)
 
-    # ---- 顶部三个客户端 ----
+    # ---- 顶部四个客户端 ----
+    # 加 macOS 之后要放下四个框：原先 3 × 560 放不下，收窄到 4 × 440，
+    # 间距从 4 等分改成 5 等分（4 个框之间是 5 段空隙）。
     clients = [
         ("Windows 客户端", "C++17 + Win32/GDI+", "系统自带 CNG 加密", BLUE, BLUE_L),
         ("安卓客户端", "Kotlin + Compose", "系统自带 JCE 加密", GREEN, GREEN_L),
         ("Linux 客户端", "C++17 终端界面", "OpenSSL 3 加密", AMBER, AMBER_L),
+        ("macOS 客户端", "ObjC++ + Cocoa", "OpenSSL 3 加密", (150, 60, 160), (248, 238, 250)),
     ]
-    box_w, box_h = 560, 250
-    gap = (W - 3 * box_w) / 4
+    box_w, box_h = 440, 250
+    gap = (W - 4 * box_w) / 5
     y = 60
     for i, (name, stack, crypto, color, light) in enumerate(clients):
         x = gap + i * (box_w + gap)
@@ -101,7 +104,7 @@ def make_architecture(path):
         center_text(d, (b[0] + 6, b[1] + 46, b[2] - 6, b[3] - 8), body, f_tiny, GRAY)
 
     # ---- 箭头 ----
-    for i in range(3):
+    for i in range(4):
         x = gap + box_w / 2 + i * (box_w + gap)
         d.line((x, y + box_h, x, proto_y), fill=GRAY, width=4)
         d.polygon([(x - 12, proto_y - 18), (x + 12, proto_y - 18), (x, proto_y)], fill=GRAY)
@@ -110,7 +113,7 @@ def make_architecture(path):
     srv_y = 690
     srv = (gap * 2, srv_y, W - gap * 2, srv_y + 175)
     rrect(d, srv, 22, (250, 240, 240), (176, 60, 60), 3)
-    center_text(d, (srv[0], srv_y + 20, srv[2], srv_y + 76), "服务端（Windows / Linux 同一份源码）",
+    center_text(d, (srv[0], srv_y + 20, srv[2], srv_y + 76), "服务端（Windows / Linux / macOS 同一份源码）",
                 f_title, (150, 42, 42))
     feats = ["每连接一个线程", "账号 PBKDF2 加盐哈希", "限速与文本限制",
              "防爆破 / 连接数上限", "身份密钥持久化 + TOFU"]
@@ -125,10 +128,10 @@ def make_architecture(path):
     # ---- 底部注释 ----
     # 注意：PIL 不认 markdown，**不要**在文字里写 `**`，那会原样画出来
     center_text(d, (0, H - 180, W, H - 130),
-                "三端必须字节级一致的三处约定：ECDH 共享密钥大端 · 公钥裸 X‖Y · AES-GCM 密文在前、标签在后",
+                "四端必须字节级一致的三处约定：ECDH 共享密钥大端 · 公钥裸 X‖Y · AES-GCM 密文在前、标签在后",
                 f_small, (150, 42, 42))
     center_text(d, (0, H - 120, W, H - 70),
-                "密码学原语一律不自己发明：Windows 用 CNG、安卓用 JCE、Linux 用 OpenSSL",
+                "密码学原语一律不自己发明：Windows 用 CNG、安卓用 JCE、Linux 与 macOS 用 OpenSSL",
                 f_small, GRAY)
     img.save(path)
     return path
