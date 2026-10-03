@@ -48,46 +48,42 @@ def shape_ids_with_text(slide_xml):
     return ids
 
 
-def build_timing(shape_ids):
-    """生成 <p:timing>：每个形状一次点击触发的淡入。"""
-    if not shape_ids:
-        return ""
+# 每页最多几次点击。多了演示时要按十几次，很烦；分组之后 2~3 次就出完。
+MAX_CLICKS_PER_SLIDE = 3
 
-    # 构建 build 列表：按段落级别动画需要 bldP，这里按整形状，用 bldGraphic 不需要
-    bld = "".join(
-        '<p:bldP spid="%s" grpId="0"/>' % shape_id for shape_id in shape_ids
-    )
+# 组内每个形状的淡入依次错开一点点（毫秒）。问的是"不要一个个单独出来"，
+# 所以组内**同时**开始，只留很小的错位让眼睛能跟上，不至于糊成一片。
+GROUP_STAGGER_MS = 120
 
-    # 每一层：一个点击触发的 par -> seq -> 一个动画 par
-    click_groups = []
-    node_id = 2  # 1 留给根节点
-    for shape_id in shape_ids:
-        click_groups.append(
-            "<p:par>"
-            '<p:cTn id="%d" fill="hold">'
-            '<p:stCondLst><p:cond delay="indefinite"/></p:stCondLst>'
-            "<p:childTnLst>"
-            "<p:par>"
-            '<p:cTn id="%d" fill="hold">'
-            '<p:stCondLst><p:cond delay="0"/></p:stCondLst>'
-            "<p:childTnLst>"
+
+def _effect_nodes(shape_ids, node_id):
+    """一组内所有形状的淡入，**并行**（同一层 par）—— 这就是"同时出来"。"""
+    parts = []
+    for offset, shape_id in enumerate(shape_ids):
+        delay = offset * GROUP_STAGGER_MS
+        # 组里第一个用 clickEffect：它“吃掉”这次点击；
+        # 其余用 withEffect：跟着第一个一起出现，不再各自等一次点击。
+        # 第一版整组都写 withEffect，结果一页 0 次点击、动画自动全播完 ——
+        # 用户要的是“分组，一次点击出一组”，不是“全自动”。
+        node_type = "clickEffect" if offset == 0 else "withEffect"
+        parts.append(
             "<p:par>"
             '<p:cTn id="%d" presetID="%s" presetClass="entr" presetSubtype="0" '
-            'fill="hold" grpId="0" nodeType="clickEffect">'
-            '<p:stCondLst><p:cond delay="0"/></p:stCondLst>'
+            'fill="hold" grpId="0" nodeType="%s">'
+            '<p:stCondLst><p:cond delay="%d"/></p:stCondLst>'
             "<p:childTnLst>"
             "<p:set>"
-            '<p:cBhvr>'
+            "<p:cBhvr>"
             '<p:cTn id="%d" dur="1" fill="hold">'
             '<p:stCondLst><p:cond delay="0"/></p:stCondLst>'
             "</p:cTn>"
             '<p:tgtEl><p:spTgt spid="%s"/></p:tgtEl>'
-            '<p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst>'
+            "<p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst>"
             "</p:cBhvr>"
-            "<p:to><p:strVal val=\"visible\"/></p:to>"
+            '<p:to><p:strVal val="visible"/></p:to>'
             "</p:set>"
-            "<p:animEffect transition=\"in\" filter=\"fade\">"
-            '<p:cBhvr>'
+            '<p:animEffect transition="in" filter="fade">'
+            "<p:cBhvr>"
             '<p:cTn id="%d" dur="400"/>'
             '<p:tgtEl><p:spTgt spid="%s"/></p:tgtEl>'
             "</p:cBhvr>"
@@ -95,16 +91,60 @@ def build_timing(shape_ids):
             "</p:childTnLst>"
             "</p:cTn>"
             "</p:par>"
-            "</p:childTnLst>"
-            "</p:cTn>"
-            "</p:par>"
-            "</p:childTnLst>"
-            "</p:cTn>"
-            "</p:par>"
-            % (node_id, node_id + 1, node_id + 2, FADE_PRESET_ID, node_id + 3, shape_id,
-               node_id + 4, shape_id)
+            % (node_id, FADE_PRESET_ID, node_type, delay, node_id + 1, shape_id,
+               node_id + 2, shape_id)
         )
-        node_id += 5
+        node_id += 3
+    return "".join(parts), node_id
+
+
+def _split_evenly(items, groups):
+    """尽量均匀地切成 groups 组（组数不能超过元素数）。"""
+    groups = max(1, min(groups, len(items)))
+    base = len(items) // groups
+    extra = len(items) % groups
+    out = []
+    start = 0
+    for index in range(groups):
+        size = base + (1 if index < extra else 0)
+        out.append(items[start:start + size])
+        start += size
+    return [group for group in out if group]
+
+
+def build_timing(shape_ids, max_clicks=MAX_CLICKS_PER_SLIDE):
+    """生成 <p:timing>：**分组**淡入 —— 每组一次点击，组内同时出现。
+
+    为什么要分组：原先每个形状一次点击，一页十几条就要点十几次，
+    演示和讲解都被打断。现在按顺序均分成最多 max_clicks 组。
+    """
+    if not shape_ids:
+        return ""
+
+    bld = "".join(
+        '<p:bldP spid="%s" grpId="0"/>' % shape_id for shape_id in shape_ids
+    )
+
+    groups = _split_evenly(list(shape_ids), max_clicks)
+    click_groups = []
+    node_id = 3  # 1 = 根，2 = mainSeq
+    for group_index, group in enumerate(groups):
+        # 第一组随页面切换自动开始，后面每组等一次点击
+        start_cond = ('<p:cond delay="0"/>' if group_index == 0
+                      else '<p:cond delay="indefinite"/>')
+        effects, node_id = _effect_nodes(group, node_id + 1)
+        click_groups.append(
+            "<p:par>"
+            '<p:cTn id="%d" fill="hold">'
+            '<p:stCondLst>%s</p:stCondLst>'
+            "<p:childTnLst>"
+            "<p>%s</p>"
+            "</p:childTnLst>"
+            "</p:cTn>"
+            "</p:par>"
+            % (node_id, start_cond, effects)
+        )
+        node_id += 1
 
     return (
         "<p:timing>"

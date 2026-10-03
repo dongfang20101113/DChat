@@ -258,7 +258,9 @@ def slide_overview(prs):
 def slide_arch(prs):
     slide = add_slide(prs, "整体架构", "四个客户端共用一份协议层源码，服务端三端都能跑")
     add_image_fit(slide, os.path.join(ASSETS, "diagram-arch.png"), 0.45, 1.2, 12.45, 5.3)
-    note(slide, "Windows / Linux / macOS 三个客户端与服务端共用同一份 C++ 协议层；安卓端是 Kotlin 重写，靠同一套测试向量保证行为一致")
+    note(slide, "Windows / Linux / macOS 三个客户端与服务端共用同一份 C++ 协议层；安卓端是 Kotlin 重写，靠同一套测试向量保证行为一致。"
+                "协议刻意选「行式文本」：能用 telnet 手工测、加字段只追加不重排——"
+                "字段按位置解析，附件种类放在第 7 格，插到中间老客户端就会把标记当字节数")
     return slide
 
 
@@ -295,6 +297,7 @@ def slide_screens(prs):
     return slide
 
 
+# 【已并入其它页，不再单独装配】  —— 并入 slide_crypto：行式协议的选择理由
 def slide_protocol(prs):
     slide = add_slide(prs, "协议设计：为什么选行式文本", "简单到能用肉眼调试，是这个项目最重要的一个决定")
     bullets(slide, 0.62, 1.3, 6.2, 5.0, [
@@ -342,6 +345,7 @@ def slide_crypto(prs):
     return slide
 
 
+# 【已并入其它页，不再单独装配】  —— 并入 slide_arch 的底部注脚
 def slide_three_contracts(prs):
     slide = add_slide(prs, "四端一致：三处必须字节级相同的约定",
                       "这三条任何一条错了，都是「不报错、只是永远连不上」的那种 bug")
@@ -392,8 +396,8 @@ def slide_timeline(prs):
     slide = add_slide(prs, "开发过程梗概", "69 次提交、9 天，按提交信息可以分成八个阶段")
     rows = [
         ["阶段", "做了什么", "关键产物"],
-        ["第 1 天  起步", "局域网聊天室：C++ 客户端 + 服务端，先跑通再说", "协议层、自定义气泡界面"],
-        ["第 1 天  第二个端", "安卓客户端（Kotlin + Compose）", "三端格局成型"],
+        ["第 1 天  起步与第二个端", "C++ 客户端 + 服务端先跑通；随即加安卓客户端（Kotlin + Compose）",
+         "协议层、气泡界面、三端格局成型"],
         ["第 2 天  公网加固", "限速、文本限制、多行消息、连接数上限、防爆破、握手超时", "可调规则系统"],
         ["第 3 天  加密", "ECDH + HKDF + AES-GCM，从协议层一路接到三端", "TOFU 指纹闭环"],
         ["第 4~5 天  功能", "表情、贴纸、语音（录制/播放/自动下载）", "附件种类字段"],
@@ -402,10 +406,22 @@ def slide_timeline(prs):
         ["第 8~9 天  第三个端", "Linux：加密后端抽象、服务端移植、终端客户端、预编译包", "741 项 Linux 检查"],
     ]
     add_table(slide, 0.62, 1.3, 12.1, 5.0, rows, col_widths=[2.2, 7.4, 3.2], font_size=11.5)
-    note(slide, "时间按提交日期归并，不是精确工时；阶段划分依据是提交信息里能看出的功能边界")
+    # 表格下方并进"几个转折点"：这些决定改变了后面的走向，
+    # 单独一页会显得空，贴在时间线下面正好说明"为什么那样排期"。
+    card_text(slide, 0.62, 5.55, 5.95, 1.75, "几个改变了走向的决定", [
+        "· 加密放在第 3 天而不是第 1 天：先跑通聊天、摸熟协议再套加密，",
+        "   否则每次调协议都要先怀疑是不是加密错了",
+        "· 先立「附件种类字段」再加功能：表情/贴纸/语音都走这一条路径",
+    ], accent=BLUE, fill=BLUE_L, title_size=13, body_size=11)
+    card_text(slide, 6.78, 5.55, 5.95, 1.75, "吃过亏的地方", [
+        "· 界面被退回重做两次（「太丑」「太挤」）→ 先离屏渲染三套方案再写",
+        "· 新端放最后且先做密码学：真正的风险是「各端算出来的字节不一样」",
+        "· 时间按提交日期归并，不是精确工时",
+    ], accent=AMBER, fill=AMBER_L, title_size=13, body_size=11)
     return slide
 
 
+# 【已并入其它页，不再单独装配】  —— 并入 slide_timeline
 def slide_phases(prs):
     slide = add_slide(prs, "开发过程的几个转折点", "哪些决定改变了后面的走向")
     items = [
@@ -451,27 +467,36 @@ def slide_verification(prs):
 def slide_sec_design(prs):
     slide = add_slide(prs, "安全设计：纵深防御",
                       "没有单点神话，是四层叠起来——每一层都假设上一层可能被绕过")
+    # 每层都配一条**实测证据** —— 只有"设计成四层"没有说服力，
+    # 要能说出"这一层对着什么攻击、打出来的结果是什么"。
     layers = [
-        ("第 1 层  传输加密", "ECDH P-256 握手 · HKDF-SHA256 派生 · AES-256-GCM 逐条认证",
-         "抓包看不到密码与聊天内容；改一个字节就解不开", BLUE, BLUE_L),
-        ("第 2 层  身份与信任", "TOFU 指纹：第一次记住，之后每次比对，变了就中止连接",
-         "服务器密钥被换掉时，用户会立刻看到明确警告", GREEN, GREEN_L),
-        ("第 3 层  资源与准入", "连接数上限 · 单 IP 上限 · 握手超时 · 上传下载限速 · 发言间隔",
-         "把「占着连接不说话」和「狂建连接」在入口掐掉", AMBER, AMBER_L),
-        ("第 4 层  凭据保护", "PBKDF2-HMAC-SHA256 加盐 · 登录失败窗口封禁 · 密码不落盘",
-         "拖走账号文件也拿不到密码；在线暴破被时间窗限住", RED, RED_L),
+        ("第 1 层  传输加密", "ECDH P-256 · HKDF-SHA256 · AES-256-GCM 逐条认证",
+         "抓包看不到密码与内容；改一字节就解不开", "畸形数据 11 类全部未命中", BLUE, BLUE_L),
+        ("第 2 层  身份与信任", "TOFU 指纹：第一次记住，之后每次比对，变了就中止",
+         "服务器密钥被换掉时立刻明确警告", "与 Kotlin 跨语言握手比对一致", GREEN, GREEN_L),
+        ("第 3 层  资源与准入", "连接上限 · 单 IP 上限 · 握手超时 · 限速 · 发言间隔",
+         "把占着连接不说话、狂建连接在入口掐掉",
+         "洪泛 200 条 → 正好 60 存活 / 140 被拒\n慢速 40 条 × 25 秒 → 40/40 按时断开",
+         AMBER, AMBER_L),
+        ("第 4 层  凭据保护", "PBKDF2-HMAC-SHA256 加盐 · 登录失败窗口封禁 · 不落盘",
+         "拖走账号文件也拿不到密码；在线暴破被时间窗限住",
+         "错密码 12 次 → 12/12 被拒，一次没登上", RED, RED_L),
     ]
-    y = 1.28
-    for title, detail, effect, color, light in layers:
-        card(slide, 0.62, y, 12.1, 1.14, light, color)
-        textbox(slide, 0.85, y + 0.05, 4.3, 0.42, [title], size=15, color=color, spacing=0)
-        textbox(slide, 0.85, y + 0.49, 6.3, 0.6, [detail], size=11.5, color=TEXT, spacing=0)
-        textbox(slide, 7.35, y + 0.3, 5.2, 0.7, [effect], size=11.5, color=GRAY, spacing=0)
-        y += 1.26
-    note(slide, "四层互相独立：加密被绕过仍有指纹，指纹被忽略仍有连接上限，上限被绕开仍有凭据哈希")
+    y = 1.22
+    for title, detail, effect, measured, color, light in layers:
+        card(slide, 0.62, y, 12.1, 1.22, light, color)
+        textbox(slide, 0.85, y + 0.06, 4.3, 0.38, [title], size=14.5, color=color, spacing=0)
+        textbox(slide, 0.85, y + 0.46, 5.2, 0.68, [detail], size=11, color=TEXT, spacing=0)
+        textbox(slide, 6.25, y + 0.32, 2.6, 0.8, [effect], size=10.5, color=GRAY, spacing=0)
+        textbox(slide, 9.0, y + 0.12, 3.55, 0.98, measured.split("\n"), size=11, color=color,
+                spacing=0)
+        y += 1.30
+    note(slide, "四层互相独立：加密被绕过仍有指纹，指纹被忽略仍有连接上限，上限被绕开仍有凭据哈希。"
+                "右栏是每层的实测证据（真服务端），攻击后内存稳定 9.3–10.3 MB")
     return slide
 
 
+# 【已并入其它页，不再单独装配】  —— 并入 slide_sec_design
 def slide_ddos(prs):
     slide = add_slide(prs, "压力与攻击实测（一）：防护是否真的生效",
                       "在 Kali 虚拟机上对着真服务端打出来的，不是估算值")
@@ -496,20 +521,29 @@ def slide_ddos(prs):
 
 
 def slide_chart_conn(prs):
-    slide = add_slide(prs, "攻击对比曲线（一）：连接上限",
-                      "目标连接数从 20 加到 300，存活数在 60 处硬性封顶")
-    add_image_fit(slide, os.path.join(ASSETS, "chart-conn-limit.png"), 0.5, 1.18, 12.4, 4.35)
-    card_text(slide, 0.6, 5.68, 6.0, 1.42, "读这张图要看什么", [
-        "· 左侧蓝线在 60 处变成水平——上限是硬封顶，不是「大概拦一拦」",
-        "· 右侧红线严格 1:1：超出多少就拒多少，一条不漏也不多拒",
-    ], accent=GREEN, fill=GREEN_L, title_size=13, body_size=11.5)
-    card_text(slide, 6.85, 5.68, 6.0, 1.42, "数据来源", [
-        "· 8 个测试点各有实测记录（20/40/60/80/100/150/200/300）",
-        "· 复现：tools/loadtest.cpp flood <条数>，配置见 linux/README.md",
-    ], accent=BLUE, fill=BLUE_L, title_size=13, body_size=11.5)
+    slide = add_slide(prs, "攻击对比曲线：连接上限与慢速耗尽",
+                      "左边是「建太多」、右边是「占着不动」——两类攻击都被硬性拦住")
+    # 两张曲线讲的是同一件事（"规则到底有没有生效"），并排放一起更好对比，
+    # 也省掉一次翻页打断。
+    add_image_fit(slide, os.path.join(ASSETS, "chart-conn-limit.png"), 0.35, 1.12, 6.25, 4.05)
+    add_image_fit(slide, os.path.join(ASSETS, "chart-timeout.png"), 6.9, 1.12, 6.25, 4.05)
+    card_text(slide, 0.6, 5.32, 4.0, 1.85, "连接上限：硬封顶", [
+        "· 左侧蓝线在 60 处变成水平——是硬封顶，不是「大概拦一拦」",
+        "· 右侧红线严格 1:1：超出多少拒多少，一条不漏也不多拒",
+    ], accent=GREEN, fill=GREEN_L, title_size=13, body_size=11)
+    card_text(slide, 4.75, 5.32, 4.0, 1.85, "慢速耗尽：按时清零", [
+        "· 三条阶跃线精确落在设定值（5/10/20 秒），无延迟漂移",
+        "· 无论配置多长最终都清零，攻击者拿不到「一直占着」",
+    ], accent=AMBER, fill=AMBER_L, title_size=13, body_size=11)
+    card_text(slide, 8.9, 5.32, 3.85, 1.85, "数据来源", [
+        "· 8 个连接数测试点 + 3 种超时配置，各有实测记录",
+        "· 复现：tools/loadtest.cpp",
+        "· 关闭前先回一条 ERROR，用户看得懂",
+    ], accent=BLUE, fill=BLUE_L, title_size=13, body_size=11)
     return slide
 
 
+# 【已并入其它页，不再单独装配】  —— 并入 slide_chart_conn
 def slide_chart_timeout(prs):
     slide = add_slide(prs, "攻击对比曲线（二）：慢速耗尽的清理过程",
                       "30 条连上不登录的连接，在三种超时配置下全部被按时清掉")
@@ -560,25 +594,41 @@ def slide_reg_defense(prs):
     """注册路径防护：从"发现缺口"到"修好并实测"的完整一页。"""
     slide = add_slide(prs, "补上注册路径：从发现缺口到实测修复",
                       "有人问「疯狂注册换 IP 是不是防不住」——实测确实防不住，于是补掉了")
-    add_image_fit(slide, os.path.join(ASSETS, "chart-registration.png"), 0.45, 1.15, 12.5, 4.3)
-    card_text(slide, 0.6, 5.6, 4.0, 1.5, "缺口是什么", [
+    add_image_fit(slide, os.path.join(ASSETS, "chart-registration.png"), 0.45, 1.02, 12.5, 2.75)
+    card_text(slide, 0.6, 3.95, 4.0, 1.3, "缺口是什么", [
         "· 原有防护全部基于 IP：换 IP 即失效",
         "· 注册路径当时零限制、零拦截记录",
         "· 洪水期间正常用户消息 105 ms → 超时",
-    ], accent=RED, fill=RED_L, title_size=13, body_size=11)
-    card_text(slide, 4.75, 5.6, 4.0, 1.5, "怎么修的", [
+    ], accent=RED, fill=RED_L, title_size=12.5, body_size=10.5)
+    card_text(slide, 4.75, 3.95, 4.0, 1.3, "怎么修的", [
         "· 新增两条规则：registerinterval / maxaccounts",
         "· IP 冷却抬成本，总量上限兜底（换 IP 也绕不过）",
         "· 顺带修掉全量重写账号文件与重复算名单",
-    ], accent=BLUE, fill=BLUE_L, title_size=13, body_size=11)
-    card_text(slide, 8.9, 5.6, 3.85, 1.5, "不误伤验证", [
+    ], accent=BLUE, fill=BLUE_L, title_size=12.5, body_size=10.5)
+    card_text(slide, 8.9, 3.95, 3.85, 1.3, "不误伤验证", [
         "· 首次 IP 新用户 2 ms 注册成功",
         "· 已注册用户登录发言不受影响",
         "· 44 项单测把放行/拒绝两个方向都钉死",
-    ], accent=GREEN, fill=GREEN_L, title_size=13, body_size=11)
+    ], accent=GREEN, fill=GREEN_L, title_size=12.5, body_size=10.5)
+    # 规则表并到这一页：它是"修完之后到底有哪些旋钮"，紧接着修复讲最顺；
+    # 也顺手把默认值说清（默认全是 0 = 不限，要上公网再按需开）
+    # 规则表压缩成 5 行：原先 7 行 + 表头会溢出到幻灯片外（最后一行被切）。
+    # 合并成同类项既省高度，读起来也更像"旋钮分类"而不是一堆散条目。
+    rule_rows = [
+        ["规则（共 17 条，全部是运行时参数）", "作用", "默认"],
+        ["maxconns / maxconnsperip", "连接总数 / 同一 IP 上限", "0"],
+        ["loginfails / handshaketimeout", "登录失败封禁 / 握手超时", "0 / 30 秒"],
+        ["registerinterval / maxaccounts", "注册冷却 / 账号总量上限（本次新增）", "0"],
+        ["uploadrate / downloadrate / chatinterval", "上传下载限速 / 发言间隔", "0"],
+        ["maxtextlen / maxtextlines / documentsize / maxservertemp",
+         "文本长度 / 行数 / 单文件 / 暂存总量", "0 / 64MB / 1024MB"],
+    ]
+    add_table(slide, 0.62, 5.42, 12.1, 1.55, rule_rows, col_widths=[4.9, 5.6, 1.6],
+              font_size=10)
     return slide
 
 
+# 【已并入其它页，不再单独装配】  —— 并入 slide_reg_defense
 def slide_rules(prs):
     slide = add_slide(prs, "可调防护规则", "17 条规则全部是运行时参数：改一行、重启即生效")
     rows = [
@@ -604,8 +654,8 @@ def slide_rules(prs):
 
 def slide_interop(prs):
     """四端互通：实测过的组合 + 这次真机验证补齐了什么。"""
-    slide = add_slide(prs, "四端互通：实测通过",
-                      "Windows · Linux · macOS · Android 同一个服务器，互相都能看到消息")
+    slide = add_slide(prs, "四端互通：全部组合实测通过",
+                      "Windows · Linux · macOS · Android 同一个服务器，两两之间互相都能看到消息")
     add_image_fit(slide, os.path.join(ASSETS, "chart-interop.png"), 0.45, 1.05, 12.5, 4.2)
     card_text(slide, 0.6, 5.45, 4.0, 1.7, "这次补上了什么", [
         "· macOS 首次真机编译：零报错",
@@ -698,6 +748,7 @@ def slide_bugs(prs):
     return slide
 
 
+# 【已并入其它页，不再单独装配】  —— 并入 slide_ai_failures
 def slide_ai_intro(prs):
     slide = add_slide(prs, "AI 在项目里做了什么", "公开说明：这个项目从第一行代码起就是 AI 结对开发的")
     card_text(slide, 0.62, 1.3, 5.95, 2.6, "AI 承担的部分", [
@@ -752,8 +803,21 @@ def slide_ai_failures(prs):
          "把「时长未知」的 -1 当成非法值去断言，测试红了但产品是对的",
          "先想清楚语义，再写断言"],
     ]
-    add_table(slide, 0.62, 1.25, 12.1, 4.9, rows, col_widths=[2.5, 6.3, 3.3], font_size=11)
-    note(slide, "这一页的价值在于：知道 AI 会怎么错，才知道该在哪些地方加检查")
+    add_table(slide, 0.62, 1.22, 12.1, 3.45, rows, col_widths=[2.5, 6.3, 3.3], font_size=10)
+    # "AI 做了什么 / 人做了什么"并到这一页：挨着翻车案例看才有意义 ——
+    # 分工说清了，才知道上面这些错为什么需要人来兜。
+    card_text(slide, 0.62, 4.85, 5.95, 2.45, "分工：AI 做了什么 / 人做了什么", [
+        "· AI 写全部代码的第一版（C++ / Kotlin / Python 一样）",
+        "· AI 跑构建、跑测试、读日志、定位失败；操作 Kali 做跨平台验证",
+        "· 人定优先级、在真机试并给界面反馈、定项目约定、管仓库与发布",
+        "· 人做的是「判断」：什么该先做、什么算做完、哪些结论不能写",
+    ], accent=BLUE, fill=BLUE_L, title_size=13, body_size=11)
+    card_text(slide, 6.78, 4.85, 5.95, 2.45, "AI 最有效的三个用法", [
+        "① 写可被测试的纯逻辑：解析/判定/格式化抽成纯函数，一改就能验",
+        "② 交叉核对而不是相信「应该对」：写探针把中间量打出来逐字节 diff",
+        "③ 顺着日志往下挖：临时日志 + strace 看实际发出的字节",
+        "④ 知道它会怎么错，才知道该在哪些地方加检查（就是左边那五条）",
+    ], accent=GREEN, fill=GREEN_L, title_size=13, body_size=11)
     return slide
 
 
@@ -812,33 +876,26 @@ def slide_end(prs):
 
 def main():
     prs = new_deck()
-    slide_cover(prs)
-    slide_overview(prs)
-    slide_arch(prs)
-    slide_features(prs)
-    slide_screens(prs)
-    slide_protocol(prs)
-    slide_crypto(prs)
-    slide_three_contracts(prs)
-    slide_server(prs)
-    slide_timeline(prs)
-    slide_phases(prs)
-    slide_verification(prs)
-    slide_sec_design(prs)
-    slide_ddos(prs)
-    slide_chart_conn(prs)
-    slide_chart_timeout(prs)
-    slide_reg_defense(prs)
-    slide_perf_boundary(prs)
-    slide_rules(prs)
-    slide_unified(prs)
-    slide_interop(prs)
-    slide_macos(prs)
-    slide_bugs(prs)
-    slide_ai_intro(prs)
-    slide_ai_failures(prs)
-    slide_lessons(prs)
-    slide_end(prs)
+    # ---- 19 页（原 27 页，合并同类页；顺序按"是什么 -> 怎么做的 -> 实测 -> 复盘"）----
+    slide_cover(prs)            # 1  封面
+    slide_overview(prs)         # 2  定位 + 不是玩具的地方 + 代码规模
+    slide_arch(prs)             # 3  四端架构 + 三处字节级约定
+    slide_features(prs)         # 4  功能一览（四端对照表）
+    slide_screens(prs)          # 5  界面实拍
+    slide_crypto(prs)           # 6  加密设计（并入行式协议的选择理由）
+    slide_server(prs)           # 7  服务端
+    slide_timeline(prs)         # 8  开发过程梗概（并入转折点）
+    slide_verification(prs)     # 9  怎么证明它是对的
+    slide_sec_design(prs)       # 10 纵深防御（并入压测实测结果）
+    slide_chart_conn(prs)       # 11 攻击对比曲线（连接上限 + 超时，两图并排）
+    slide_reg_defense(prs)      # 12 注册路径：发现缺口 -> 修复 -> 规则（并入可调规则）
+    slide_perf_boundary(prs)    # 13 性能实测与安全边界
+    slide_interop(prs)          # 14 四端互通：全部组合实测通过
+    slide_unified(prs)          # 15 四端统一：会话逻辑只有一处实现
+    slide_macos(prs)            # 16 macOS 真机实测与验证边界
+    slide_bugs(prs)             # 17 几个真实的 bug
+    slide_ai_failures(prs)      # 18 AI 真实搞砸的地方（并入 AI 做了什么）
+    slide_lessons(prs)          # 19 结论 + 结尾
     prs.save(OUT)
     print("已生成", OUT, "共", len(prs.slides.__iter__.__self__._sldIdLst), "页")
 

@@ -366,13 +366,16 @@ def make_layers_chart(path):
 # ---------------------------------------------------------------------------
 # 四端互通矩阵（实测：四端同时在线、互相都能看到消息，还传了附件）
 # ---------------------------------------------------------------------------
-# 行 = 谁发，列 = 谁收。2 = 实测互通；这一轮没测的组合一律留灰，**不做假设**。
+# 行 = 谁发，列 = 谁收。用户实测：**四端两两组合全部互通**，所以不再留灰格。
+# （早先只有 macOS 那几个格子是绿的，是因为当时只确认了那几个；
+#   用户后来澄清"其他组合也测过了"，按事实补全。）
 INTEROP_ROWS = ["Windows", "Linux", "macOS", "Android"]
 INTEROP_COLS = ["Windows", "Linux", "macOS", "Android"]
 INTEROP = {
-    ("Windows", "macOS"): 2, ("macOS", "Windows"): 2,
-    ("Linux", "macOS"): 2, ("macOS", "Linux"): 2,
-    ("Android", "macOS"): 2, ("macOS", "Android"): 2,
+    (row, col): 2
+    for row in INTEROP_ROWS
+    for col in INTEROP_COLS
+    if row != col
 }
 
 
@@ -386,7 +389,7 @@ def make_interop_chart(path):
     f_cell = load_font(23, bold=True)
     f_axis = load_font(24, bold=True)
 
-    d.text((80, 40), "四端互通矩阵：实测过的组合", font=f_title, fill=NAVY)
+    d.text((80, 40), "四端互通矩阵：全部组合实测通过", font=f_title, fill=NAVY)
     d.text((80, 92), "四端同时在同一个服务器上，互相都能看到消息；附件也能在端之间传",
            font=f_note, fill=GRAY)
 
@@ -427,10 +430,10 @@ def make_interop_chart(path):
                        anchor="mm")
 
     d.text((80, 790),
-           "已实测：macOS ←→ Windows / Linux / Android 双向互发，四端同时在线",
+           "四端两两组合全部实测互通：消息、附件都能双向送达，四端同时在线",
            font=f_note, fill=GREEN)
     d.text((80, 830),
-           "灰色格表示这一轮没测 —— 标出来比统一涂绿更有用：下一个要补的地方一目了然",
+           "同一个服务器、同一份协议与加密：四端任意两两之间都能直接对话",
            font=f_note, fill=GRAY)
     img.save(path)
     return path
