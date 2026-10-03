@@ -8,25 +8,35 @@
 
 ## 平台支持
 
-同一份协议与加密代码（`src/`）在四个平台上跑，客户端界面各写各的：
+四个平台共用**同一份协议、加密、账号与会话逻辑**，只有界面各写各的：
 
 | 平台 | 服务端 | 客户端 | 状态 |
 | --- | --- | --- | --- |
 | Windows | ✅ | ✅ Win32 / GDI+ 图形界面 | 一直在用 |
-| Linux | ✅ | ✅ 终端界面（`linux/`） | 实测通过 |
+| Linux | ✅ | ✅ 终端界面（`linux/`） | 实测通过（含 pty 驱动的界面测试） |
 | Android | — | ✅ Kotlin / Compose（`android/`） | 实测通过 |
 | **macOS** | ✅ | ✅ **原生 Cocoa 界面**（`macos/`，ObjC++） | ⚠️ **只做了静态验证，从未在真机运行过** —— 详见 [macos/README.md](macos/README.md) |
 
-三端一致靠的是**共用同一份协议、加密与账号代码**（`dchat_protocol` 静态库），
-以及同一批测试：这些测试在 Windows / Linux 上真跑，在 macOS 上也能跑。
-
-客户端代码分两层，加新平台只补界面：
+分成两层，**加新平台只需要写界面**：
 
 ```
-client_core/    可移植核心：网络 / 信任(TOFU) / 附件 / 颜色 / 语音 / 会话逻辑
-linux/client/   Linux 终端界面 + 入口
-macos/main.mm   Cocoa 界面（编不了的那一层，只负责画）
+src/            协议 / 加密 / 账号 / 规则 / 渲染  -> dchat_protocol（四端共用）
+client_core/    客户端会话核心（四端里的三端共用）
+                  net 网络 · trust TOFU · chat_color 色码 · files 附件
+                  voice 语音 · chat_core 会话逻辑 · cli_render 终端渲染
+linux/client/   终端界面 + 入口
+macos/main.mm   Cocoa 界面
+android/        Kotlin / Compose 界面（另有一份 Kotlin 实现的协议层）
 ```
+
+**会话逻辑只有一处实现**（`client_core/chat_core`）：登录注册、收发消息、
+指令派发、附件、TOFU 判定都在里面。终端界面和 Cocoa 界面各自实现一个
+`ChatCoreDelegate`（"怎么显示"），指令解析与协议时序完全不重复 ——
+所以"加一个平台"的成本是写界面，不是抄一遍逻辑。
+
+一致性由测试保证：`src/` 的测试在 Windows / Linux 上真跑、在 macOS 上也能跑；
+`client_core/` 的纯逻辑（色码、TOFU、附件解析、语音判定、终端渲染）有单测，
+并且**能在 Linux 上交叉编译到 macOS 验证**。
 
 ## 功能
 

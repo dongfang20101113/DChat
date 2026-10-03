@@ -12,6 +12,42 @@ dchat 的 Linux 端和 Windows 端**共用同一份协议层源码**（`src/prot
 
 分界点在 `src/crypto_backend.h` 和 `src/socket_util.h` 后面，业务代码看不到平台差异。
 
+## 界面层与核心层是分开的
+
+Linux 客户端的界面代码只做**终端相关**的事：读键、画输入行、把渲染好的行打出去。
+会话逻辑（登录注册、收发、指令派发、附件、TOFU）全在 `client_core/chat_core` 里，
+**和 macOS 的 Cocoa 界面共用同一份**。
+
+```
+client_core/    会话核心（终端版与 Cocoa 版共用）
+  net / trust / chat_color / files / files_parse / voice
+  chat_core     会话逻辑：指令派发、协议时序、附件、TOFU
+  cli_render    终端渲染：ANSI 上色、按宽度折行（纯函数，有单测）
+linux/client/   终端界面
+  ui.cpp        实现 ChatCoreDelegate：读键 + 显示
+  terminal.cpp  原始模式、按键解码、输入行重绘
+  main.cpp      交互模式直接交给 ChatCore；另有一个批处理模式供脚本/自动化验证用
+```
+
+`ui.cpp` **不持有连接** —— 要发什么一律走 `core_->SubmitInput()`。
+这样"哪一步该发什么"只有一处实现，界面换了逻辑不用重写。
+
+### 界面怎么测的
+
+交互界面以前只能靠手动敲。现在用伪终端（pty）驱动，
+`tools/tui_test.py` 覆盖 24 项：欢迎语、`/help`、Tab 补全（指令 + 参数位置的昵称）、
+实际收发、色码解析与关闭、退格删中文（UTF-8 边界）、Ctrl+U、`↑` 翻历史、
+`/clear`、`/send` 报错、`/quit` 退出。
+
+**为什么必须有这个测试**：`ui.cpp` 是唯一一处"键盘输入 → 协议字节"的翻译层，
+错了不会崩、只会行为诡异（比如退格删半个汉字）。而它以前完全没有自动化覆盖。
+
+一个教训写在 `tools/tui_test.py` 的注释里：这批测试第一版报了 6 项失败，
+**逐条查下来全是测试自己的问题**（把逐字符回显当成显示结果、以为 `@pe` 该补全成
+`@peeruser`、以为 `&c` 是纯红、用 `kill(pid,0)` 探测退出）。
+如果当时直接去"修客户端"，会把这 5 处**正确**行为改坏。
+**测试失败先怀疑测试。**
+
 ## 构建
 
 依赖（Debian / Kali）：

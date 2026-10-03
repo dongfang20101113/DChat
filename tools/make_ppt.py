@@ -599,6 +599,33 @@ def slide_rules(prs):
 
 
 
+
+def slide_unified(prs):
+    """四端统一：会话逻辑只有一处实现 + 终端界面的真机测试。"""
+    slide = add_slide(prs, "四端统一：会话逻辑只有一处实现",
+                      "Linux 终端界面也接上了共用的 chat_core —— 界面只负责「怎么显示」")
+    add_image_fit(slide, os.path.join(ASSETS, "chart-layers.png"), 0.45, 1.05, 12.5, 4.1)
+    card_text(slide, 0.6, 5.35, 4.0, 1.8, "Linux 界面这次改了什么", [
+        "· 原先自己解析协议、自己分派 9 个指令",
+        "· 现在实现 ChatCoreDelegate，不再持有连接",
+        "· 渲染抽成纯函数 cli_render（可单测）",
+        "· 界面只剩：读键 / 画输入行 / 打输出",
+    ], accent=BLUE, fill=BLUE_L, title_size=13, body_size=11)
+    card_text(slide, 4.75, 5.35, 4.0, 1.8, "界面终于能自动化测了", [
+        "· 用伪终端（pty）驱动真客户端",
+        "· 24 项：收发 / Tab 补全 / 色码 / 退格删中文",
+        "· 还覆盖 Ctrl+U、↑ 翻历史、/clear、/quit",
+        "· 以前这块完全没有自动化覆盖",
+    ], accent=GREEN, fill=GREEN_L, title_size=13, body_size=11)
+    card_text(slide, 8.9, 5.35, 3.85, 1.8, "一个值得记的教训", [
+        "· 这批测试第一版报了 6 项失败",
+        "· 逐条查下来，6 项全是测试自己写错",
+        "· client_core 新加 35 项渲染单测",
+        "· 测试失败先怀疑测试，别急着改代码",
+    ], accent=AMBER, fill=AMBER_L, title_size=13, body_size=11)
+    return slide
+
+
 def slide_macos(prs):
     """macOS 端：做到了什么、验证到哪一步（如实标注）。"""
     slide = add_slide(prs, "macOS 端：原生 Cocoa 界面 + 如实标注的验证边界",
@@ -777,6 +804,7 @@ def main():
     slide_reg_defense(prs)
     slide_perf_boundary(prs)
     slide_rules(prs)
+    slide_unified(prs)
     slide_macos(prs)
     slide_bugs(prs)
     slide_ai_intro(prs)
