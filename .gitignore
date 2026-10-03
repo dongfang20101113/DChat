@@ -56,3 +56,10 @@ android/captures/
 # 签名密码在这里面，绝对不能提交
 android/keystore.properties
 !android/gradle/wrapper/gradle-wrapper.jar
+
+# Python 缓存与 Office 临时锁文件
+tools/__pycache__/
+__pycache__/
+~\$*.pptx
+~\$*.docx
+~\$*.xlsx

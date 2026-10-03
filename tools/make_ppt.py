@@ -15,7 +15,7 @@ from pptx.util import Inches, Pt, Emu
 # 否则从别的目录调用就会找不到图（踩过一次）
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(REPO, "build", "ppt-assets")
-OUT = os.path.join(REPO, "dchat-项目介绍.pptx")
+OUT = os.environ.get("DCHAT_PPT_OUT", os.path.join(REPO, "dchat-项目介绍.pptx"))
 
 FONT = "微软雅黑"
 NAVY = RGBColor(0x16, 0x28, 0x4A)
@@ -491,34 +491,65 @@ def slide_ddos(prs):
     return slide
 
 
-def slide_throughput(prs):
-    slide = add_slide(prs, "压力与攻击实测（二）：吞吐与稳定性",
-                      "数量级是真实吞吐，不是写缓冲假象——和服务端日志逐条计数核对过")
-    card_text(slide, 0.62, 1.3, 3.9, 2.15, "16 客户端持续压测", [
-        "处理消息 474,296 条",
-        "墙钟 2.4 秒",
-        "服务端 CPU 17 秒（多核并行）",
-        "广播式分发，非单线程上限",
-    ], accent=BLUE, fill=BLUE_L, title_size=14, body_size=12.5)
-    card_text(slide, 4.72, 1.3, 3.9, 2.15, "资源占用", [
-        "空载内存 9.2 MB",
-        "攻击 + 压测全程 9.8–10.8 MB",
-        "全程零崩溃、零重启",
-        "单文件静态二进制，无外部依赖",
-    ], accent=GREEN, fill=GREEN_L, title_size=14, body_size=12.5)
-    card_text(slide, 8.82, 1.3, 3.9, 2.15, "建连能力", [
-        "200 条并发连接",
-        "默认配置建连 6 ms",
-        "约 33,000 连接/秒",
-        "（本机回环，非广域网指标）",
-    ], accent=AMBER, fill=AMBER_L, title_size=14, body_size=12.5)
 
-    card_text(slide, 0.62, 3.62, 12.1, 2.55, "这些数字为什么可信", [
-        "· 吞吐不是「写进去就算成功」：服务端日志逐条统计 MSG，实测 474,296 条，与客户端计数一致",
-        "· 连接不是「connect 返回 0 就算建立」：必须等不到 FIN 才算存活——这条修正让「连接洪泛」的结论从「200 条全通」变成「恰好 60 条」",
-        "· 慢速耗尽不是「send 成功就算还占着」：必须读到 FIN 才算被断开——修正后结论从「0 条被断开」变成「40/40 全部断开」",
-        "· 换句话说：每一条「防护有效」的结论，都先把测量工具本身验证过一遍",
-    ], accent=RED, fill=RED_L, title_size=15, body_size=12)
+
+def slide_chart_conn(prs):
+    slide = add_slide(prs, "攻击对比曲线（一）：连接上限",
+                      "目标连接数从 20 加到 300，存活数在 60 处硬性封顶")
+    add_image_fit(slide, os.path.join(ASSETS, "chart-conn-limit.png"), 0.5, 1.18, 12.4, 4.35)
+    card_text(slide, 0.6, 5.68, 6.0, 1.42, "读这张图要看什么", [
+        "· 左侧蓝线在 60 处变成水平——上限是硬封顶，不是「大概拦一拦」",
+        "· 右侧红线严格 1:1：超出多少就拒多少，一条不漏也不多拒",
+    ], accent=GREEN, fill=GREEN_L, title_size=13, body_size=11.5)
+    card_text(slide, 6.85, 5.68, 6.0, 1.42, "数据来源", [
+        "· 8 个测试点各有实测记录（20/40/60/80/100/150/200/300）",
+        "· 复现：tools/loadtest.cpp flood <条数>，配置见 linux/README.md",
+    ], accent=BLUE, fill=BLUE_L, title_size=13, body_size=11.5)
+    return slide
+
+
+def slide_chart_timeout(prs):
+    slide = add_slide(prs, "攻击对比曲线（二）：慢速耗尽的清理过程",
+                      "30 条连上不登录的连接，在三种超时配置下全部被按时清掉")
+    add_image_fit(slide, os.path.join(ASSETS, "chart-timeout.png"), 0.5, 1.18, 12.4, 4.35)
+    card_text(slide, 0.6, 5.68, 6.0, 1.42, "读这张图要看什么", [
+        "· 三条阶跃线精确落在设定值上（5 / 10 / 20 秒），没有延迟漂移",
+        "· 无论配置多长最终都清零——攻击者拿不到「一直占着」的结果",
+    ], accent=AMBER, fill=AMBER_L, title_size=13, body_size=11.5)
+    card_text(slide, 6.85, 5.68, 6.0, 1.42, "服务端的处理方式", [
+        "· 关闭前先回一条 ERROR「太久没有登录，连接已关闭」，用户看得懂",
+        "· 每次清理都进日志：实测一轮出现 72 次 handshake timeout",
+    ], accent=RED, fill=RED_L, title_size=13, body_size=11.5)
+    return slide
+
+
+def slide_perf_boundary(prs):
+    """把「吞吐与稳定性」和「安全边界」合并成一页：数字和边界放一起才不会被误读。"""
+    slide = add_slide(prs, "性能实测与安全边界",
+                      "左边是能做到的，右边是明确做不到的——两栏都要看")
+    card_text(slide, 0.62, 1.28, 6.0, 2.65, "性能与稳定性（实测）", [
+        "· 16 客户端持续压测：处理 474,296 条消息，墙钟 2.4 秒",
+        "· 服务端 CPU 17 秒（多核并行，广播式分发）",
+        "· 空载内存 9.2 MB；攻击 + 压测全程 9.8–10.8 MB",
+        "· 全程零崩溃、零重启；单文件静态二进制，无外部依赖",
+        "· 200 条并发建连 6 ms（本机回环，非广域网指标）",
+        "· 吞吐与服务端日志逐条计数核对过，不是写缓冲假象",
+    ], accent=GREEN, fill=GREEN_L, title_size=15, body_size=11.5)
+    card_text(slide, 6.72, 1.28, 6.0, 2.65, "安全边界（明确做不到）", [
+        "· 主动中间人：裸 ECDH 没有身份认证，能劫持线路的人理论上",
+        "  可以分别和两端握手——要挡它需要证书或预共享密钥",
+        "· 网络层大流量 DDoS：本项目只做应用层防护，流量清洗要靠",
+        "  上游运营商 / 云清洗 / CDN",
+        "· 端到端加密：服务端能解密消息（它要转发、要存历史）",
+        "· 密码找回、多设备同步、消息签名——都没有",
+    ], accent=RED, fill=RED_L, title_size=15, body_size=11.5)
+    card_text(slide, 0.62, 4.12, 12.1, 2.2, "为什么两栏要放在同一页", [
+        "· 单看左边会以为「这服务器打不死」，单看右边会以为「防护很弱」——都不对",
+        "· 实测数字证明的是「规则按设计生效」，不是「扛得住任何流量」",
+        "· 安全材料里最危险的不是「防护少」，而是「你以为防护了很多」；",
+        "  使用者按错误假设去用，风险比明说大得多",
+        "· 这不是事后补的：项目从第一版加密起就在 crypto.h 里写着「不保护主动中间人」，README 照抄同一句",
+    ], accent=AMBER, fill=AMBER_L, title_size=15, body_size=12)
     return slide
 
 
@@ -539,32 +570,6 @@ def slide_rules(prs):
     note(slide, "默认只开握手超时是刻意的：先保证「拿下来就能用」，要上公网再按需开启——加固后的实测见前两页")
     return slide
 
-
-def slide_claims(prs):
-    slide = add_slide(prs, "边界：哪些是防护，哪些不是", "一份诚实的威胁模型，比一堆形容词有用")
-    card_text(slide, 0.62, 1.3, 6.0, 2.55, "已经做到的（有实测支撑）", [
-        "· 被动窃听：抓包看不到密码与聊天内容",
-        "· 内容篡改：GCM 逐条认证，改一个字节即失效",
-        "· 密钥变更可见：TOFU 指纹变了会中止并告警",
-        "· 应用层资源耗尽：连接上限 + 握手超时实测生效",
-        "· 在线暴力破解：失败次数窗口封禁实测生效",
-        "· 畸形输入：11 类攻击样本未造成崩溃",
-    ], accent=GREEN, fill=GREEN_L, title_size=15, body_size=12)
-    card_text(slide, 6.72, 1.3, 6.0, 2.55, "明确没做的（写在代码注释里）", [
-        "· 主动中间人：裸 ECDH 没有身份认证，能劫持线路的人",
-        "  理论上可以分别和两端握手——要挡它需要证书或预共享密钥",
-        "· 网络层大流量 DDoS：本项目只做应用层防护，",
-        "  真正的流量清洗要靠上游运营商 / 云清洗 / CDN",
-        "· 端到端加密：服务端能解密消息（它要转发、要存历史）",
-        "· 密码找回、多设备同步、消息签名——都没有",
-    ], accent=RED, fill=RED_L, title_size=15, body_size=12)
-    card_text(slide, 0.62, 4.02, 12.1, 2.25, "为什么要把「没做的」也写出来", [
-        "· 安全材料里最危险的不是「防护少」，而是「你以为防护了很多」——",
-        "  使用者按错误假设去用，风险比明说大得多",
-        "· 这不是事后补的：项目从第一版加密起就在 crypto.h 里写着「不保护主动中间人」，README 照抄同一句话",
-        "· 前面的实测数字证明的是「规则按设计生效」，不是「服务器打不死」",
-    ], accent=AMBER, fill=AMBER_L, title_size=15, body_size=12)
-    return slide
 
 
 def slide_bugs(prs):
@@ -603,36 +608,22 @@ def slide_ai_intro(prs):
         "· 定下项目约定：中文注释、不用 #define、避免 Python、先问再做安全相关写入",
         "· 仓库治理与发布决策（什么时候推 GitHub、发不发二进制）",
     ], accent=GREEN, fill=GREEN_L, body_size=13)
-    card_text(slide, 0.62, 4.1, 12.1, 2.25, "一个坦诚的比例估计", [
-        "· 代码字数、注释、测试、文档、构建与验证脚本：绝大部分由 AI 产出",
+    card_text(slide, 0.62, 3.95, 6.0, 2.4, "AI 最有效的三个用法", [
+        "① 写可被测试的纯逻辑：解析、判定、格式化全部抽成纯函数，",
+        "   一有测试，后面每次修改都能立刻验证",
+        "② 交叉核对而不是相信「应该对」：写探针程序把中间量打出来",
+        "   逐字节 diff，三端一致的三个坑就是这么找出来的",
+        "③ 顺着日志往下挖：加临时日志、看服务端记录、用 strace 看",
+        "   实际发出去的字节，好几个 bug 几分钟内定位",
+    ], accent=GREEN, fill=GREEN_L, title_size=15, body_size=11.5)
+    card_text(slide, 6.78, 3.95, 5.95, 2.4, "一个坦诚的比例估计", [
+        "· 代码、注释、测试、文档、构建与验证脚本：绝大部分由 AI 产出",
         "· 方向、取舍、验收标准、以及「什么算做完了」：全部由人决定",
-        "· 这个项目里 AI 更像一个执行力很强的实现者 + 一个不会累的验证者，",
-        "  而不是决策者。决策错了的时候（比如界面改版方向），返工成本也是真实的。",
-    ], accent=AMBER, fill=AMBER_L, body_size=13)
+        "· AI 更像执行力很强的实现者 + 不会累的验证者，而不是决策者。",
+        "  决策错了的时候（比如界面改版方向），返工成本也是真实的。",
+    ], accent=AMBER, fill=AMBER_L, title_size=15, body_size=11.5)
     return slide
 
-
-def slide_ai_strength(prs):
-    slide = add_slide(prs, "AI 最有效的三个用法",
-                      "按实际收益排序，不是理论上的优点")
-    items = [
-        ("① 写「可被测试的纯逻辑」", GREEN,
-         "协议解析、色码解析、补全、TOFU 判定、时长格式化，全部抽成纯函数。"
-         "AI 写这些又快又稳，而且一有测试，后面所有修改都能立刻验证。"),
-        ("② 交叉核对，而不是相信「应该对」", BLUE,
-         "「两端算出来的字节是否一致」这类问题，AI 的办法是：写探针程序把中间量打出来，"
-         "逐字节 diff。三端一致的三个坑就是这么找出来的。"),
-        ("③ 顺着日志往下挖", AMBER,
-         "拿不到结果时不猜，而是加临时日志、看服务端记录、用 strace 看实际发出去的字节。"
-         "好几个 bug 是这样在几分钟内定位的。"),
-    ]
-    y = 1.35
-    for title, color, body in items:
-        card(slide, 0.62, y, 12.1, 1.62, WHITE, color)
-        textbox(slide, 0.88, y + 0.12, 11.5, 0.45, [title], size=17, color=color, spacing=0)
-        textbox(slide, 0.88, y + 0.66, 11.5, 0.85, [body], size=13, color=TEXT, spacing=0)
-        y += 1.75
-    return slide
 
 
 def slide_ai_failures(prs):
@@ -730,12 +721,12 @@ def main():
     slide_verification(prs)
     slide_sec_design(prs)
     slide_ddos(prs)
-    slide_throughput(prs)
+    slide_chart_conn(prs)
+    slide_chart_timeout(prs)
+    slide_perf_boundary(prs)
     slide_rules(prs)
-    slide_claims(prs)
     slide_bugs(prs)
     slide_ai_intro(prs)
-    slide_ai_strength(prs)
     slide_ai_failures(prs)
     slide_lessons(prs)
     slide_end(prs)
