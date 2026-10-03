@@ -598,6 +598,31 @@ def slide_rules(prs):
 
 
 
+
+def slide_macos(prs):
+    """macOS 端：做到了什么、验证到哪一步（如实标注）。"""
+    slide = add_slide(prs, "macOS 端：原生 Cocoa 界面 + 如实标注的验证边界",
+                      "开发机上没有 Mac，所以「能编的都编了、能查的都查了」，但从未真机运行")
+    add_image_fit(slide, os.path.join(ASSETS, "chart-macos-verify.png"), 0.45, 1.1, 12.5, 4.4)
+    # 三条、每条约 20 字以内 —— 四条会把卡片撑破（第一版就是这么溢出的）
+    card_text(slide, 0.6, 5.65, 4.0, 1.5, "为 macOS 改了什么", [
+        "· 没有 MSG_NOSIGNAL → 用 SO_NOSIGPIPE",
+        "· TCP_KEEPIDLE 改叫 TCP_KEEPALIVE",
+        "· htons 是宏：加了 :: 反而编不过",
+    ], accent=BLUE, fill=BLUE_L, title_size=13, body_size=11)
+    card_text(slide, 4.75, 5.65, 4.0, 1.5, "客户端分了层", [
+        "· client_core/ 可移植核心：网络/信任/附件/颜色/语音/会话逻辑",
+        "· linux/client/ 与 macos/main.mm 只剩界面",
+        "· 界面能编不了也不怕：逻辑都在能验证的核心层",
+    ], accent=GREEN, fill=GREEN_L, title_size=13, body_size=11)
+    card_text(slide, 8.9, 5.65, 3.85, 1.5, "怎么在没有 Mac 时查错", [
+        "· zig 交叉编译成真 Mach-O 二进制",
+        "· 18 个文件 × 两个架构全通过",
+        "· 文本层查 selector / 括号 / 声明",
+    ], accent=AMBER, fill=AMBER_L, title_size=13, body_size=11)
+    return slide
+
+
 def slide_bugs(prs):
     slide = add_slide(prs, "几个真实的 bug（和它们为什么难查）",
                       "共同点：不报错、不崩，只是「结果悄悄不对」")
@@ -752,6 +777,7 @@ def main():
     slide_reg_defense(prs)
     slide_perf_boundary(prs)
     slide_rules(prs)
+    slide_macos(prs)
     slide_bugs(prs)
     slide_ai_intro(prs)
     slide_ai_failures(prs)

@@ -7,13 +7,26 @@
 > | 部分 | 验证程度 |
 > | --- | --- |
 > | 服务端 + 协议层 + 加密（除 OpenSSL 后端） | ✅ 用 `zig cc -target *-macos` **真交叉编译**成 Mach-O，逐个文件零错误 |
-> | 客户端核心（net / trust / files_parse / chat_color） | ✅ 同上，编到 macOS 零错误 |
+> | 客户端核心 `client_core/`（含 `chat_core`，即全部会话逻辑） | ✅ 同上，**18 个文件 × 两个 macOS 架构全部通过** |
 > | `crypto_backend_openssl.cpp` | ⚠️ 编译需要 macOS 版 OpenSSL 头，本机没有 → **未编译验证** |
-> | Cocoa 图形界面（`macos/` 下的 ObjC++） | ❌ **完全未编译验证** —— 本机没有任何 Foundation/AppKit 头，zig 也不带 framework 头 |
-> | 运行行为（握手、收发、文件、语音） | ❌ 未验证 |
+> | Cocoa 图形界面 `macos/main.mm` | ❌ **完全未编译验证** —— 本机没有任何 Foundation/AppKit 头，zig 也不带 framework 头。只做了文本层面的检查（selector 是否都实现了、括号配对、用到的核心成员是否存在） |
+> | 运行行为（握手、登录、收发、文件、语音） | ❌ 未验证 |
 >
 > 所以：**代码写好了、能查到的兼容问题都改了，但第一次在 Mac 上编译大概率还会有报错要修。**
 > 把报错贴回来我来改。
+
+## 代码结构（为什么 GUI 编不了也不算太糟）
+
+```
+client_core/     可移植核心 —— 两个平台共用，**能交叉编译验证**
+  net / trust / chat_color / files / files_parse / voice
+  chat_core      会话逻辑：登录注册、收发、指令派发、附件、语音
+linux/client/    Linux 终端界面 + 入口
+macos/main.mm    Cocoa 界面 —— 编不了的那一层，只负责"把字符串画出来"
+```
+
+界面层刻意做薄，就是因为它无法验证：逻辑都在 `client_core` 里，
+`macos/main.mm` 只剩窗口搭建 + 把 `ChatCore` 的回调转成 `NSAttributedString`。
 
 ## 依赖
 
@@ -22,8 +35,8 @@ brew install cmake ninja openssl@3 sox
 ```
 
 - `openssl@3`：加密后端（三端里 macOS 和 Linux 共用 OpenSSL 实现）
-- `sox`：语音录制与播放。用它是因为 `rec` / `play` 在 macOS 上都能直接驱动
-  CoreAudio，不需要额外权限配置；命令行和 Linux 端的 `arecord`/`aplay` 一样简单
+- `sox`：语音录制与播放（`rec` / `play`）。用它是因为能直接驱动 CoreAudio、
+  不需要额外权限配置，参数写法也能和 Linux 的 `arecord`/`aplay` 一一对应
 
 ## 构建
 
@@ -43,16 +56,19 @@ cd build && ctest
 
 ## 打包成 .app
 
+`dchat_client_macos` 声明成 `MACOSX_BUNDLE`，CMake 会自动生成 `.app` 结构，
+直接在 Finder 里双击即可：
+
 ```bash
-cmake --build build --target dchat_app_bundle
-open build/dchat.app
+open build/dchat_client_macos.app
 ```
 
-（如果这个 target 还没做出来，说明这一版只到"能编译出可执行文件"。
+**首次运行会被 Gatekeeper 拦**（没有签名）：右键 →「打开」→ 再点「打开」，
+或 `xattr -d com.apple.quarantine build/dchat_client_macos.app`。
 
 ## 这一版为 macOS 改了什么
 
-移植过程中一共只有四处不兼容，都改掉了，且都写了注释说明原因：
+移植过程中的不兼容点**全部是交叉编译探测出来的，不是猜的**。逐条：
 
 | 位置 | 问题 | 处理 |
 | --- | --- | --- |
@@ -80,3 +96,43 @@ ZIG=$(python3 -c "import ziglang,os;print(os.path.join(os.path.dirname(ziglang._
 **能验证**：语法、类型、平台宏分支、libSystem 调用名对不对。
 **不能验证**：链接（缺 macOS 版 OpenSSL）、运行行为、framework 相关代码
 （zig **不带 Foundation/AppKit 头**，所以 GUI 一行都编不了）。
+
+## 关于那个编不了的 GUI：做了哪些替代检查
+
+`macos/main.mm` 一行都没被编译过，所以除了"小心写"之外，还做了两件事：
+
+**1. 把逻辑全部挪到能验证的地方。** 会话逻辑（登录注册、收发、指令、附件、
+TOFU 判定）全在 `client_core/chat_core.cpp` 里，那个文件在两个 macOS 架构上
+都真编译过。GUI 里只剩窗口搭建和字符串拼装。
+
+**2. 文本层面的静态检查**：`tools/check_objc_static.py`
+
+```bash
+python3 tools/check_objc_static.py
+```
+
+它查的是"最容易犯、而且在 Mac 上最难一次发现"的几类错：
+
+| 查什么 | 为什么值得单独查 |
+| --- | --- |
+| 调用了自己没实现的 selector | 编译只给 warning，**运行到那行直接 unrecognized selector 崩溃** |
+| 括号配对 | 长文件最容易漏，编译器报的位置往往离真正出错处很远 |
+| `main.mm` 用到的 `ChatCore` 成员是否真在头文件里 | 头文件改了忘了同步，在 Mac 上才发现就白跑一趟 |
+| GNU 扩展写法 | clang on macOS 未必接受（这里因此改掉了一处 `?:` 简写） |
+
+**它不是编译器**，只能减少错误、不能替代在 Mac 上真编一次。
+
+## 一个反直觉的坑：加了 `::` 反而编不过
+
+`socket_util.cpp` 里原本写的是 `::htons(port)`。这在 Linux/Windows 上完全正确
+（`htons` 是函数），但在 macOS 上 `htons` 是**宏**：
+
+```c
+#define htons(x) __DARWIN_OSSwapInt16(x)
+```
+
+于是 `::htons(80)` 展开成 `::((__uint16_t)...)` —— 非法语法，报错还是
+"expected unqualified-id"，完全看不出跟 `htons` 有关。
+
+结论：**跨平台代码里不要给可能是宏的名字加作用域限定符**。
+`htons`/`htonl`/`ntohs`/`ntohl` 统一不加 `::`，三端通吃。

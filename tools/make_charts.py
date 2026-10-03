@@ -29,6 +29,7 @@ GREEN_L = (230, 246, 238)
 RED = (176, 58, 43)
 RED_L = (253, 236, 234)
 AMBER = (176, 108, 12)
+AMBER_L = (252, 245, 230)
 GRAY = (120, 130, 145)
 GRID = (225, 230, 238)
 TEXT = (32, 41, 56)
@@ -247,6 +248,57 @@ def make_registration_chart(path):
            font=f_note, fill=GREEN)
     img.save(path)
     return path
+
+
+# ---------------------------------------------------------------------------
+# macOS：验证边界图
+# ---------------------------------------------------------------------------
+# 实测事实：zig 0.16 **不带任何 framework 头**（Foundation/AppKit/CoreFoundation
+# 全都没有），所以 Cocoa 界面在这台开发机上编不了。这张图的作用就是把
+# "验过什么 / 没验过什么"一次说清 —— 这种图不画出来，读者很容易默认"都测过了"。
+MAC_VERIFY = [
+    ("服务端 + 协议 + 加密", "真交叉编译成 Mach-O", 2),
+    ("客户端核心 18 个文件", "两个 macOS 架构各编一遍", 2),
+    ("Cocoa 界面 main.mm", "只做了文本层静态检查", 1),
+    ("OpenSSL 后端", "缺 macOS 头，未编译", 0),
+    ("运行行为（收发/文件/语音）", "没有 Mac，未运行", 0),
+]
+MAC_LEVEL_TEXT = {2: "已编译验证", 1: "部分检查", 0: "未验证"}
+
+
+def make_macos_verify_chart(path):
+    W, H = 2000, 900
+    img = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(img)
+    f_title = load_font(34, bold=True)
+    f_row = load_font(24)
+    f_note = load_font(21)
+    f_badge = load_font(20, bold=True)
+
+    d.text((90, 44), "macOS 端验证到了哪一步（不夸大）", font=f_title, fill=NAVY)
+    d.text((90, 96), "同一张图里的每一项都在仓库里有对应证据：脚本、错误信息或缺失的头文件",
+           font=f_note, fill=GRAY)
+
+    colors = {2: GREEN, 1: AMBER, 0: RED}
+    fills = {2: GREEN_L, 1: AMBER_L, 0: RED_L}
+    y = 170
+    for label, detail, level in MAC_VERIFY:
+        d.rounded_rectangle((90, y, 1910, y + 118), radius=16, fill=fills[level],
+                            outline=colors[level], width=3)
+        d.text((130, y + 26), label, font=f_row, fill=TEXT)
+        d.text((130, y + 68), detail, font=f_note, fill=GRAY)
+        # 右侧徽标
+        badge = MAC_LEVEL_TEXT[level]
+        d.rounded_rectangle((1560, y + 30, 1870, y + 88), radius=14,
+                            fill=colors[level])
+        d.text((1715, y + 59), badge, font=f_badge, fill=(255, 255, 255), anchor="mm")
+        y += 138
+
+    d.text((90, 860),
+           "结论：能编的都编过了、能查的都查了，但 macOS 版本第一次在真机上编译大概率还需要修",
+           font=f_note, fill=TEXT)
+    img.save(path)
+    return path
 if __name__ == "__main__":
     import os
     out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -255,3 +307,4 @@ if __name__ == "__main__":
     print(make_conn_chart(os.path.join(out, "chart-conn-limit.png")))
     print(make_timeout_chart(os.path.join(out, "chart-timeout.png")))
     print(make_registration_chart(os.path.join(out, "chart-registration.png")))
+    print(make_macos_verify_chart(os.path.join(out, "chart-macos-verify.png")))

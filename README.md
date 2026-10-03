@@ -6,6 +6,28 @@
 
 <a id="top"></a>
 
+## 平台支持
+
+同一份协议与加密代码（`src/`）在四个平台上跑，客户端界面各写各的：
+
+| 平台 | 服务端 | 客户端 | 状态 |
+| --- | --- | --- | --- |
+| Windows | ✅ | ✅ Win32 / GDI+ 图形界面 | 一直在用 |
+| Linux | ✅ | ✅ 终端界面（`linux/`） | 实测通过 |
+| Android | — | ✅ Kotlin / Compose（`android/`） | 实测通过 |
+| **macOS** | ✅ | ✅ **原生 Cocoa 界面**（`macos/`，ObjC++） | ⚠️ **只做了静态验证，从未在真机运行过** —— 详见 [macos/README.md](macos/README.md) |
+
+三端一致靠的是**共用同一份协议、加密与账号代码**（`dchat_protocol` 静态库），
+以及同一批测试：这些测试在 Windows / Linux 上真跑，在 macOS 上也能跑。
+
+客户端代码分两层，加新平台只补界面：
+
+```
+client_core/    可移植核心：网络 / 信任(TOFU) / 附件 / 颜色 / 语音 / 会话逻辑
+linux/client/   Linux 终端界面 + 入口
+macos/main.mm   Cocoa 界面（编不了的那一层，只负责画）
+```
+
 ## 功能
 
 - 服务器支持**多个客户端同时在线**，一条消息广播给所有人
