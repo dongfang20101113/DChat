@@ -931,8 +931,40 @@ std::string BanList() {
 }
 
 // ---- 管理员（op）名单 ----
+//
+// 名单**存盘**（dchat-admins.txt，和身份密钥同目录，即服务的工作目录）。
+//
+// 为什么必须存盘：之前只在内存里，服务一重启就全空了。对局域网自娱自乐无所谓，
+// 但跑在公网服务器上就很难受——`/op` 只能在控制台做，而控制台要在 systemd
+// 前面手动跑才有（stdin 被接到 /dev/null），等于**每次重启都要停一次服**。
+// 黑名单（封禁）仍然只在内存里：封禁是有时效的，重启后清空是合理行为。
+const char* const kAdminsPath = "dchat-admins.txt";
+
 std::mutex g_opMutex;
 std::vector<std::string> g_ops;
+
+/** 把名单写回文件。**调用前必须已经持有 g_opMutex**（内部不做加锁）。 */
+void SaveOpsLocked() {
+    std::ofstream out(kAdminsPath);
+    if (!out) return;  // 写不进去也不影响运行，内存里的名单照常生效
+    out << "# dchat 管理员名单，一行一个昵称。\n"
+        << "# 由 /op、/deop 自动写回；也可以手工编辑，改完需要重启服务。\n";
+    for (const std::string& name : g_ops) out << name << "\n";
+}
+
+/** 启动时读回名单。文件不存在就是"还没有管理员"，不是错误。 */
+void LoadOps() {
+    std::lock_guard<std::mutex> lock(g_opMutex);
+    g_ops.clear();
+    std::ifstream in(kAdminsPath);
+    if (!in) return;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (!line.empty()) g_ops.push_back(line);
+    }
+}
 
 bool IsOp(const std::string& name) {
     std::lock_guard<std::mutex> lock(g_opMutex);
@@ -943,6 +975,7 @@ bool AddOp(const std::string& name) {
     std::lock_guard<std::mutex> lock(g_opMutex);
     if (std::find(g_ops.begin(), g_ops.end(), name) != g_ops.end()) return false;
     g_ops.push_back(name);
+    SaveOpsLocked();  // 立刻落盘：进程被 kill 也不会丢
     return true;
 }
 
@@ -950,7 +983,9 @@ bool RemoveOp(const std::string& name) {
     std::lock_guard<std::mutex> lock(g_opMutex);
     const auto before = g_ops.size();
     g_ops.erase(std::remove(g_ops.begin(), g_ops.end(), name), g_ops.end());
-    return g_ops.size() != before;
+    if (g_ops.size() == before) return false;
+    SaveOpsLocked();
+    return true;
 }
 
 std::string OpList() {
@@ -2193,6 +2228,10 @@ int main(int argc, char** argv) {
     LoadUsers();
     Log("accounts file: " + g_usersPath + "（密码以加盐哈希保存，不存明文）");
     LoadRules();
+    // 管理员名单也要读回来——否则每次重启都得重新 /op 一遍，
+    // 而 /op 只能在控制台做（systemd 下 stdin 是 /dev/null）。
+    LoadOps();
+    Log("admins: " + OpList());
     LoadHistory();
     LoadSeen();
     Log("rules file: " + g_rulesPath + "（/chatrule 改完会自动写回）");
