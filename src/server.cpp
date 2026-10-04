@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -66,13 +67,25 @@ bool ParseByteCount(const std::string& text, unsigned long long* out) {
 }
 
 // ---- 文件暂存（QQ 式"点击下载"）----
-// 发送方先把文件传给服务器，服务器在**内存**里暂存一段时间；其他人在卡片上点「下载」
-// 时才把数据发给他（FILE_GET）。过期或超出容量会删掉，所以服务器不会无限膨胀。
+// 发送方先把文件传给服务器，服务器**在磁盘上**暂存一段时间；其他人在卡片上点「下载」
+// 时才把数据发给他（FILE_GET）。过期或超出容量会连磁盘文件一起删掉。
+//
+// 为什么是磁盘而不是内存：原来 StoredFile::data 是 std::string，整个文件内容
+// 都驻留内存。这台服务器只有 1.6GB 内存，传几个大文件就会被 OOM 杀掉
+// （而且当时 maxservertemp 设成了 32GB，是物理内存的 20 倍，那道闸门形同虚设）。
+// 语音消息也是走这条路径（kind=voice），所以一起落盘。
 struct PendingUpload {          // 正在上传的文件（每个连接最多一个）
     std::string id;             // 客户端自己的传输 ID（只用于日志）
     std::string nameB64;
     unsigned long long declared = 0;
-    std::string data;
+    // ---- 磁盘暂存 ----
+    // FILE_SEND 时建 .part 文件，FILE_CHUNK 直接往里追加。收齐后改名去掉 .part
+    // 并把路径登记进 StoredFile；**半途中断（断线、取消、校验失败）由析构删掉**，
+    // 这样无论从哪条路径退出，都不会在磁盘上留下垃圾。
+    std::string partPath;
+    std::ofstream out;
+    unsigned long long received = 0;  // 已落盘字节数，用来校验完整性
+    bool committed = false;           // 改名成功、已交给 StoredFile 管，析构不再删
     std::string thumb;          // 缩略图（PNG，图片缩小图 / 视频第一帧），可能为空
     bool expectThumb = false;   // 发送方声明"会带缩略图"
     // 发送方声明的**附件种类**，原样透传给接收方。
@@ -80,6 +93,18 @@ struct PendingUpload {          // 正在上传的文件（每个连接最多一
     // 服务端不解释这个值——它只负责透传。三种附件走完全相同的传输，
     // 区别只在客户端收到后怎么显示、以及要不要自动下载。
     std::string kind = "0";
+
+    PendingUpload() = default;
+    PendingUpload(const PendingUpload&) = delete;
+    PendingUpload& operator=(const PendingUpload&) = delete;
+    ~PendingUpload() {
+        if (out.is_open()) out.close();
+        // committed 为假 = 这份数据没有变成正式附件，磁盘上那份必须清掉
+        if (!committed && !partPath.empty()) {
+            std::error_code ec;
+            std::filesystem::remove(partPath, ec);
+        }
+    }
 };
 
 struct StoredFile {             // 已经传完、等人下载的文件
@@ -87,8 +112,8 @@ struct StoredFile {             // 已经传完、等人下载的文件
     std::string owner;
     std::string nameB64;
     unsigned long long size = 0;
-    std::string data;
-    std::string thumb;          // 缩略图（PNG），可能为空
+    std::string path;           // 文件内容在磁盘上的位置（dchat-files/upload-N）
+    std::string thumb;          // 缩略图（PNG，仍放内存：只有几 KB，且预览路径到处在用）
     std::chrono::steady_clock::time_point expires;
 };
 
@@ -157,6 +182,50 @@ unsigned long long StoredBytesLocked() {
     return total;
 }
 
+// ---- 暂存目录 ----
+// 放在工作目录下，和 dchat-history.txt 一致：管理员知道去哪找，也方便单独做磁盘配额。
+std::string g_filesDir = "dchat-files";
+// 上传临时文件的序号，只用来保证 .part 名字唯一（正式附件的名字由 StoredFile::id 决定）
+unsigned long long g_uploadSeq = 0;
+constexpr const char* kPartSuffix = ".part";
+
+bool EnsureFilesDir() {
+    std::error_code ec;
+    std::filesystem::create_directories(g_filesDir, ec);
+    if (ec) {
+        Log("cannot create file staging dir " + g_filesDir + "：" + ec.message());
+        return false;
+    }
+    return true;
+}
+
+// 删掉一个暂存文件；删不掉只记日志 —— 清理失败不该影响主流程。
+void RemoveStoredFileQuiet(const std::string& path) {
+    if (path.empty()) return;
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    if (ec) Log("failed to remove staged file " + path + "：" + ec.message());
+}
+
+// 启动时清空暂存目录。
+// 文件本来就不跨重启（和以前"内存暂存"的行为一致：重启后旧附件不可下载），
+// 顺带把上次崩溃留下的 .part 残留一起清掉。
+void ClearFilesDir() {
+    std::error_code ec;
+    std::size_t removed = 0;
+    if (std::filesystem::exists(g_filesDir, ec)) {
+        for (const auto& entry : std::filesystem::directory_iterator(g_filesDir, ec)) {
+            std::error_code rm;
+            if (std::filesystem::remove_all(entry.path(), rm)) ++removed;
+        }
+    }
+    if (removed > 0) {
+        Log("cleared " + std::to_string(removed) + " leftover file(s) in " + g_filesDir +
+            "（暂存不跨重启）");
+    }
+    EnsureFilesDir();
+}
+
 // 清掉过期文件；返回被清掉的描述（用于日志）
 std::vector<std::string> ExpireFilesLocked() {
     std::vector<std::string> expired;
@@ -164,6 +233,8 @@ std::vector<std::string> ExpireFilesLocked() {
     for (auto it = g_files.begin(); it != g_files.end();) {
         if ((*it)->expires <= now) {
             expired.push_back((*it)->id + "（" + (*it)->owner + " 上传）");
+            // 磁盘上那份也要删，否则"过期"只清内存、文件会一直堆在磁盘上
+            RemoveStoredFileQuiet((*it)->path);
             it = g_files.erase(it);
         } else {
             ++it;
@@ -174,24 +245,27 @@ std::vector<std::string> ExpireFilesLocked() {
 
 // 存一个文件；成功返回服务器分配的 ID，失败返回空串
 std::string StoreFile(const std::string& owner, const std::string& nameB64,
-                      const std::string& data, const std::string& thumb) {
+                      unsigned long long size, const std::string& path,
+                      const std::string& thumb) {
     std::lock_guard<std::mutex> lock(g_filesMutex);
     for (const std::string& line : ExpireFilesLocked()) Log("stored file expired: " + line);
     const unsigned long long budget = TempBudgetBytes();
-    if (data.size() > budget) return std::string();  // 单个就超总量，存不下
+    if (size > budget) return std::string();  // 单个就超总量，存不下
     // 腾地方：先按最旧的删，直到数量和总量都满足
     while (!g_files.empty() && (g_files.size() >= kMaxStoredFiles ||
-                                StoredBytesLocked() + data.size() > budget)) {
+                                StoredBytesLocked() + size > budget)) {
         Log("stored file evicted (no room): " + g_files.front()->id + "（" +
             g_files.front()->owner + " 上传）");
+        // 淘汰时把磁盘文件一起删掉，否则"腾地方"只腾了内存、磁盘越攒越多
+        RemoveStoredFileQuiet(g_files.front()->path);
         g_files.erase(g_files.begin());
     }
     auto file = std::make_shared<StoredFile>();
     file->id = "F" + std::to_string(++g_fileSeq);
     file->owner = owner;
     file->nameB64 = nameB64;
-    file->size = data.size();
-    file->data = data;
+    file->size = size;
+    file->path = path;  // 内容已经在磁盘上了，这里只登记位置
     file->thumb = thumb;
     file->expires = std::chrono::steady_clock::now() + std::chrono::seconds(kFileTtlSeconds);
     g_files.push_back(file);
@@ -447,6 +521,7 @@ void EnforceTempBudget() {
         std::lock_guard<std::mutex> lock(g_filesMutex);
         while (!g_files.empty() && StoredBytesLocked() > budget) {
             Log("stored file evicted (over maxservertemp): " + g_files.front()->id);
+            RemoveStoredFileQuiet(g_files.front()->path);
             g_files.erase(g_files.begin());
         }
     }
@@ -1814,10 +1889,31 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
                                              ? dchat::SanitizeFileName(std::string(
                                                    nameBytes.begin(), nameBytes.end()))
                                              : std::string("(文件名无法解析)");
+            // 建临时文件开始接收：**不再把文件内容攒在内存里**。
+            // 这台服务器只有 1.6GB 内存，几个大文件就能把它 OOM 掉。
+            if (!EnsureFilesDir()) {
+                client->SendLine(Timed("ERROR", "服务器无法准备暂存目录，上传取消"));
+                return true;
+            }
+            unsigned long long uploadSeq = 0;
+            {
+                std::lock_guard<std::mutex> lock(g_filesMutex);
+                uploadSeq = ++g_uploadSeq;
+            }
+            const std::string partPath =
+                g_filesDir + "/upload-" + std::to_string(uploadSeq) + kPartSuffix;
+            std::ofstream partFile(partPath, std::ios::binary | std::ios::trunc);
+            if (!partFile) {
+                client->SendLine(Timed("ERROR", "服务器无法建立临时文件，上传取消"));
+                Log("upload failed (cannot create part file): " + partPath);
+                return true;
+            }
             client->upload = std::make_shared<PendingUpload>();
             client->upload->id = words[0];
             client->upload->nameB64 = words[1];
             client->upload->declared = bytes;
+            client->upload->partPath = partPath;
+            client->upload->out = std::move(partFile);
             // 可选的第四个字：附件种类。**只追加在末尾**，老客户端不发它就当普通文件。
             // 服务端**不校验**这个值合不合理（比如"既贴纸又语音"），
             // 因为取值是单值的、结构上就不可能出现组合；真正要在意的是
@@ -1873,13 +1969,23 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
                 client->upload.reset();
                 return true;
             }
-            if (client->upload->data.size() + chunk.size() > client->upload->declared) {
+            if (client->upload->received + chunk.size() > client->upload->declared) {
                 client->SendLine(Timed("ERROR", "收到的数据超过了声明的大小，上传已中止"));
                 Log("upload aborted (too much data): " + client->nick);
-                client->upload.reset();
+                client->upload.reset();  // 析构会把 .part 删掉
                 return true;
             }
-            client->upload->data.append(chunk.begin(), chunk.end());
+            if (!chunk.empty()) {
+                client->upload->out.write(reinterpret_cast<const char*>(chunk.data()),
+                                          static_cast<std::streamsize>(chunk.size()));
+                if (!client->upload->out) {
+                    client->SendLine(Timed("ERROR", "写入暂存文件失败，上传已中止（磁盘可能满了）"));
+                    Log("upload aborted (disk write failed): " + client->nick);
+                    client->upload.reset();
+                    return true;
+                }
+                client->upload->received += chunk.size();
+            }
             // uploadrate：按限速睡够再收下一块。客户端会自然被 TCP 反压拖慢，
             // 不需要额外通知——这比"超速就断开"友好得多。
             client->Throttle(&client->uploadLimiter, chunk.size(), CurrentRules().uploadRateKbps);
@@ -1897,18 +2003,36 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             }
             const std::shared_ptr<PendingUpload> upload = client->upload;
             client->upload.reset();
-            if (upload->data.size() != upload->declared) {
+            if (upload->received != upload->declared) {
                 client->SendLine(Timed("ERROR", "文件不完整，上传取消（收到 " +
-                                                  dchat::FormatBytes(upload->data.size()) +
+                                                  dchat::FormatBytes(upload->received) +
                                                   "，声明 " +
                                                   dchat::FormatBytes(upload->declared) + "）"));
                 Log("upload aborted (incomplete): " + client->nick);
+                return true;  // upload 析构时会把 .part 删掉
+            }
+            upload->out.close();
+            if (!upload->out) {
+                client->SendLine(Timed("ERROR", "暂存文件收尾失败（磁盘可能满了），上传取消"));
+                Log("upload aborted (close failed): " + client->nick);
                 return true;
             }
-            const std::string fileId = StoreFile(client->nick, upload->nameB64, upload->data,
-                                                 upload->thumb);
+            // 改名去掉 .part：**先把文件落定、再登记**，
+            // 这样进 g_files 的路径一定指向一个完整的文件。
+            const std::string partSuffix = kPartSuffix;
+            const std::string finalPath =
+                upload->partPath.substr(0, upload->partPath.size() - partSuffix.size());
+            if (std::rename(upload->partPath.c_str(), finalPath.c_str()) != 0) {
+                client->SendLine(Timed("ERROR", "暂存文件改名失败，上传取消"));
+                Log("upload aborted (rename failed): " + upload->partPath);
+                return true;
+            }
+            upload->committed = true;  // 已交给 StoredFile 管，析构不要再删它
+            const std::string fileId = StoreFile(client->nick, upload->nameB64, upload->received,
+                                                 finalPath, upload->thumb);
             if (fileId.empty()) {
                 client->SendLine(Timed("ERROR", "服务器暂时存不下这个文件，稍后再试"));
+                RemoveStoredFileQuiet(finalPath);  // 没登记成功，磁盘上那份不能留
                 return true;
             }
             std::vector<unsigned char> nameBytes;
@@ -1930,12 +2054,12 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             // 读到第 5 个字段就停了，插进去会让它们把标记当成字节数解析。
             // 这和 RULES 行当初的扩法一样——只追加、不重排。
             Broadcast(Timed("FILE_OFFER", client->nick + " " + fileId + " " + upload->nameB64 + " " +
-                                             std::to_string(upload->data.size()) + " " +
+                                             std::to_string(upload->received) + " " +
                                              (upload->thumb.empty() ? "0" : "1") + " " +
                                              upload->kind),
                       client.get());
             Log("file stored: id=" + fileId + " owner=" + client->nick + " " + showName + "（" +
-                dchat::FormatBytes(upload->data.size()) + "）");
+                dchat::FormatBytes(upload->received) + "）");
             // **也要告诉上传者它的附件 ID。**
             //
             // 以前这里只 Broadcast 给别人（except = 上传者），结果上传者自己拿不到
@@ -1948,7 +2072,7 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             // 显示出来正好是"文件已上传（自己传的）"，语义正确、解析零改动。
             client->SendLine(Timed("FILE_OFFER",
                                    client->nick + " " + fileId + " " + upload->nameB64 + " " +
-                                       std::to_string(upload->data.size()) + " " +
+                                       std::to_string(upload->received) + " " +
                                        (upload->thumb.empty() ? "0" : "1") + " " + upload->kind));
             return true;
         }
@@ -2033,14 +2157,31 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
         // 但**实现里可能有 `!= N` 这种更严的判断**，加字段前必须去客户端确认。
         bool ok = client->SendLine(dchat::BuildLine(
             "FILE_BEGIN", file->id + " " + file->nameB64 + " " + std::to_string(file->size)));
+        // 打开磁盘上的暂存文件，按 offset 顺序读出来发走（内容不再驻留内存）
+        std::ifstream in(file->path, std::ios::binary);
+        if (!in) {
+            client->SendLine(dchat::BuildLine("FILE_FAIL", file->id + " 文件已不在暂存目录里"));
+            Log("download failed (staged file missing): " + file->path);
+            return true;
+        }
+        if (resumeFrom > 0) in.seekg(static_cast<std::streamoff>(resumeFrom));
         for (unsigned long long offset = resumeFrom; ok && offset < file->size;
              offset += dchat::kFileChunkBytes) {
             const unsigned long long remain = file->size - offset;
             const std::size_t length = remain < dchat::kFileChunkBytes
                                            ? static_cast<std::size_t>(remain)
                                            : dchat::kFileChunkBytes;
+            std::string buffer(length, '\0');
+            in.read(&buffer[0], static_cast<std::streamsize>(length));
+            if (in.gcount() != static_cast<std::streamsize>(length)) {
+                // 暂存文件在下载过程中被别的线程过期/淘汰掉了。
+                // 客户端会收到不完整的数据并可以重试 —— 现在有断点续传，代价不大。
+                Log("download read failed (staged file gone?): " + file->id);
+                ok = false;
+                break;
+            }
             const std::string chunk = dchat::Base64Encode(
-                reinterpret_cast<const unsigned char*>(file->data.data() + offset), length);
+                reinterpret_cast<const unsigned char*>(buffer.data()), length);
             // downloadrate：按限速睡够再发下一块（阻塞形成背压，不丢数据）
             client->Throttle(&client->downloadLimiter, length, CurrentRules().downloadRateKbps);
             ok = client->SendLine(dchat::BuildLine("FILE_DATA", file->id + " " + chunk));
@@ -2228,6 +2369,7 @@ int main(int argc, char** argv) {
     LoadUsers();
     Log("accounts file: " + g_usersPath + "（密码以加盐哈希保存，不存明文）");
     LoadRules();
+    ClearFilesDir();
     // 管理员名单也要读回来——否则每次重启都得重新 /op 一遍，
     // 而 /op 只能在控制台做（systemd 下 stdin 是 /dev/null）。
     LoadOps();
