@@ -32,7 +32,7 @@ echo "zig: $("$ZIG_BIN" version)"
 # 共享源码（三端一致的那部分）。刻意**不含** crypto_backend_openssl.cpp：
 # 它要 macOS 版 OpenSSL 头，没有 Mac 就编不了，硬编只会刷一屏无关报错。
 SHARED="src/protocol.cpp src/render.cpp src/input_history.cpp src/server_command.cpp \
-        src/auth.cpp src/file_transfer.cpp src/server_rules.cpp src/register_guard.cpp \
+        src/auth.cpp src/file_transfer.cpp src/server_rules.cpp src/register_guard.cpp src/history_store.cpp \
         src/crypto.cpp src/socket_util.cpp"
 # 客户端核心（已从 linux/client/ 提升到 client_core/，两端共用）
 CLIENT_CORE="client_core/net.cpp client_core/trust.cpp client_core/files_parse.cpp \

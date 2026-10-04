@@ -52,6 +52,14 @@ struct ServerRules {
     //   maxaccounts      兜住总量（换多少 IP 都没用，这是最后一道闸）
     int registerIntervalSec = 0;  // registerinterval：同一 IP 两次注册的最小间隔（秒），0 = 不限制
     int maxAccounts = 0;          // maxaccounts：账号总数上限，0 = 不限制
+
+    // ---- 2026-10 新增：离线消息 ----
+    // 别人说话时你不在线，那些消息以前是**直接丢掉**的。现在服务端把聊天记录
+    // 落盘并记住每个人读到第几条，重新登录时把错过的补上。
+    //
+    // 默认 0 = 不补发：这是刻意的，升级后行为和以前完全一样（本项目一贯的约定）。
+    // 要开就 /chatrule offlinemessages set 100。
+    int offlineMessages = 0;  // offlinemessages：登录时最多补发多少条，0 = 不补发
 };
 
 /**

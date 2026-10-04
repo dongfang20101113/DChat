@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "protocol.h"
+#include "history_store.h"
 #include "register_guard.h"
 #include "auth.h"
 #include "crypto.h"
@@ -198,11 +199,190 @@ std::string StoreFile(const std::string& owner, const std::string& nameB64,
 }
 
 // 按 ID 取文件（同时做过期清理）；找不到返回 nullptr
-// ---- 聊天记录缓存：keepchathistory 打开时，新加入的人能看到之前的记录和文件 ----
+// ---- 聊天记录：内存缓存 + 落盘 ----
+// keepchathistory 打开时，新加入的人能看到之前的记录，而且**服务端重启后还在**。
 std::mutex g_historyMutex;
-std::deque<std::string> g_history;  // 已经广播出去的 SAY / ANNOUNCE 行（原样保存）
-unsigned long long g_historyBytes = 0;
+std::unique_ptr<dchat::HistoryStore> g_history;
+std::string g_historyPath = "dchat-history.txt";
 constexpr std::size_t kMaxHistoryLines = 2000;
+
+// 落盘的写入节流。
+// 为什么必须节流：每条消息都 flush 的话，16 客户端压测（实测 47 万条消息）
+// 会被磁盘 I/O 拖成另一个数量级。这里最多每秒 flush 一次，由周期任务兜底，
+// 退出前再补一次。**代价是崩溃时最多丢最后一秒的记录** —— 聊天记录可以接受。
+std::ofstream g_historyOut;
+std::chrono::steady_clock::time_point g_historyFlushedAt{};
+bool g_historyDirty = false;
+constexpr int kHistoryFlushMs = 1000;
+
+// 累计追加多少条就整份重写一次（文件里会攒下大量已被裁掉的旧行）。
+// 只在"规则开着"时才可能触发。
+unsigned long long g_historySinceCompact = 0;
+constexpr unsigned long long kHistoryCompactEvery = 512;
+// 该压实了：由 RememberHistory 置位、周期任务执行。
+// **不能在 RememberHistory 里直接压实** —— 那里持有 g_historyMutex，
+// 而 CompactHistory 要拿同一把锁，带着锁调用就是死锁。
+bool g_historyCompactDue = false;
+
+// 拿走 g_historyMutex 之后用这个取存储；懒建，上限只在这里定义一处
+dchat::HistoryStore& HistoryLocked() {
+    if (!g_history) {
+        g_history = std::make_unique<dchat::HistoryStore>(kMaxHistoryLines, ~0ull);
+    }
+    return *g_history;
+}
+
+/** 把一条记录追加到历史文件（调用方已持有 g_historyMutex 且确认规则为真）。 */
+void AppendHistoryFileLocked(const dchat::HistoryEntry& entry) {
+    if (!g_historyOut.is_open()) {
+        g_historyOut.open(g_historyPath, std::ios::binary | std::ios::app);
+        if (!g_historyOut) {
+            Log("failed to open history file for append: " + g_historyPath);
+            return;
+        }
+    }
+    g_historyOut << dchat::FormatHistoryFileLine(entry);
+    g_historyDirty = true;
+}
+
+// ---- 每用户的阅读进度（离线补发用）----
+// 单独一个文件，不塞进账号文件：那是"用户凭据"，格式改动会牵连四端登录解析；
+// 而这是服务端自己的阅读进度，客户端根本不需要知道。
+std::mutex g_seenMutex;
+std::map<std::string, unsigned long long> g_lastSeen;
+std::string g_seenPath = "dchat-seen.txt";
+std::ofstream g_seenOut;
+bool g_seenDirty = false;
+bool g_seenCompactDue = false;
+unsigned long long g_seenSinceCompact = 0;
+constexpr unsigned long long kSeenCompactEvery = 512;
+
+/**
+ * 记下某个人"已经读到第几条"，并**当场追加一行到进度文件**。
+ *
+ * 为什么追加放在这里、而不是交给调用方：谁改进度谁写盘，就不会出现
+ * "两个用户几乎同时断开、后一个把标志清掉、前一个的进度漏写"这种情况。
+ * 真正耗时的 flush 仍然由周期任务节流（最多每秒一次）。
+ */
+void RecordSeen(const std::string& nick) {
+    if (nick.empty()) return;
+    // **先取序号、再拿 g_seenMutex**：两把锁不嵌套，避免锁顺序问题。
+    unsigned long long seq = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_historyMutex);
+        seq = HistoryLocked().LastSeq();
+    }
+    std::lock_guard<std::mutex> lock(g_seenMutex);
+    unsigned long long& slot = g_lastSeen[nick];
+    if (seq <= slot) return;  // 进度只前进不后退；没变化就不用写盘
+    slot = seq;
+    if (!g_seenOut.is_open()) {
+        g_seenOut.open(g_seenPath, std::ios::binary | std::ios::app);
+        if (!g_seenOut) return;
+    }
+    g_seenOut << dchat::FormatSeenFileLine({nick, seq});
+    ++g_seenSinceCompact;
+    g_seenDirty = true;
+}
+
+/** 取某人的进度；返回 false 表示没有记录（新用户）。 */
+bool LookupSeen(const std::string& nick, unsigned long long* out) {
+    std::lock_guard<std::mutex> lock(g_seenMutex);
+    const auto it = g_lastSeen.find(nick);
+    if (it == g_lastSeen.end()) return false;
+    if (out) *out = it->second;
+    return true;
+}
+
+void FlushSeenIfDirty() {
+    std::lock_guard<std::mutex> lock(g_seenMutex);
+    if (!g_seenDirty || !g_seenOut.is_open()) return;
+    g_seenOut.flush();
+    g_seenDirty = false;
+}
+
+/** 整份重写进度文件（追加写的文件里同一用户会攒下很多行）。 */
+void CompactSeen() {
+    std::lock_guard<std::mutex> lock(g_seenMutex);
+    if (g_seenOut.is_open()) {
+        g_seenOut.flush();
+        g_seenOut.close();
+    }
+    std::ofstream out(g_seenPath, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        Log("failed to compact seen file: " + g_seenPath);
+        return;
+    }
+    for (const auto& pair : g_lastSeen) {
+        out << dchat::FormatSeenFileLine({pair.first, pair.second});
+    }
+    g_seenSinceCompact = 0;
+    g_seenDirty = false;
+    Log("seen progress compacted: " + std::to_string(g_lastSeen.size()) + " user(s)");
+}
+
+void LoadSeen() {
+    std::ifstream in(g_seenPath, std::ios::binary);
+    if (!in) return;  // 还没有进度文件：所有人都是"新用户"
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::vector<dchat::SeenRecord> records = dchat::ParseSeenFile(text);
+    std::lock_guard<std::mutex> lock(g_seenMutex);
+    for (const dchat::SeenRecord& record : records) g_lastSeen[record.nick] = record.seq;
+    if (!records.empty()) {
+        Log("loaded reading progress for " + std::to_string(records.size()) + " account(s)");
+    }
+}
+
+/** 把攒着的记录刷到磁盘（周期任务与退出前调用）。 */
+void FlushHistoryIfDirty() {
+    std::lock_guard<std::mutex> lock(g_historyMutex);
+    if (!g_historyDirty || !g_historyOut.is_open()) return;
+    g_historyOut.flush();
+    g_historyDirty = false;
+    g_historyFlushedAt = std::chrono::steady_clock::now();
+}
+
+/** 整份重写历史文件，只留内存里还保着的那些（压实）。 */
+void CompactHistory() {
+    std::lock_guard<std::mutex> lock(g_historyMutex);
+    if (!g_history) return;
+    // 先关掉追加流，否则重写和追加会互相踩
+    if (g_historyOut.is_open()) {
+        g_historyOut.flush();
+        g_historyOut.close();
+    }
+    std::ofstream out(g_historyPath, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        Log("failed to compact history file: " + g_historyPath);
+        return;
+    }
+    out << g_history->Serialize();
+    g_historySinceCompact = 0;
+    g_historyDirty = false;
+    Log("history compacted: " + std::to_string(g_history->Size()) + " line(s) kept");
+}
+
+/**
+ * 启动时读一次历史文件。
+ *
+ * **无论 keepchathistory 是开还是关都要读**：读的目的不只是回放，
+ * 更重要的是**继承文件里的最大序号**。否则：规则关着跑一阵（不写盘，
+ * 但内存序号在涨），中途打开规则开始追加，序号是对的；可如果反过来 ——
+ * 没读文件就从 1 开始追加，文件里已有的 N 条会让新行全部被判为"序号未递增"
+ * 而在**下次启动时被丢弃**。
+ */
+void LoadHistory() {
+    std::ifstream in(g_historyPath, std::ios::binary);
+    std::lock_guard<std::mutex> lock(g_historyMutex);
+    if (!in) {
+        Log("no history file yet, will create when keepchathistory is on: " + g_historyPath);
+        return;
+    }
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::size_t loaded = HistoryLocked().LoadFromText(text);
+    Log("loaded " + std::to_string(loaded) + " history line(s) from " + g_historyPath +
+        "（末序号 " + std::to_string(g_history->LastSeq()) + "）");
+}
 
 unsigned long long StoredBytesTotal() {
     std::lock_guard<std::mutex> lock(g_filesMutex);
@@ -211,25 +391,53 @@ unsigned long long StoredBytesTotal() {
 
 void RememberHistory(const std::string& line) {
     std::lock_guard<std::mutex> lock(g_historyMutex);
-    g_history.push_back(line);
-    g_historyBytes += line.size() + 1;
-    const unsigned long long budget = TempBudgetBytes();
-    // 行数和总预算都要守（预算 = 文件 + 聊天记录，由 maxservertemp 决定）
-    while (!g_history.empty() && (g_history.size() > kMaxHistoryLines ||
-                                  g_historyBytes + StoredBytesTotal() > budget)) {
-        g_historyBytes -= g_history.front().size() + 1;
-        g_history.pop_front();
-    }
-}
+    dchat::HistoryStore& store = HistoryLocked();
+    const unsigned long long seq = store.Append(line);
 
-std::vector<std::string> HistorySnapshot() {
-    std::lock_guard<std::mutex> lock(g_historyMutex);
-    return std::vector<std::string>(g_history.begin(), g_history.end());
+    // 行数和总预算都要守（预算 = 文件 + 聊天记录，由 maxservertemp 决定）
+    const unsigned long long budget = TempBudgetBytes();
+    const unsigned long long usedByFiles = StoredBytesTotal();
+    store.TrimToBytes(budget > usedByFiles ? budget - usedByFiles : 0);
+
+    if (!CurrentRules().keepChatHistory) return;  // 规则关着：不写盘
+
+    dchat::HistoryEntry entry;
+    entry.seq = seq;
+    entry.line = line;
+    AppendHistoryFileLocked(entry);
+
+    // 节流 flush：距上次超过 1 秒才真正落盘
+    const auto now = std::chrono::steady_clock::now();
+    const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           now - g_historyFlushedAt)
+                           .count();
+    if (g_historyDirty && since >= kHistoryFlushMs) {
+        g_historyOut.flush();
+        g_historyDirty = false;
+        g_historyFlushedAt = now;
+    }
+
+    if (++g_historySinceCompact >= kHistoryCompactEvery) {
+        // 只有在"确实有旧行被裁掉"时压实才有意义：
+        // 否则重写一遍文件一个字节都省不下来，纯属白费 I/O。
+        const bool droppedAny = store.TotalAppended() > store.Size();
+        if (droppedAny) g_historyCompactDue = true;
+        g_historySinceCompact = 0;
+    }
 }
 
 std::size_t HistoryCount() {
     std::lock_guard<std::mutex> lock(g_historyMutex);
-    return g_history.size();
+    return HistoryLocked().Size();
+}
+
+/**
+ * 取序号大于 afterSeq 的记录（第 5 项：离线补发用）。
+ * 调用方不能持有 g_historyMutex。
+ */
+std::vector<dchat::HistoryEntry> HistorySince(unsigned long long afterSeq, std::size_t limit) {
+    std::lock_guard<std::mutex> lock(g_historyMutex);
+    return HistoryLocked().Since(afterSeq, limit);
 }
 
 // 把预算外的文件和聊天记录裁掉（maxservertemp 调小时立刻生效）
@@ -244,10 +452,8 @@ void EnforceTempBudget() {
     }
     {
         std::lock_guard<std::mutex> lock(g_historyMutex);
-        while (!g_history.empty() && g_historyBytes + StoredBytesTotal() > budget) {
-            g_historyBytes -= g_history.front().size() + 1;
-            g_history.pop_front();
-        }
+        const unsigned long long usedByFiles = StoredBytesTotal();
+        HistoryLocked().TrimToBytes(budget > usedByFiles ? budget - usedByFiles : 0);
     }
 }
 
@@ -845,6 +1051,10 @@ bool NickTaken(const std::string& nick, const Client* self) {
 }
 
 void RemoveClient(Client* target) {
+    // 断开时把他的阅读进度记下来（含被踢、崩溃断开）：
+    // 此刻 LastSeq() 就是他"在线期间已经收到"的最大序号 —— 因为在线时每条都是实时发的。
+    // 万一漏记，后果也只是下次多补几条（重复）而不会漏消息。
+    if (target) RecordSeen(target->nick);
     std::lock_guard<std::mutex> lock(g_clientsMutex);
     g_clients.erase(std::remove_if(g_clients.begin(), g_clients.end(),
                                    [target](const std::shared_ptr<Client>& c) {
@@ -1113,6 +1323,28 @@ void BanMaintenanceLoop() {
         g_loginFails.Sweep();
         // 账号文件的写入被节流了（注册路径不做文件 I/O），这里补写落盘
         FlushUsersIfDirty();
+    FlushHistoryIfDirty();
+        // 聊天记录同样被节流（最多每秒一次），这里兜底 flush
+        FlushHistoryIfDirty();
+    FlushSeenIfDirty();
+        FlushSeenIfDirty();
+        // 压实标记是 RememberHistory 置的，在这里执行 —— 它要自己拿锁
+        // 进度文件是追加写的，同一用户会攒下多行，攒够就压实
+        {
+            std::lock_guard<std::mutex> lock(g_seenMutex);
+            if (g_seenSinceCompact >= kSeenCompactEvery) {
+                g_seenSinceCompact = 0;
+                g_seenCompactDue = true;
+            }
+        }
+        if (g_seenCompactDue) {
+            g_seenCompactDue = false;
+            CompactSeen();
+        }
+        if (g_historyCompactDue) {
+            g_historyCompactDue = false;
+            CompactHistory();
+        }
         // 注册时间记录也要清：只保留窗口内的，否则长期运行时那张表无限增长
         {
             const auto now = std::chrono::steady_clock::now();
@@ -1134,7 +1366,29 @@ void BanMaintenanceLoop() {
 // 新加入的人：把之前的聊天记录和还留着的文件卡片回放给他（keepchathistory 打开时）
 void ReplayHistoryTo(const std::shared_ptr<Client>& client) {
     if (!CurrentRules().keepChatHistory) return;
-    const std::vector<std::string> lines = HistorySnapshot();
+
+    // 回放"从哪开始"取决于阅读进度：
+    //   - 新用户：进度视为 0 -> 看保留范围内的完整历史（keepchathistory 原有行为）
+    //   - 老用户且 offlinemessages > 0：只补他错过的，条数受限（离线消息）
+    //   - 老用户但 offlinemessages = 0：仍按老行为给完整历史（升级后观感不变）
+    const int offlineLimit = CurrentRules().offlineMessages;
+    unsigned long long sinceSeq = 0;
+    bool catchUp = false;
+    if (offlineLimit > 0) {
+        unsigned long long seen = 0;
+        if (LookupSeen(client->nick, &seen)) {
+            sinceSeq = seen;
+            catchUp = true;
+        }
+    }
+
+    std::vector<dchat::HistoryEntry> entries =
+        HistorySince(sinceSeq, catchUp ? static_cast<std::size_t>(offlineLimit)
+                                       : static_cast<std::size_t>(-1));
+    std::vector<std::string> lines;
+    lines.reserve(entries.size());
+    for (const dchat::HistoryEntry& entry : entries) lines.push_back(entry.line);
+    if (catchUp) RecordSeen(client->nick);  // 补完就把进度推到最新
     std::vector<std::string> offers;
     {
         std::lock_guard<std::mutex> lock(g_filesMutex);
@@ -1145,7 +1399,10 @@ void ReplayHistoryTo(const std::shared_ptr<Client>& client) {
         }
     }
     if (lines.empty() && offers.empty()) return;
-    client->SendLine(Timed("SYS", "—— 以下是加入之前的聊天记录（keepchathistory 已打开）——"));
+    client->SendLine(Timed("SYS", catchUp
+                                    ? ("—— 你不在的时候有 " + std::to_string(lines.size()) +
+                                       " 条消息 ——")
+                                    : "—— 以下是加入之前的聊天记录（keepchathistory 已打开）——"));
     for (const std::string& line : lines) client->SendLine(line);
     if (!offers.empty()) {
         client->SendLine(Timed("SYS", "房间里还留着这些文件，点卡片可以下载："));
@@ -1699,8 +1956,16 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             return true;
         }
 
-        if (words.size() != 1 || !IsValidTransferId(words[0])) {
-            client->SendLine(Timed("ERROR", "用法：FILE_GET <文件ID>"));
+        // FILE_GET <文件ID> [已有字节数]
+        // 第二个参数是断点续传用的：客户端说"我这儿已经有前 N 字节了"，服务器从 N 接着发。
+        // **参数可选**，老客户端不带就还是从头发 —— 协议向后兼容。
+        if ((words.size() != 1 && words.size() != 2) || !IsValidTransferId(words[0])) {
+            client->SendLine(Timed("ERROR", "用法：FILE_GET <文件ID> [已下载字节数]"));
+            return true;
+        }
+        unsigned long long resumeFrom = 0;
+        if (words.size() == 2 && !dchat::ParseUint64(words[1], &resumeFrom)) {
+            client->SendLine(Timed("ERROR", "断点位置不是合法数字：" + words[1]));
             return true;
         }
         const std::shared_ptr<StoredFile> file = FindStoredFile(words[0]);
@@ -1710,11 +1975,30 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             Log("download miss: " + client->nick + " -> " + words[0]);
             return true;
         }
+        // 续传起点必须落在文件范围内。超出说明客户端手里是**旧文件**的大小
+        // （同一 ID 的文件被重新上传过）。这时必须拒绝，绝不能"从头再发一遍" ——
+        // 那会让客户端把新旧两份内容拼成一个坏文件，而且它会以为下载成功了。
+        if (resumeFrom > file->size) {
+            client->SendLine(dchat::BuildLine(
+                "FILE_FAIL", file->id + " 续传位置超出文件大小（文件可能已被重新上传过）"));
+            Log("download resume rejected: " + client->nick + " offset=" +
+                std::to_string(resumeFrom) + " size=" + std::to_string(file->size));
+            return true;
+        }
         Log("download: " + client->nick + " 下载 " + file->id + "（由 " + file->owner +
-            " 上传，" + dchat::FormatBytes(file->size) + "）");
+            " 上传，" + dchat::FormatBytes(file->size) + "）" +
+            (resumeFrom > 0 ? "，从 " + dchat::FormatBytes(resumeFrom) + " 处续传" : ""));
+        // FILE_BEGIN **保持 3 格不变**。
+        // 这里原本想追加第 4 格把续传起点回给客户端，但 Windows 客户端的解析是
+        // `fields.size() != 3 -> return`（要求恰好 3 格），多一格会让它静默忽略
+        // FILE_BEGIN、下载整个失效 —— 而且不报错，极难查。
+        // 客户端本来就知道自己请求的 offset（是它自己算出来发过来的），不需要回显；
+        // "服务器是否接受这个 offset" 由 FILE_FAIL 表达。
+        // 教训：协议文档写着"加字段只追加在末尾、老客户端读到旧格数就停"，
+        // 但**实现里可能有 `!= N` 这种更严的判断**，加字段前必须去客户端确认。
         bool ok = client->SendLine(dchat::BuildLine(
             "FILE_BEGIN", file->id + " " + file->nameB64 + " " + std::to_string(file->size)));
-        for (unsigned long long offset = 0; ok && offset < file->size;
+        for (unsigned long long offset = resumeFrom; ok && offset < file->size;
              offset += dchat::kFileChunkBytes) {
             const unsigned long long remain = file->size - offset;
             const std::size_t length = remain < dchat::kFileChunkBytes
@@ -1909,6 +2193,8 @@ int main(int argc, char** argv) {
     LoadUsers();
     Log("accounts file: " + g_usersPath + "（密码以加盐哈希保存，不存明文）");
     LoadRules();
+    LoadHistory();
+    LoadSeen();
     Log("rules file: " + g_rulesPath + "（/chatrule 改完会自动写回）");
     if (!LoadOrCreateIdentityKey()) {
         Log("⚠ 身份密钥初始化失败：传输加密将不可用（客户端会退回明文）");

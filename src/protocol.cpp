@@ -113,6 +113,21 @@ bool LooksLikeTime(const std::string& text) {
     return hour < 24 && minute < 60;
 }
 
+bool ParseUint64(const std::string& text, unsigned long long* out) {
+    if (!out || text.empty()) return false;
+    unsigned long long value = 0;
+    for (char ch : text) {
+        if (ch < '0' || ch > '9') return false;  // 含正负号/空格/字母一律拒绝
+        const unsigned long long digit = static_cast<unsigned long long>(ch - '0');
+        // 溢出就失败：回绕出来的小数字会让续传位置跳到文件开头附近，
+        // 后果是"悄悄拼出一个坏文件"，比直接拒绝严重得多
+        if (value > (0xFFFFFFFFFFFFFFFFull - digit) / 10ull) return false;
+        value = value * 10ull + digit;
+    }
+    *out = value;
+    return true;
+}
+
 std::string NowTimeString() {
     const std::time_t now = std::time(nullptr);
     std::tm local{};

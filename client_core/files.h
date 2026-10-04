@@ -38,7 +38,8 @@ struct UploadJob {
 struct DownloadJob {
     std::string id;
     std::string name;
-    std::string path;  // 落到磁盘的完整路径
+    std::string path;      // 最终落到磁盘的完整路径（下完才有效）
+    std::string partPath;  // 下载中的中间文件；下完改名成 path
     unsigned long long total = 0;
     unsigned long long received = 0;
     int lastPercent = -1;
@@ -93,6 +94,13 @@ public:
 
 private:
     bool FinishDownload(DownloadJob* job, std::string* error);
+
+    /** 断点续传用的中间文件路径（按附件 ID 定，所以重试能找回上次的进度）。 */
+    std::string PartialPath(const std::string& id) const;
+
+    // 请求下载时算出的续传起点（附件 ID -> 字节数）。
+    // 服务器不回显这个值，所以客户端自己记着；FILE_BEGIN 到达时取走。
+    std::map<std::string, unsigned long long> pendingResume_;
 
     ClientConnection* connection_ = nullptr;
     std::string downloadDir_ = "dchat-downloads";

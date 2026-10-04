@@ -32,6 +32,8 @@ const RuleRange kRanges[] = {
     // ---- 2026-10 新增：注册路径防护（实测过：没有这两条时，换 IP 疯狂注册可拖死正常用户）----
     {"registerinterval", 0, 86400, "秒", "同一 IP 两次注册之间的最小间隔（0 = 不限制）"},
     {"maxaccounts", 0, 10000000, "个", "账号总数上限（0 = 不限制）"},
+    // ---- 2026-10 新增：离线消息 ----
+    {"offlinemessages", 0, 1000, "条", "登录时最多补发多少条离线消息（0 = 不补发）"},
 };
 
 const RuleRange* FindRange(const std::string& name) {
@@ -77,6 +79,7 @@ const std::vector<RuleInfo>& AllRuleInfos() {
         {"handshaketimeout", "<秒> 连上后多久必须登录，0 = 不限", false},
         {"registerinterval", "<秒> 同 IP 两次注册的最小间隔，0 = 不限", false},
         {"maxaccounts", "<个> 账号总数上限，0 = 不限", false},
+        {"offlinemessages", "<条> 登录时最多补发多少条离线消息，0 = 不补", false},
     };
     return infos;
 }
@@ -172,6 +175,10 @@ std::string DescribeRule(const ServerRules& rules, const std::string& name) {
         return "maxaccounts = " + std::to_string(rules.maxAccounts) +
                " 个（账号总数上限，0 = 不限制）";
     }
+    if (lower == "offlinemessages") {
+        return "offlinemessages = " + std::to_string(rules.offlineMessages) +
+               " 条（重新登录时最多补发多少条离线期间错过的消息，0 = 不补发）";
+    }
     return "未知规则：" + name;
 }
 
@@ -257,6 +264,7 @@ RuleChange ApplyRule(ServerRules* rules, const std::string& name, RuleAction act
     if (lower == "handshaketimeout") current = rules->handshakeTimeoutSec;
     if (lower == "registerinterval") current = rules->registerIntervalSec;
     if (lower == "maxaccounts") current = rules->maxAccounts;
+    if (lower == "offlinemessages") current = rules->offlineMessages;
 
     long long next = current;
     if (action == RuleAction::Set) {
@@ -304,6 +312,7 @@ RuleChange ApplyRule(ServerRules* rules, const std::string& name, RuleAction act
     if (lower == "handshaketimeout") rules->handshakeTimeoutSec = static_cast<int>(next);
     if (lower == "registerinterval") rules->registerIntervalSec = static_cast<int>(next);
     if (lower == "maxaccounts") rules->maxAccounts = static_cast<int>(next);
+    if (lower == "offlinemessages") rules->offlineMessages = static_cast<int>(next);
     change.message = lower + " = " + std::to_string(next) + " " + range->unit + note;
     return change;
 }
@@ -382,6 +391,8 @@ std::string SerializeRules(const ServerRules& rules) {
            "      # 同一 IP 两次注册的最小间隔（秒），0 = 不限制（公网建议 60）\n";
     out += "maxaccounts " + std::to_string(rules.maxAccounts) +
            "      # 账号总数上限，0 = 不限制（换 IP 也绕不过这道闸）\n";
+    out += "offlinemessages " + std::to_string(rules.offlineMessages) +
+           "      # 登录时最多补发多少条离线消息，0 = 不补发（要先开 keepchathistory）\n";
     return out;
 }
 
@@ -467,6 +478,7 @@ int ParseRules(const std::string& text, ServerRules* rules) {
         if (name == "handshaketimeout") parsed.handshakeTimeoutSec = static_cast<int>(number);
         if (name == "registerinterval") parsed.registerIntervalSec = static_cast<int>(number);
         if (name == "maxaccounts") parsed.maxAccounts = static_cast<int>(number);
+        if (name == "offlinemessages") parsed.offlineMessages = static_cast<int>(number);
         ++count;
     }
     // 文件里可能把两个值写成互相矛盾的样子，这里把 documentsize 夹到不超过 maxservertemp

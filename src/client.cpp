@@ -2622,7 +2622,10 @@ void HandleFileLine(const std::string& line) {
 
     if (msg.command == "FILE_BEGIN") {
         // 服务器开始发数据：把文件建在 received\ 里
-        if (fields.size() != 3) return;
+        // 用 < 3 而不是 != 3：协议约定「新增字段只追加在末尾，老客户端读到旧格数就停」，
+        // 写成 != 3 的话将来任何一次追加字段都会让这里静默失效——下载不报错地坏掉，
+        // 极难排查（这次给续传加字段时就差点踩中）。
+        if (fields.size() < 3) return;
         Item* item = FindFileItem(id);
         if (!item) return;
         unsigned long long total = 0;

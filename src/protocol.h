@@ -56,6 +56,17 @@ std::string FormatTime(int hour, int minute);  // 9:5 -> "09:05"
 bool LooksLikeTime(const std::string& text);   // 是否是 "hh:mm" 形式
 std::string NowTimeString();                   // 本机当前时间
 
+/**
+ * 解析十进制无符号整数。
+ *
+ * 为什么单独有这个函数：断点续传的起点是从网络上来的字符串，
+ * 直接 std::stoull 遇到非数字会**抛异常**（服务器上抛异常等于整条连接崩掉），
+ * 而 atoll 会把垃圾解析成 0 —— 那更糟：客户端说"我从 100MB 处续传"，
+ * 服务器理解成"从头发"，两边的写指针就此错位，最后拼出一个坏文件。
+ * 所以必须"解析失败就明确失败"，让调用方去拒绝这次请求。
+ */
+bool ParseUint64(const std::string& text, unsigned long long* out);
+
 // ---- 常用消息构造 ----
 inline std::string MakeWelcome(const std::string& serverName) { return BuildLine("WELCOME", serverName); }
 inline std::string MakeSay(const std::string& nick, const std::string& text) {

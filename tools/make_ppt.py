@@ -219,7 +219,7 @@ def slide_cover(prs):
             ["github.com/dongfang20101113/DChat   ·   69 次提交 / 9 天   ·   四端自有代码 2.27 万行（实现 + 测试 + 安卓）"],
             size=12, color=RGBColor(0x7E, 0x9B, 0xC6), spacing=2)
     textbox(slide, 1.15, 6.78, 11, 0.5,
-            ["2115 项测试全过   ·   端到端加密   ·   压测与攻击实测防护生效   ·   内存稳定 10 MB"],
+            ["2231 项测试全过   ·   端到端加密   ·   压测与攻击实测防护生效   ·   内存稳定 10 MB"],
             size=12, color=RGBColor(0x7E, 0x9B, 0xC6), spacing=0)
     return slide
 
@@ -243,7 +243,7 @@ def slide_overview(prs):
         "· 有账号体系：PBKDF2 加盐哈希，不存明文",
         "· 有公网加固：连接数上限、防爆破、握手超时、限速",
         "· 有 TOFU：记住服务器指纹，指纹变了会明确警告",
-        "· 有测试：四端合计 2115 项检查（C++ 1787 + 安卓 328）",
+        "· 有测试：四端合计 2231 项检查（C++ 1903 + 安卓 328）",
     ], accent=GREEN, fill=GREEN_L, body_size=13)
 
     card_text(slide, 7.0, 3.9, 5.7, 2.45, "代码规模（实测，不含 build 产物）", [
@@ -451,8 +451,8 @@ def slide_verification(prs):
     slide = add_slide(prs, "怎么证明它是对的", "这个项目里「验证」和「写代码」花的力气差不多")
     rows = [
         ["验证手段", "规模 / 结果"],
-        ["Windows 端 16 个测试程序", "966 项检查，全部通过；构建 0 告警"],
-        ["Linux 端 10 个测试程序", "785 项检查，全部通过"],
+        ["Windows 端 17 个测试程序", "1025 项检查，全部通过；构建 0 告警"],
+        ["Linux 端 12 个测试程序", "892 项检查，全部通过"],
         ["安卓端单元测试", "328 个测试、19 个测试类，全部通过"],
         ["密码学测试向量", "HKDF 对 RFC 5869、AES-GCM 对 NIST、ECDH 固定向量、与 Kotlin 跨语言比对"],
         ["四端互通实测", "四端同服务器互相收发；macOS ↔ Windows / Linux / Android 双向互发、附件互传"],
@@ -617,13 +617,14 @@ def slide_reg_defense(prs):
     # 规则表压缩成 5 行：原先 7 行 + 表头会溢出到幻灯片外（最后一行被切）。
     # 合并成同类项既省高度，读起来也更像"旋钮分类"而不是一堆散条目。
     rule_rows = [
-        ["规则（共 17 条，全部是运行时参数）", "作用", "默认"],
+        ["规则（共 18 条，全部是运行时参数）", "作用", "默认"],
         ["maxconns / maxconnsperip", "连接总数 / 同一 IP 上限", "0"],
         ["loginfails / handshaketimeout", "登录失败封禁 / 握手超时", "0 / 30 秒"],
         ["registerinterval / maxaccounts", "注册冷却 / 账号总量上限（本次新增）", "0"],
         ["uploadrate / downloadrate / chatinterval", "上传下载限速 / 发言间隔", "0"],
         ["maxtextlen / maxtextlines / documentsize / maxservertemp",
          "文本长度 / 行数 / 单文件 / 暂存总量", "0 / 64MB / 1024MB"],
+        ["offlinemessages", "重登录时最多补发多少条离线消息（本次新增）", "0（不补发）"],
     ]
     add_table(slide, 0.62, 5.42, 12.1, 1.55, rule_rows, col_widths=[4.9, 5.6, 1.6],
               font_size=10)
@@ -632,7 +633,7 @@ def slide_reg_defense(prs):
 
 # 【已并入其它页，不再单独装配】  —— 并入 slide_reg_defense
 def slide_rules(prs):
-    slide = add_slide(prs, "可调防护规则", "17 条规则全部是运行时参数：改一行、重启即生效")
+    slide = add_slide(prs, "可调防护规则", "18 条规则全部是运行时参数：改一行、重启即生效")
     rows = [
         ["规则", "作用", "默认值"],
         ["maxconns", "同时连接总数上限", "0（不限）"],
@@ -652,6 +653,50 @@ def slide_rules(prs):
 
 
 
+
+
+
+def slide_v2(prs):
+    """三项新能力：历史落盘 / 离线消息 / 断点续传。"""
+    slide = add_slide(prs, "补上三项能力：历史落盘 · 离线消息 · 断点续传",
+                      "都是「以前直接丢掉」的东西：重启后记录没了、你不在线消息没了、断了要重下")
+    card_text(slide, 0.62, 1.25, 3.95, 2.9, "① 聊天历史落盘", [
+        "· 原来只在内存（std::deque），重启即丢",
+        "· 改成追加写 + 上限压实 + 每秒节流 flush",
+        "· 崩溃写了一半的那行会被丢弃（宁可少一条，",
+        "   不能凭空多一条残缺消息）",
+        "· 序号持久化：离线补发靠它判断谁还没看过",
+    ], accent=BLUE, fill=BLUE_L, title_size=13, body_size=10.5)
+    card_text(slide, 4.72, 1.25, 3.95, 2.9, "② 离线消息", [
+        "· 每用户记「读到第几条」，存在 dchat-seen.txt",
+        "· 重新登录只补他错过的，条数由规则限制",
+        "· 与 keepchathistory 不重复：有进度的只补差额，",
+        "   新用户仍看完整历史",
+        "· 默认关闭，升级后行为完全不变",
+    ], accent=GREEN, fill=GREEN_L, title_size=13, body_size=10.5)
+    card_text(slide, 8.82, 1.25, 3.95, 2.9, "③ 文件断点续传", [
+        "· FILE_GET <id> [已有字节数]，服务器从那儿接着发",
+        "· 客户端先写 .part 中间文件，下完才改名",
+        "· 起点对不上就丢弃重来——绝不硬续",
+        "   （那会拼出大小对、内容坏的文件）",
+        "· 超出文件大小直接拒绝，不从头再发一遍",
+    ], accent=AMBER, fill=AMBER_L, title_size=13, body_size=10.5)
+    card_text(slide, 0.62, 4.3, 12.1, 1.5, "实测（真机，不是估算）", [
+        "· 历史：kill -9 强杀后重启，记录仍在（loaded 1 history line …末序号 1）；"
+        "手工塞入半行记录被正确丢弃",
+        "· 离线：A 下线期间 B 发两条，A 重登收到「你不在的时候有 2 条消息」，"
+        "且不重复自己在线时那条；默认规则下不补发",
+        "· 续传：64 KB 文件下到 46.0 KB 时掐断，重连后服务端日志 "
+        "「从 46.0 KB 处续传」，最终文件 md5 与源文件完全一致",
+    ], accent=NAVY, fill=BLUE_L, title_size=13, body_size=11)
+    card_text(slide, 0.62, 5.95, 12.1, 1.3, "一个差点造成事故的兼容性问题（值得记）", [
+        "· 我原本让服务器在 FILE_BEGIN 后追加一格回显续传起点，看起来完全合理",
+        "· 但 Windows 客户端写的是 fields.size() != 3 —— 要求恰好 3 格，",
+        "多一格会让它静默忽略 FILE_BEGIN、下载整个失效且不报错",
+        "· 改成不回显（客户端自己记着请求的 offset），并顺手把那个 != 3 放宽成 < 3 —— "
+        "否则下一个追加字段的人还会踩",
+    ], accent=RED, fill=RED_L, title_size=13, body_size=11)
+    return slide
 
 
 def slide_interop(prs):
@@ -868,7 +913,7 @@ def slide_end(prs):
 
     textbox(slide, 1.15, 5.2, 11, 1.8, [
         "github.com/dongfang20101113/DChat",
-        "Windows / 安卓 / Linux / macOS 四端 · 端到端加密 · 2115 项测试检查",
+        "Windows / 安卓 / Linux / macOS 四端 · 端到端加密 · 2231 项测试检查",
         "实测：连接上限精确生效 · 握手超时 40/40 断开 · 暴破 12/12 拦下 · 内存稳定 10 MB",
         "",
         "欢迎试用、提问题、或者直接拿去改",
@@ -890,6 +935,7 @@ def main():
     slide_verification(prs)     # 9  怎么证明它是对的
     slide_sec_design(prs)       # 10 纵深防御（并入压测实测结果）
     slide_chart_conn(prs)       # 11 攻击对比曲线（连接上限 + 超时，两图并排）
+    slide_v2(prs)              # 补上的三项能力
     slide_reg_defense(prs)      # 12 注册路径：发现缺口 -> 修复 -> 规则（并入可调规则）
     slide_perf_boundary(prs)    # 13 性能实测与安全边界
     slide_interop(prs)          # 14 四端互通：全部组合实测通过

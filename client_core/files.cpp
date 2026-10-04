@@ -25,6 +25,14 @@ std::string BaseName(const std::string& path) {
     return pos == std::string::npos ? path : path.substr(pos + 1);
 }
 
+/** 文件大小；不存在或不是普通文件时返回 0。 */
+unsigned long long FileSizeOrZero(const std::string& path) {
+    struct stat info {};
+    if (::stat(path.c_str(), &info) != 0) return 0;
+    if (!S_ISREG(info.st_mode)) return 0;
+    return static_cast<unsigned long long>(info.st_size);
+}
+
 bool EnsureDir(const std::string& dir) {
     struct stat info {};
     if (::stat(dir.c_str(), &info) == 0) return S_ISDIR(info.st_mode);
@@ -83,13 +91,32 @@ std::string FileTransfers::ServerIdFor(const std::string& localId) const {
     return it == serverIds_.end() ? std::string() : it->second;
 }
 
+std::string FileTransfers::PartialPath(const std::string& id) const {
+    // 只保留字母数字：ID 是服务器给的（形如 F1），但万一以后变了也不能让它
+    // 通过路径分隔符跑到别的目录去 —— 这是"收别人的字符串当文件名"的经典坑。
+    std::string safe;
+    for (char ch : id) {
+        if ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) {
+            safe.push_back(ch);
+        }
+    }
+    if (safe.empty()) safe = "unknown";
+    return downloadDir_ + "/.dchat-part-" + safe;
+}
+
 bool FileTransfers::RequestDownload(const std::string& id, std::string* error) {
     if (id.empty()) {
         if (error) *error = "附件 ID 是空的";
         return false;
     }
+    // 断点续传：上次没下完的话，磁盘上留着 `.part`，从它的长度接着要。
+    // 没有 `.part`（或长度为 0）就还是从头下 —— 服务器端 offset 是可选的。
+    const unsigned long long have = FileSizeOrZero(PartialPath(id));
+    // 记下来：服务器不会在 FILE_BEGIN 里回显这个值，FILE_BEGIN 到达时要靠它定位写指针
+    pendingResume_[id] = have;
+    const std::string request = have > 0 ? (id + " " + std::to_string(have)) : id;
     // 服务器收到 FILE_GET 就会回 FILE_BEGIN，之后的数据由 HandleLine 落盘
-    if (!connection_->SendLine(BuildLine("FILE_GET", id))) {
+    if (!connection_->SendLine(BuildLine("FILE_GET", request))) {
         if (error) *error = "发不出 FILE_GET（连接可能已断开）";
         return false;
     }
@@ -173,6 +200,16 @@ bool FileTransfers::FinishDownload(DownloadJob* job, std::string* error) {
         if (error) {
             *error = "文件不完整（还差 " + FormatBytes(job->total - job->received) + "）";
         }
+        // **保留 .part**：下次 RequestDownload 会从它的长度续上，不用白下一遍
+        job->failed = true;
+        return false;
+    }
+    // 收齐了才改名到最终位置。重名时取"名字 (2).扩展名"，和 Windows 端一致。
+    job->path = UniquePath(downloadDir_, job->name);
+    if (::rename(job->partPath.c_str(), job->path.c_str()) != 0) {
+        if (error) {
+            *error = "保存失败（改名）：" + std::string(std::strerror(errno));
+        }
         job->failed = true;
         return false;
     }
@@ -255,18 +292,53 @@ bool FileTransfers::HandleLine(const std::string& line,
             return true;
         }
 
+        // 续传起点用**我们自己请求时记下的值**，而不是服务器回显的 ——
+        // FILE_BEGIN 保持 3 格不变，多一格会弄坏老客户端（见服务端那段注释）。
+        unsigned long long resumeFrom = 0;
+        {
+            const auto pending = pendingResume_.find(fields[0]);
+            if (pending != pendingResume_.end()) {
+                resumeFrom = pending->second;
+                pendingResume_.erase(pending);
+            }
+        }
+        if (resumeFrom > total) resumeFrom = 0;  // 不合法就当从头下，别信这个数
+
+        const std::string partPath = PartialPath(fields[0]);
+        const unsigned long long existing = FileSizeOrZero(partPath);
+        if (existing != resumeFrom) {
+            // 磁盘上的 `.part` 和服务器说的起点对不上（被外部改过、或是上一个文件的残留）。
+            // **不能硬着头皮往 existing 处续写** —— 那样拼出来的文件大小是对的、
+            // 内容是坏的，而且客户端会报"下载成功"。丢掉重来，并且重新请求一次完整下载。
+            progress("续传起点不一致，重新完整下载：" + name);
+            ::unlink(partPath.c_str());
+            pendingResume_[fields[0]] = 0;
+            connection_->SendLine(BuildLine("FILE_GET", fields[0]));
+            return true;  // 不注册 job：这轮旧流的数据会被忽略，等新的 FILE_BEGIN
+        }
+
         auto job = std::make_shared<DownloadJob>();
         job->id = fields[0];
         job->name = name;
         job->total = total;
-        job->path = UniquePath(downloadDir_, name);
-        job->fd = ::open(job->path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        job->partPath = partPath;
+        job->received = resumeFrom;
+        // **不带 O_TRUNC**：续传要保留已有内容
+        job->fd = ::open(partPath.c_str(), O_WRONLY | O_CREAT, 0600);
         if (job->fd < 0) {
-            progress("打不开要保存的文件：" + job->path + "（" + std::strerror(errno) + "）");
+            progress("打不开要保存的文件：" + partPath + "（" + std::strerror(errno) + "）");
+            return true;
+        }
+        if (resumeFrom > 0 && ::lseek(job->fd, static_cast<off_t>(resumeFrom), SEEK_SET) < 0) {
+            ::close(job->fd);
+            progress("定位续传位置失败：" + name);
             return true;
         }
         downloads_[job->id] = job;
-        progress("开始接收 " + name + "（" + FormatBytes(total) + "）");
+        progress(resumeFrom > 0
+                     ? ("继续接收 " + name + "（已 " + FormatBytes(resumeFrom) + " / " +
+                        FormatBytes(total) + "）")
+                     : ("开始接收 " + name + "（" + FormatBytes(total) + "）"));
         return true;
     }
 
