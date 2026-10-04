@@ -1419,10 +1419,67 @@ void CommandLoop() {
 }
 
 // 每秒清理一次到期封禁
+// ---- 定时公告：写文件即广播 ----
+// 协议是**行式**的，所以只取第一行非空内容；正文里带换行会把整条命令劈成两条，
+// 后面那条多半会被当成非法命令（甚至被别的客户端解析成奇怪的东西）。
+std::string g_announcePath = "dchat-announce.txt";
+constexpr std::size_t kMaxAnnounceChars = 300;
+
+// 读一行公告文件并广播；没有文件/内容为空就什么都不做。
+// 由 BanMaintenanceLoop 每秒调用（那里本来就有个 1 秒周期，不另开线程）。
+void PollAnnounceFile() {
+    std::error_code ec;
+    if (!std::filesystem::exists(g_announcePath, ec)) return;
+
+    std::ifstream in(g_announcePath, std::ios::binary);
+    std::string text;
+    if (in) {
+        std::getline(in, text);          // 只取第一行
+        in.close();
+    }
+    // 剥掉 UTF-8 BOM：在 Windows 上用记事本/PowerShell 存过这个文件就会带上，
+    // 不剥的话它会作为正文第一个字符被播出去（客户端显示成一个方块）。
+    if (text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF &&
+        static_cast<unsigned char>(text[1]) == 0xBB &&
+        static_cast<unsigned char>(text[2]) == 0xBF) {
+        text.erase(0, 3);
+    }
+    // 去掉行尾的 \r（Windows 上编辑过这个文件时会有）和首尾空白
+    while (!text.empty() && (text.back() == '\r' || text.back() == ' ' || text.back() == '\t')) {
+        text.pop_back();
+    }
+    const std::size_t begin = text.find_first_not_of(" \t");
+    if (begin == std::string::npos) {
+        text.clear();
+    } else {
+        text = text.substr(begin);
+    }
+    if (text.size() > kMaxAnnounceChars) text = dchat::Utf8Truncate(text, kMaxAnnounceChars);
+    if (text.empty()) {
+        // 空文件：清掉就行，别重复读
+        std::filesystem::remove(g_announcePath, ec);
+        return;
+    }
+
+    Log("announce (from file): " + text);
+    const std::string announce = Timed("ANNOUNCE", text);
+    Broadcast(announce);         // 全服公告：客户端会大字居中显示
+    RememberHistory(announce);   // 和 /say 一样，也进聊天记录
+
+    // 播完就删；删不掉（权限/占用）就清空，**否则每秒都会重播一遍**。
+    // CronJob 那边是"先写临时文件再改名"，所以这里不会读到写了一半的内容。
+    std::filesystem::remove(g_announcePath, ec);
+    if (std::filesystem::exists(g_announcePath, ec)) {
+        std::ofstream clear(g_announcePath, std::ios::binary | std::ios::trunc);
+        Log("warn: cannot remove " + g_announcePath + ", truncated instead");
+    }
+}
+
 void BanMaintenanceLoop() {
     for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         ExpireBans();
+        PollAnnounceFile();  // 定时公告：cron 写文件，这里读到就广播
         {  // 暂存的文件也会过期，顺手清一下
             std::lock_guard<std::mutex> lock(g_filesMutex);
             for (const std::string& line : ExpireFilesLocked()) {
