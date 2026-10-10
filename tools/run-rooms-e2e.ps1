@@ -224,6 +224,16 @@ try {
 
     # ---- 阶段 12：重启后房间、历史、设置都还在 ----
     Write-Host "[12] 重启后房间与历史都还在"
+    # bob 在阶段 11 已经退群了，所以这里他本来就不该在成员表里。要验"重启后**成员**
+    # 也能恢复"，得先让他重新进来 —— 只验群主的话测不出多成员恢复，而部署清单
+    # 第 4 条要的正是"群、历史、群设置都还在"。
+    $null = Wait-Probe (Start-Probe 'b7join' 'bob' 'pw-bob-1' 'login' @(
+        'GJOIN mygroup', '@drain 600')) 'b7join'
+    $null = Wait-Probe (Start-Probe 'a7ok' 'alice' 'pw-alice-1' 'login' @(
+        'GREQ mygroup bob ok', '@drain 600')) 'a7ok'
+    $alicePre = Wait-Probe (Start-Probe 'a7pre' 'alice' 'pw-alice-1' 'login' @(
+        'ROOM mygroup', '@drain 900')) 'a7pre'
+    Check (Contains $alicePre 'RMEMBERS mygroup bob') '重启【前】成员表里就有 bob' 'a7pre'
     Stop-Process -Id $serverProc.Id -Force
     Start-Sleep -Milliseconds 900
     $serverProc = Start-Process -FilePath $server -ArgumentList @('-p', "$Port", '-b', '127.0.0.1') `
@@ -238,6 +248,10 @@ try {
     Check (Contains $alice8 'mygroup bob 大家好') '历史里是群消息（房间号对得上）' 'a8'
     Check (Contains $alice8 'RSET mygroup listed true') '重启后群设置（公开）没丢' 'a8'
     Check (Contains $alice8 'RSET mygroup name') '重启后群名没丢' 'a8'
+    # 成员表也要能恢复：只恢复房间和设置、把成员弄丢了的话，bob 就进不去自己的群了
+    # （部署清单第 4 条"重启后群、历史、群设置都还在"里最容易被漏掉的一项）
+    Check (Contains $alice8 'RMEMBERS mygroup alice owner') '重启后成员表还在（群主）' 'a8'
+    Check (Contains $alice8 'RMEMBERS mygroup bob') '重启后成员表里 bob 还在' 'a8'
 
     Write-Host "[13] 落盘的路径"
     Check (Test-Path (Join-Path $work 'dchat-rooms.txt')) '房名单落盘 dchat-rooms.txt'
