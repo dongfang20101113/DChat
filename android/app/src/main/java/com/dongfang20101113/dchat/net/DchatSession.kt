@@ -8,7 +8,16 @@ import com.dongfang20101113.dchat.data.SettingsStore
 import com.dongfang20101113.dchat.protocol.AttachmentKind
 import com.dongfang20101113.dchat.protocol.ChatColor
 import com.dongfang20101113.dchat.protocol.FILE_CHUNK_BYTES
+import com.dongfang20101113.dchat.protocol.GroupHit
+import com.dongfang20101113.dchat.protocol.HALL_ID
+import com.dongfang20101113.dchat.protocol.JoinMode
+import com.dongfang20101113.dchat.protocol.RoomIdError
+import com.dongfang20101113.dchat.protocol.RoomLine
+import com.dongfang20101113.dchat.protocol.RoomPrefs
 import com.dongfang20101113.dchat.protocol.ServerLine
+import com.dongfang20101113.dchat.protocol.base64EncodeString
+import com.dongfang20101113.dchat.protocol.buildLine
+import com.dongfang20101113.dchat.protocol.normalizeGroupId
 import com.dongfang20101113.dchat.protocol.VoiceMessage
 import com.dongfang20101113.dchat.protocol.base64Encode
 import com.dongfang20101113.dchat.protocol.copyWithLimit
@@ -29,7 +38,11 @@ import com.dongfang20101113.dchat.ui.ChatItem
 import com.dongfang20101113.dchat.ui.ChatState
 import com.dongfang20101113.dchat.ui.FileState
 import com.dongfang20101113.dchat.ui.Stage
+import com.dongfang20101113.dchat.ui.clearRoomHistory
 import com.dongfang20101113.dchat.ui.reduce
+import com.dongfang20101113.dchat.ui.reduceRoom
+import com.dongfang20101113.dchat.ui.switchRoom
+import com.dongfang20101113.dchat.ui.updatePrefs
 import com.dongfang20101113.dchat.voice.AndroidVoicePlayer
 import com.dongfang20101113.dchat.voice.AndroidVoiceRecorder
 import com.dongfang20101113.dchat.voice.PlaybackAction
@@ -151,6 +164,32 @@ object DchatSession {
 
         scope.launch {
             connection.lines.collect { raw ->
+                // ---- 先试多会话行 ----
+                //
+                // 顺序很关键：**必须先试 [RoomLine]**。反过来的话，
+                // ROOMLIST / RMSG / RINFO 这些会被 [ServerLine] 解析成 Unknown，
+                // 然后当成"未知命令"原样显示在聊天记录里 —— 用户会看到一堆
+                // 协议原文，而群聊功能看起来像坏的。
+                //
+                // 老命令（SAY / FILE_* …）不在 RoomLine 的命令集合里，
+                // 所以老路径一个字节都没变。
+                val roomLine = RoomLine.parse(raw)
+                if (roomLine != null) {
+                    _state.value = _state.value.reduceRoom(roomLine, _state.value.selfNick)
+                    val fileOffer = (roomLine as? RoomLine.RoomFileOffer)?.offer
+                    if (fileOffer != null) {
+                        val roomItems = _state.value.roomItems[roomLine.roomId].orEmpty()
+                        val item = (roomItems.lastOrNull()
+                            ?: _state.value.items.lastOrNull()) as? ChatItem.FileItem
+                        // 贴纸和语音自动下、普通文件不自动下 —— 和下面那条走**同一个**
+                        // shouldAutoDownload 判断，不另写一份
+                        if (item?.fileId == fileOffer.fileId && item.shouldAutoDownload) {
+                            requestDownload(fileOffer.fileId)
+                        }
+                    }
+                    return@collect
+                }
+
                 val line = ServerLine.parse(raw, _state.value.selfNick)
                 handleFileSideEffects(line)
                 _state.value = _state.value.reduce(line, nowTime())
@@ -280,6 +319,7 @@ object DchatSession {
         _state.value = _state.value.copy(loggingIn = true, authError = null)
         scope.launch {
             if (!connection.send(makeLogin(nick, password))) {
+            declareRooms()
                 _state.value = _state.value.copy(loggingIn = false, authError = "发送失败，连接可能已断开")
             }
         }
@@ -290,6 +330,7 @@ object DchatSession {
         scope.launch {
             // 服务端注册成功后**不会自动登录**，桌面端也是注册完再发一次 LOGIN
             if (!connection.send(makeRegister(nick, password))) {
+            declareRooms()  // 老服务端会忽略它，什么都不会发生
                 _state.value = _state.value.copy(loggingIn = false, authError = "发送失败，连接可能已断开")
             }
         }
@@ -298,6 +339,174 @@ object DchatSession {
     // ------------------------------------------------------------------
     // 聊天
     // ------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // 多会话（私聊 / 群聊）
+    // -----------------------------------------------------------------------
+
+    /** 本地设置的落盘（SharedPreferences 里的**一行一房间**，和桌面端同一个格式）。 */
+    private val roomPrefsFile by lazy {
+        appContext.getSharedPreferences("dchat_room_prefs", Context.MODE_PRIVATE)
+    }
+
+    /** 启动时读回来的本地设置，等会话列表到了再套上去。 */
+    private var savedPrefs: Map<String, RoomPrefs> = emptyMap()
+
+    private fun loadSavedRoomPrefs() {
+        savedPrefs = RoomPrefs.parseFile(
+            roomPrefsFile.getString("prefs", "").orEmpty()
+        )
+    }
+
+    private fun saveRoomPrefs() {
+        val text = _state.value.rooms.joinToString("\n") {
+            RoomPrefs.serialize(it.id, it.prefs)
+        }
+        roomPrefsFile.edit().putString("prefs", text).apply()
+    }
+
+    /**
+     * 声明多会话能力。
+     *
+     * 服务端会回一条 `FEATURES` 确认；没有确认、或者确认里没有 rooms1，
+     * 就说明对面是旧版服务端 —— 那时界面会一直停在"只有大厅"，
+     * 而不是发一堆对方看不懂的命令然后什么都不发生。
+     */
+    private fun declareRooms() {
+        scope.launch { connection.send(buildLine("FEATURES", RoomLine.ROOMS_CAPABILITY)) }
+    }
+
+    /** 切到某个会话。记录区与未读由状态层**对调**（不是清空重填），不走网络。 */
+    fun selectRoom(roomId: String) {
+        _state.value = _state.value.switchRoom(roomId)
+        if (_state.value.roomsEnabled) sendRoomCommand("ROOM", roomId)
+    }
+
+    /** 发一条多会话命令（群设置、审核、踢人、建群、搜索……）。 */
+    fun sendRoomCommand(command: String, rest: String = "") {
+        scope.launch { connection.send(buildLine(command, rest)) }
+    }
+
+    /**
+     * 改某个会话的**本地**设置（免打扰 / 置顶 / 重要提醒 / 本地缓存）。
+     *
+     * ⚠️ **永不上传**：服务端一行都不会读到它。免打扰是"我这台设备想不想被打扰"，
+     * 不是群的属性。
+     */
+    fun updateRoomPrefs(roomId: String, update: (RoomPrefs) -> RoomPrefs) {
+        _state.value = _state.value.updatePrefs(roomId, update)
+        saveRoomPrefs()
+    }
+
+    /** 删除某个会话的**本地**聊天记录。服务端那份不动 —— 那是"群的历史"，不是"我的历史"。 */
+    fun clearRoomHistory(roomId: String) {
+        _state.value = _state.value.clearRoomHistory(roomId)
+    }
+
+    /**
+     * 新建群聊。
+     *
+     * ID 先在本地校验一遍：不合规的 ID 让服务器拒也行，但本地判能**立刻**告诉
+     * 用户是哪个字符不行，不用等一个来回。
+     *
+     * @return null 表示已发出；否则是给用户看的原因
+     */
+    fun createGroup(rawId: String, name: String): String? {
+        val (id, error) = normalizeGroupId(rawId.trim())
+        if (error != RoomIdError.NONE) return error.message
+        if (name.isBlank()) return "群聊名称不能为空"
+        sendRoomCommand("GCREATE", "$id ${base64EncodeString(name.trim())}")
+        return null
+    }
+
+    fun searchGroups(keyword: String) {
+        val text = keyword.trim()
+        if (text.isEmpty()) return
+        _state.value = _state.value.copy(groupHits = emptyList(), groupSearching = true)
+        sendRoomCommand("GSEARCH", base64EncodeString(text))
+    }
+
+    fun joinGroup(roomId: String) = sendRoomCommand("GJOIN", roomId)
+
+    /** 打开与某人的私聊（不存在则由服务端建立）。 */
+    fun openDirectMessage(nick: String) {
+        if (nick.isBlank()) return
+        sendRoomCommand("DM", nick.trim())
+    }
+
+    fun blockUser(nick: String) = sendRoomCommand("BLOCK", nick)
+    fun unblockUser(nick: String) = sendRoomCommand("UNBLOCK", nick)
+    fun loadBlockList() = sendRoomCommand("BLOCKS")
+    fun loadJoinRequests(roomId: String) = sendRoomCommand("GREQS", roomId)
+
+    /**
+     * 会话设置页里的**动作类**操作，集中在一处分发。
+     *
+     * 为什么不让界面直接拼命令：界面一旦开始拼协议，协议就有两个地方在写了
+     * （另一个是这里），而它们迟早会不一致 —— 症状是"某个按钮点了没反应"，
+     * 而且只在那一个按钮上出现，最难查。
+     * 界面只说"我要干什么"，怎么发是这一层的事。
+     *
+     * @param arg    动作名：leave / delete / clearlocal / block / kick /
+     *               promote / demote / approve / reject
+     * @param target 动作的对象：成员昵称，或者申请人昵称
+     */
+    fun roomAction(roomId: String, arg: String, target: String = "") {
+        when (arg) {
+            "leave" -> sendRoomCommand("GLEAVE", roomId)
+            "delete" -> sendRoomCommand("GDELETE", roomId)
+            "clearlocal" -> clearRoomHistory(roomId)
+            "block" -> {
+                val peer = _state.value.rooms.firstOrNull { it.id == roomId }?.title ?: return
+                blockUser(peer)
+            }
+            "kick" -> if (target.isNotEmpty()) sendRoomCommand("GKICK", "$roomId $target")
+            "promote" ->
+                if (target.isNotEmpty()) sendRoomCommand("GMEMBER", "$roomId $target admin")
+            "demote" ->
+                if (target.isNotEmpty()) sendRoomCommand("GMEMBER", "$roomId $target member")
+            // 审核：顺手把本地的待审列表也挪掉。不等服务器回执，是因为回执只是一条
+            // 提示、不带"这条申请已经没了"的明确语义 —— 而用户点了同意之后那条
+            // 还挂在列表里，他会以为没点上，然后反复点。
+            "approve" -> if (target.isNotEmpty()) {
+                sendRoomCommand("GREQ", "$roomId $target ok")
+                dropPending(roomId, target)
+            }
+            "reject" -> if (target.isNotEmpty()) {
+                sendRoomCommand("GREQ", "$roomId $target no")
+                dropPending(roomId, target)
+            }
+        }
+    }
+
+    /**
+     * 改一条**管理员设置项**。
+     *
+     * 群名和公告可能含空格，走 Base64（和服务端的约定一致）；其余项是不含空格的纯值。
+     * 这个"哪些项要编码"的判断只写在这里一处 —— 界面各写一遍的话，
+     * 迟早有一个按钮发出的值被服务端当成乱码。
+     */
+    fun sendRoomSetting(roomId: String, key: String, value: String) {
+        val encoded = if (key == "name" || key == "announcement") {
+            base64EncodeString(value)
+        } else {
+            value.trim()
+        }
+        sendRoomCommand("GSET", "$roomId $key $encoded")
+    }
+
+    /** 往记录区写一条本地提示（不联网）。用于"建群 ID 不合法"这类**本地**就能判定的错误。 */
+    fun postNotice(text: String) {
+        _state.value = _state.value.reduce(ServerLine.Sys("", text), nowTime())
+    }
+
+    private fun dropPending(roomId: String, nick: String) {
+        _state.value = _state.value.copy(
+            rooms = _state.value.rooms.map {
+                if (it.id == roomId) it.copy(pending = it.pending - nick) else it
+            },
+        )
+    }
 
     fun sendMessage(text: String) {
         val trimmed = text.trim()

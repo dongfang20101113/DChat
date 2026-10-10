@@ -53,7 +53,8 @@
 #include "chat_color.h"       // 彩色文字代码（#rrggbb / &a）
 #include "color_picker.h"    // 取色盘（色相环 + 饱和度/明度方块）
 #include "picker_dialog.h"   // 取色盘窗口
-#include "ui_layout.h"       // 菜单栏 / 状态条 / 输入行的几何与图标
+#include "ui_layout.h"       // 菜单栏 / 状态条 / 输入行 / 会话列表的几何与图标
+#include "room.h"            // 多会话：房间 ID 规则、本地设置（免打扰/置顶/本地缓存）
 #include "voice_notes.h"     // 语音消息：录音、播放、判定
 
 namespace {
@@ -66,6 +67,7 @@ constexpr UINT WM_APP_PREVIEW = WM_APP + 5;    // 缩略图加载完了
 constexpr UINT WM_APP_FILEOPEN = WM_APP + 6;   // 点了缩略图 -> 用默认程序打开
 constexpr UINT WM_APP_VOICECLICK = WM_APP + 7;  // 点到了语音气泡 -> 播放/暂停
 constexpr UINT_PTR kRecordTimerId = 1;          // 录音计时（每 200ms 刷一次界面）
+constexpr UINT_PTR kStateTimerId = 2;           // 自动化测试的状态导出（见 WriteClientState）
 
 // 给客户端窗口发 WM_COPYDATA 时用的标识（脚本/其他程序可以借此让它发送文件）
 constexpr ULONG_PTR kFileSendMagic = 0x43484131;  // 'CHA1'
@@ -132,6 +134,163 @@ int g_scrollTop = 0;
 int g_contentHeight = 0;
 bool g_stickToBottom = true;
 RECT g_inputPill{0, 0, 0, 0};  // 输入框的胶囊背景（父窗口绘制，输入框内嵌在里面）
+
+// ---------------- 多会话（私聊 / 群聊）----------------
+//
+// ## 为什么记录区还是只有一个
+//
+// 直觉上"每个会话一个记录区"更干净，但那要把**气泡排版、滚动条、命中测试、
+// 文件卡片状态机、语音播放状态**全部改成按会话实例化 —— 而这些逻辑绝大部分和
+// 会话无关（一条消息怎么排、卡片怎么画，换个会话完全一样）。
+//
+// 所以这里用**换内容不换壳**：`g_items` 永远就是"当前显示的那个会话的内容"，
+// 切换会话时把它和旧会话存的那份对调一下，再加上滚动位置。绘制代码一行都不用动。
+// 代价是"非当前会话来了消息"要单独走一条 AppendToSession 路径 —— 那是几十行，
+// 比改五处绘制逻辑便宜得多，也安全得多。
+struct SessionMember {
+    std::string nick;
+    std::string display;  // 群昵称（空 = 用账号名）
+    std::string role;     // owner / admin / member
+};
+
+struct Session {
+    std::string id;
+    std::string kind = "group";  // hall / group / dm
+    std::string title;           // 服务端下发的显示名（群聊是群名，私聊是**对方**昵称）
+    int members = 0;
+    int maxMembers = 0;
+    std::string owner;                 // 群主（RINFO 第 4 格；大厅和私聊为空）
+    std::string myRole = "member";
+    std::string joinMode = "approval";
+    bool listed = false;
+    std::vector<std::string> pending;  // 待审的入群申请（GREQ 收到的）
+
+    // ---- 群管理员可设项：这里只是**本地镜像，改要走服务端** ----
+    std::string name;            // 群名（RSET name，Base64 解出来的）
+    std::string announcement;    // 群公告
+    unsigned long long cacheMaxMb = 0;
+    bool importantNotice = true;
+    std::vector<SessionMember> memberList;
+
+    // ---- 本地设置：**永不上传** ----
+    // 这一行是"管理员设置"和"成员设置"的分界线。服务端一行都不会读到它。
+    dchat::RoomPrefs prefs;
+
+    // ---- 记录区内容与滚动位置（切走时存回来）----
+    std::deque<Item> items;
+    int scrollTop = 0;
+    bool stickToBottom = true;
+    std::wstring draft;          // 每个会话各自的草稿：切走再切回来不丢字
+
+    int unread = 0;
+    bool unreadImportant = false;  // 未读里有没有 @我 / @全体成员
+};
+
+std::vector<Session> g_sessions;
+int g_currentSession = 0;
+bool g_roomsEnabled = false;    // 服务端确认过 rooms1（没有就退回"只有大厅"的老界面）
+bool g_roomsDeclared = false;   // 已经向服务端声明过，避免每次登录重复发
+int g_sessionScroll = 0;        // 左栏滚过去多少像素
+int g_sessionHover = -1;
+
+/** 群搜索结果（GHIT 收进来的，等 GHIT_END 再一次性显示）。 */
+struct GroupHit {
+    std::string id;
+    std::string name;
+    int members = 0;
+    int maxMembers = 0;
+    std::string joinMode;
+};
+std::vector<GroupHit> g_groupHits;
+bool g_groupSearchDone = false;
+std::vector<std::string> g_blockList;  // 黑名单（GBLOCKS 收进来的）
+bool g_blockListDone = false;
+// 这一轮 ROOMLIST 里出现过的房间 ID。收完（ROOMLIST_END）拿它跟本地的群聊对一遍，
+// 本地有、名单里没有的，说明我已经不在那个群里了（退群 / 被踢），要从左栏拿掉。
+std::vector<std::string> g_roomListSeen;
+
+// 会话设置窗 / 群聊窗的句柄。
+//
+// **必须用进程内的全局变量记，不能用 FindWindowW 去搜**：窗口类名在两个客户端
+// 进程里是同一个，FindWindowW 会跨进程搜到**别人的**窗口，再拿它的 GWLP_USERDATA
+// 当本进程指针解引用就是访问越界 —— 状态导出那里实测崩过：两个客户端一起跑、
+// 其中一个开着会话设置窗时，另一个每 200ms 必崩（0xc0000005）。
+HWND g_roomSettingsWindow = nullptr;
+
+// 左栏的几何与显示顺序。顺序单独存一份：几何层只知道"第几行"，
+// 而"第几行对应哪个会话"要经过置顶排序 —— 两边各算一次排序迟早会错位。
+dchat::SessionListLayout g_sessionLayout;
+std::vector<int> g_sessionOrder;
+
+/** 左栏显示顺序：**置顶的排前面**，其余保持服务端给的顺序（大厅、群聊、私聊）。 */
+std::vector<int> SessionDisplayOrder() {
+    std::vector<int> order;
+    for (std::size_t i = 0; i < g_sessions.size(); ++i) {
+        if (g_sessions[i].prefs.pinned) order.push_back(static_cast<int>(i));
+    }
+    for (std::size_t i = 0; i < g_sessions.size(); ++i) {
+        if (!g_sessions[i].prefs.pinned) order.push_back(static_cast<int>(i));
+    }
+    return order;
+}
+
+/** 一行下面的小字。 */
+std::string SessionSubtitle(const Session& session) {
+    if (session.kind == "dm") return "私聊";
+    if (session.kind == "hall") return "公共大厅";
+    std::string text = std::to_string(session.members) + " 人";
+    if (session.maxMembers > 0) text += " / " + std::to_string(session.maxMembers);
+    if (session.myRole == "owner") {
+        text += "・群主";
+    } else if (session.myRole == "admin") {
+        text += "・管理员";
+    }
+    return text;
+}
+
+/** 找会话下标；-1 = 没有。 */
+int FindSession(const std::string& id) {
+    for (std::size_t i = 0; i < g_sessions.size(); ++i) {
+        if (g_sessions[i].id == id) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+/** 找会话，没有就按 kind 建一个占位（后续 RINFO 会把它填全）。 */
+int EnsureSession(const std::string& id, const std::string& kind) {
+    const int found = FindSession(id);
+    if (found >= 0) return found;
+    Session session;
+    session.id = id;
+    session.kind = kind;
+    session.title = id;  // 先拿 ID 顶着，RINFO 一到就换成真名字
+    session.prefs = dchat::DefaultRoomPrefs(
+        kind == "hall" ? dchat::RoomKind::Hall
+                       : (kind == "dm" ? dchat::RoomKind::Direct : dchat::RoomKind::Group));
+    g_sessions.push_back(std::move(session));
+    return static_cast<int>(g_sessions.size()) - 1;
+}
+
+// 下面这些定义在稍后（要用到 ViewAddItem / 面板重画）。
+// 都在这儿先声明一次：多会话的模型定义在文件靠前的位置，而它们要用到的
+// 重画、状态刷新、发包函数散在后面 —— 靠前向声明比把模型挪来挪去稳妥。
+void SwitchSession(int index);
+void AppendToSession(int index, const Item& item);
+void SaveRoomPrefs();
+void LoadRoomPrefs();
+bool IsConnected();
+bool SendRawLine(const std::string& line);
+void UpdateStatus();
+void ClearUnread();
+void RefreshSessionPanel();
+void OpenRoomSettings(HWND parent, const std::string& sessionId);
+void OpenGroupWindow(HWND parent);
+bool WindowIsActive();
+void UpdateTitle();
+void FlashTaskbar();
+
+// 会话本地设置的落盘路径。**和服务器无关**：这是这台机器上这个人自己的偏好。
+constexpr const char* kRoomPrefsPath = "dchat-rooms.prefs";
 
 struct UiState {
     HWND hwnd = nullptr;
@@ -302,6 +461,202 @@ bool g_authed = false;           // 已经登录成功（连上但还没登录�
 bool g_heartbeatPending = false; // 刚发过心跳 PING（对应的 PONG 不显示成提示）
 int g_maxFileMb = 64;            // 服务器当前的单文件上限（由服务器发的 RULES 行更新）
 int g_port = dchat::kDefaultPort;
+
+// ---------------- 自动化测试的状态导出 ----------------
+//
+// 为什么要有它：这台机器上**屏幕抓图在 DWM 下会拿到旧内容**（实测），所以
+// "界面上到底有没有出现这条消息"没法靠截图判断。改成让客户端把内部状态写成
+// 文本、测试脚本读文件断言 —— 这是目前唯一可靠的验收方式（见 tools/ui-rooms-auto.ps1）。
+//
+// 只在启动参数带 `--state-file <路径>` 时生效。正常启动 g_statePath 为空，
+// WriteClientState 第一行就返回，一个字节都不会多写。
+std::wstring g_statePath;
+unsigned long long g_stateSeq = 0;
+
+/** 值压成单行（正文里可能有换行）。读的一侧按**第一个** '=' 切分，所以 '=' 不必转义。 */
+std::string EscapeStateValue(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (char ch : text) {
+        if (ch == '\\') {
+            out += "\\\\";
+        } else if (ch == '\n') {
+            out += "\\n";
+        } else if (ch == '\r') {
+            continue;
+        } else {
+            out += ch;
+        }
+    }
+    return out;
+}
+
+/** 一条记录项在状态文件里的正文：Say 取解析后的发言者与正文，其它取原文。 */
+void StateItemText(const Item& item, std::string* nick, std::string* text, std::string* kind) {
+    if (item.kind == ItemKind::Say) {
+        dchat::SayInfo say;
+        if (dchat::ParseSay(item.raw, g_nick, &say)) {
+            *nick = say.nick;
+            *text = say.text;
+            *kind = "say";
+            return;
+        }
+    }
+    *nick = item.nick;
+    *text = item.raw.empty() ? item.time : item.raw;
+    *kind = item.kind == ItemKind::Notice     ? "notice"
+            : item.kind == ItemKind::Error    ? "error"
+            : item.kind == ItemKind::Announce ? "announce"
+                                              : "file";
+}
+
+/**
+ * 把界面状态写成 `键=值`、一行一条的文本。
+ *
+ * 记录区读的是**当前会话的活副本 g_items**，非当前会话才是 session.items
+ * （这个不变量见上面的长注释）—— 这里必须照同一个规则取，否则导出的内容会和
+ * 界面上显示的差一份，测试就等于白测。
+ *
+ * 末尾一定有 `END=1`：读的一侧靠它判断文件写完整了，避免读到半截。
+ */
+void AppendDialogState(std::string* out);  // 定义在弹窗代码之后（要用到弹窗的结构体）
+
+void WriteClientState() {
+    if (g_statePath.empty()) return;
+    constexpr std::size_t kTailMax = 6;
+    const int sessionCount = static_cast<int>(g_sessions.size());
+    std::string out = "DCHAT_STATE=1\n";
+    out += "seq=" + std::to_string(++g_stateSeq) + "\n";
+    out += "rooms.enabled=" + std::to_string(g_roomsEnabled ? 1 : 0) + "\n";
+    // 连接状态：界面改版后状态栏是自绘的，测试脚本没法再从子控件里读那句
+    // "已连接 … 用户：xxx"，所以这里直接给出可断言的字段。
+    out += "conn.connected=" + std::to_string(IsConnected() ? 1 : 0) + "\n";
+    out += "conn.authed=" + std::to_string(g_authed ? 1 : 0) + "\n";
+    out += "conn.nick=" + EscapeStateValue(g_nick) + "\n";
+    out += "current.index=" + std::to_string(g_currentSession) + "\n";
+    out += "current.id=" + EscapeStateValue((g_currentSession >= 0 && g_currentSession < sessionCount)
+                                                ? g_sessions[g_currentSession].id
+                                                : std::string()) +
+           "\n";
+    out += "session.count=" + std::to_string(sessionCount) + "\n";
+    out += "block.count=" + std::to_string(g_blockList.size()) + "\n";
+    out += "groupHits.count=" + std::to_string(g_groupHits.size()) + "\n";
+
+    for (int i = 0; i < sessionCount; ++i) {
+        const Session& session = g_sessions[i];
+        const std::string p = "session." + std::to_string(i) + ".";
+        out += p + "id=" + EscapeStateValue(session.id) + "\n";
+        out += p + "kind=" + EscapeStateValue(session.kind) + "\n";
+        out += p + "title=" + EscapeStateValue(session.title) + "\n";
+        out += p + "unread=" + std::to_string(session.unread) + "\n";
+        out += p + "important=" + std::to_string(session.unreadImportant ? 1 : 0) + "\n";
+        // ---- 成员本地设置：这一行以下才是"永不上传"的部分 ----
+        out += p + "muted=" + std::to_string(session.prefs.muted ? 1 : 0) + "\n";
+        out += p + "pinned=" + std::to_string(session.prefs.pinned ? 1 : 0) + "\n";
+        out += p + "alertImportant=" + std::to_string(session.prefs.alertImportant ? 1 : 0) + "\n";
+        out += p + "localCacheMb=" + std::to_string(session.prefs.localCacheMb) + "\n";
+        // ---- 群管理员项的本地镜像（改要走服务端）----
+        out += p + "members=" + std::to_string(session.members) + "\n";
+        out += p + "maxMembers=" + std::to_string(session.maxMembers) + "\n";
+        out += p + "owner=" + EscapeStateValue(session.owner) + "\n";
+        out += p + "myRole=" + EscapeStateValue(session.myRole) + "\n";
+        out += p + "joinMode=" + EscapeStateValue(session.joinMode) + "\n";
+        out += p + "listed=" + std::to_string(session.listed ? 1 : 0) + "\n";
+        out += p + "name=" + EscapeStateValue(session.name) + "\n";
+        out += p + "announcement=" + EscapeStateValue(session.announcement) + "\n";
+        out += p + "cacheMaxMb=" + std::to_string(session.cacheMaxMb) + "\n";
+        out += p + "pending.count=" + std::to_string(session.pending.size()) + "\n";
+        for (std::size_t j = 0; j < session.pending.size() && j < 8; ++j) {
+            out += p + "pending." + std::to_string(j) + "=" +
+                   EscapeStateValue(session.pending[j]) + "\n";
+        }
+
+        const std::deque<Item>& items = (i == g_currentSession) ? g_items : session.items;
+        out += p + "items=" + std::to_string(items.size()) + "\n";
+        // tail 从**最新往旧**排：tail.0 就是最后一条，断言"刚发的到了没"最省事。
+        std::size_t n = 0;
+        for (auto it = items.rbegin(); it != items.rend() && n < kTailMax; ++it, ++n) {
+            std::string nick;
+            std::string text;
+            std::string kind;
+            StateItemText(*it, &nick, &text, &kind);
+            const std::string q = p + "tail." + std::to_string(n) + ".";
+            out += q + "kind=" + kind + "\n";
+            out += q + "nick=" + EscapeStateValue(nick) + "\n";
+            out += q + "text=" + EscapeStateValue(text) + "\n";
+        }
+        out += p + "tail.count=" + std::to_string(n) + "\n";
+    }
+    // ---- 真实控件的句柄：脚本直接对其发 WM_SETTEXT / BM_CLICK，不用猜坐标 ----
+    const auto handleText = [](HWND h) {
+        return std::to_string(reinterpret_cast<unsigned long long>(h));
+    };
+    const auto rectText = [](const RECT& r) {
+        return std::to_string(r.left) + "," + std::to_string(r.top) + "," +
+               std::to_string(r.right) + "," + std::to_string(r.bottom);
+    };
+    out += "main.window=" + handleText(ui.hwnd) + "\n";
+    out += "main.input=" + handleText(ui.hInput) + "\n";
+    out += "main.send=" + handleText(ui.hSend) + "\n";
+
+    // ---- 左栏几何：**就是这一帧用来命中的那一份**（g_sessionLayout 随窗口尺寸重算），
+    //      脚本照着点，等于点了界面上真正画出来的那个矩形 ----
+    out += "sessionList.valid=" + std::to_string(g_sessionLayout.valid ? 1 : 0) + "\n";
+    out += "sessionList.search=" + rectText(g_sessionLayout.searchButton) + "\n";
+    out += "sessionList.new=" + rectText(g_sessionLayout.newButton) + "\n";
+    out += "sessionList.rows=" + std::to_string(g_sessionLayout.rows.size()) + "\n";
+    for (std::size_t i = 0; i < g_sessionLayout.rows.size(); ++i) {
+        const dchat::SessionRowLayout& row = g_sessionLayout.rows[i];
+        const std::string q = "sessionList.row." + std::to_string(i) + ".";
+        out += q + "index=" + std::to_string(row.index) + "\n";
+        // 点一行命中的是**显示行号**，真正切到哪个会话还要过一遍 g_sessionOrder
+        // （排序规则见 SessionDisplayOrder）。这里替脚本算好，省得两边各算一次。
+        std::string rowSession;
+        if (row.index >= 0 && row.index < static_cast<int>(g_sessionOrder.size())) {
+            const int sessionIndex = g_sessionOrder[row.index];
+            if (sessionIndex >= 0 && sessionIndex < sessionCount) {
+                rowSession = g_sessions[sessionIndex].id;
+            }
+        }
+        out += q + "session=" + EscapeStateValue(rowSession) + "\n";
+        out += q + "rect=" + rectText(row.row) + "\n";
+    }
+    // ---- 菜单栏 / 底部按钮：改版后这些是**自绘**的（第 304 行那段注释），
+    //      没有控件 ID 可以发 WM_COMMAND，只能按坐标点。同样导出这一帧
+    //      真正用来命中的矩形，脚本照点即可。----
+    out += "menu.count=" + std::to_string(g_menuItems.size()) + "\n";
+    for (std::size_t i = 0; i < g_menuItems.size(); ++i) {
+        const dchat::MenuItem& item = g_menuItems[i];
+        const char* action = "unknown";
+        switch (item.action) {
+            case dchat::MenuAction::Connect:      action = "connect"; break;
+            case dchat::MenuAction::Settings:     action = "settings"; break;
+            case dchat::MenuAction::Help:         action = "help"; break;
+            case dchat::MenuAction::ToggleOnline: action = "online"; break;
+        }
+        const std::string q = "menu." + std::to_string(i) + ".";
+        out += q + "action=" + action + "\n";
+        out += q + "rect=" + rectText(item.rect) + "\n";
+    }
+    out += "bottom.plus=" + rectText(g_bottom.plusButton) + "\n";
+    out += "bottom.send=" + rectText(g_bottom.sendButton) + "\n";
+    RECT clientRect{};
+    if (ui.hwnd != nullptr && GetClientRect(ui.hwnd, &clientRect)) {
+        out += "main.gear=" + rectText(dchat::GearRect(clientRect.right)) + "\n";
+    }
+    AppendDialogState(&out);
+
+    out += "END=1\n";
+
+    // 直接走 Win32：路径是宽字符（可能有中文目录），绕开窄/宽路径那一堆坑。
+    // FILE_SHARE_READ 让测试脚本在客户端还跑着的时候就能读。
+    HANDLE file = CreateFileW(g_statePath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    WriteFile(file, out.data(), static_cast<DWORD>(out.size()), &written, nullptr);
+    CloseHandle(file);
+}
 
 // ---------------- 配色 ----------------
 struct Palette {
@@ -1175,6 +1530,244 @@ void ViewAddItem(ItemKind kind, const std::string& raw, const std::string& time)
     if (ui.hView) InvalidateRect(ui.hView, nullptr, FALSE);
 }
 
+// ---------------- 多会话：切换、落消息、本地设置落盘 ----------------
+
+/** 把某条消息追加到**指定**会话（不一定是当前显示的那个）。 */
+void AppendToSession(int index, const Item& item) {
+    if (index < 0 || index >= static_cast<int>(g_sessions.size())) return;
+
+    // ⚠️ 当前会话的"活"副本是 **g_items**，不是 session.items —— 这是"换内容不换壳"
+    // 那条设计的核心不变量：g_items 永远是当前会话的内容，session.items 只对
+    // **非当前**会话有效。
+    //
+    // 往 session.items 里塞当前会话的消息会同时踩两个坑：
+    //   ① 界面读的是 g_items，所以消息永远不显示；
+    //   ② 下次切走时 SwitchSession 会用 g_items **覆盖** session.items，
+    //      那些消息就彻底没了。
+    // 真机上的症状就是"服务器日志明明收到了 MSG，两个客户端界面里一条都没有"。
+    if (index == g_currentSession) {
+        g_items.push_back(item);
+        while (g_items.size() > kMaxItems) g_items.pop_front();
+        if (g_stickToBottom) g_scrollTop = 1 << 30;  // 绘制时会夹到底部
+        if (ui.hView) InvalidateRect(ui.hView, nullptr, FALSE);
+        return;
+    }
+
+    Session& session = g_sessions[index];
+    session.items.push_back(item);
+    while (session.items.size() > kMaxItems) session.items.pop_front();
+}
+
+/**
+ * 切换会话。
+ *
+ * **必须把 g_items / 滚动位置对调**，而不是清空重填：清空重填会让每次切回来
+ * 都重排一遍几千条气泡（卡顿可见），而对调只是换两个 deque 的指针。
+ */
+void SwitchSession(int index) {
+    if (index < 0 || index >= static_cast<int>(g_sessions.size())) return;
+    if (index == g_currentSession && !g_items.empty()) {
+        g_sessions[index].unread = 0;
+        g_sessions[index].unreadImportant = false;
+        return;
+    }
+    // 1) 把当前显示的内容与滚动位置存回它所属的会话
+    if (!g_sessions.empty() && g_currentSession >= 0 &&
+        g_currentSession < static_cast<int>(g_sessions.size())) {
+        Session& old = g_sessions[g_currentSession];
+        old.items = std::move(g_items);
+        old.scrollTop = g_scrollTop;
+        old.stickToBottom = g_stickToBottom;
+        // 草稿也是每个会话各自一份
+        if (ui.hInput) {
+            const int length = GetWindowTextLengthW(ui.hInput);
+            std::wstring text(static_cast<std::size_t>(length), L'\0');
+            if (length > 0) GetWindowTextW(ui.hInput, &text[0], length + 1);
+            old.draft = text;
+        }
+    }
+    // 2) 换成新会话的内容
+    g_currentSession = index;
+    Session& next = g_sessions[index];
+    g_items = std::move(next.items);
+    g_scrollTop = next.stickToBottom ? (1 << 30) : next.scrollTop;
+    g_stickToBottom = true;  // 切过去先看最新的一条，符合直觉
+    next.unread = 0;
+    next.unreadImportant = false;
+    if (ui.hInput) SetWindowTextW(ui.hInput, next.draft.c_str());
+    // 3) 告诉服务端"我在看这个会话了"，顺便拉一次它的最新信息与历史
+    if (IsConnected() && g_authed && g_roomsEnabled) {
+        SendRawLine(dchat::BuildLine("ROOM", index >= 0 ? g_sessions[index].id : std::string()));
+    }
+    if (ui.hView) {
+        InvalidateRect(ui.hView, nullptr, TRUE);
+        ViewUpdateScrollbar(ui.hView);
+    }
+    if (ui.hwnd) InvalidateRect(ui.hwnd, nullptr, FALSE);
+    ClearUnread();
+    UpdateStatus();
+}
+
+/** 本地设置落盘。写失败只影响"下次启动记住没记住"，不该打断任何操作。 */
+void SaveRoomPrefs() {
+    std::string text;
+    text += "# dchat 会话本地设置（免打扰 / 置顶 / 本地缓存）。\n";
+    text += "# **只存在这台机器上，永远不上传服务器** —— 群管理员看不到你的免打扰。\n";
+    for (const Session& session : g_sessions) {
+        if (session.id.empty()) continue;
+        text += dchat::SerializePrefs(session.id, session.prefs) + "\n";
+    }
+    std::ofstream out(kRoomPrefsPath, std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    out << text;
+}
+
+void LoadRoomPrefs() {
+    std::ifstream in(kRoomPrefsPath, std::ios::binary);
+    if (!in) return;  // 还没有这个文件：所有人用默认值，不是错误
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    for (const auto& pair : dchat::ParsePrefsFile(text)) {
+        const int index = FindSession(pair.first);
+        if (index >= 0) {
+            g_sessions[index].prefs = pair.second;
+        } else {
+            // 会话还没出现（比如服务端还没把列表发过来）：先存着，等它出现时套上。
+            // 直接丢掉的话，用户重启客户端后"免打扰"会莫名失效一次。
+            Session placeholder;
+            placeholder.id = pair.first;
+            placeholder.kind = "group";
+            placeholder.title = pair.first;
+            placeholder.prefs = pair.second;
+            g_sessions.push_back(std::move(placeholder));
+        }
+    }
+}
+
+int HallSessionIndex() {
+    int index = FindSession(dchat::kHallId);
+    if (index < 0) index = EnsureSession(dchat::kHallId, "hall");
+    return index;
+}
+
+/**
+ * 把一条记录投递到某个会话，并决定**要不要提示**。
+ *
+ * 提示规则全部来自本地设置（免打扰 / 重要提醒 / 置顶），服务端不知道也不该知道 ——
+ * 这就是"成员设置永不上传"那条分界线在客户端这一侧的落点。
+ *
+ * @param important 是不是"重要消息"（@我 / @全体成员）
+ */
+void DeliverToSession(int index, const Item& item, bool important) {
+    if (index < 0 || index >= static_cast<int>(g_sessions.size())) return;
+    Session& session = g_sessions[index];
+    const bool isCurrent = (index == g_currentSession);
+    const bool active = WindowIsActive();
+
+    AppendToSession(index, item);
+
+    if (!isCurrent) {
+        // 未读**照常计数**，哪怕是免打扰的会话。
+        // 免打扰的意思是"别打扰我"（不闪任务栏、不出提示音、不计进标题的未读数），
+        // 不是"有新消息也别让我知道"。完全不计数的话，用户会以为这个群死了 ——
+        // 而他其实只是把它静音了。
+        ++session.unread;
+        if (important) session.unreadImportant = true;
+        RefreshSessionPanel();
+    }
+
+    // 免打扰：不提示。但"重要提醒仍然提醒"打开时，@我 / @全体 照样提示 ——
+    // 这正是那个开关存在的意义：把群静音，但别漏掉叫我的那一条。
+    const bool notify = !session.prefs.muted || (important && session.prefs.alertImportant);
+    if (!notify) return;
+    // "我正在看这个会话、而且窗口在前台"才算真的看到了 —— 后台窗口不提示的话，
+    // 用户会漏掉消息却以为客户端坏了
+    const bool reallyWatching = active && isCurrent;
+    if (dchat::ShouldCountUnread(reallyWatching)) {
+        ++g_unread;
+        UpdateTitle();
+    }
+    if (dchat::ShouldFlash(reallyWatching, important)) FlashTaskbar();
+}
+
+/**
+ * 把一条聊天类协议行送进它该去的会话。返回 false = 这不是聊天类行，调用方自己处理。
+ *
+ * **实时消息和历史回放（RHIST 里裹着的原始行）共用这一个函数**：
+ * 分两条路径迟早会不一致，而"历史里显示不对、实时是对的"这种 bug 最难查。
+ */
+bool RenderChatLine(const std::string& line) {
+    const dchat::Message msg = dchat::ParseLine(line);
+    std::vector<std::string> fields = msg.Words();
+    std::string time;
+    if (!fields.empty() && dchat::LooksLikeTime(fields[0])) {
+        time = fields.front();
+        fields.erase(fields.begin());
+    }
+
+    if (msg.command == "SAY") {
+        // 大厅消息：老格式、没有房间号 —— 按协议约定它**永远属于大厅**。
+        // 新客户端靠这一条把老格式接进多会话界面，服务端因此一个字都不用改。
+        Item item;
+        item.kind = ItemKind::Say;
+        item.raw = line;
+        DeliverToSession(HallSessionIndex(), item, dchat::MentionsMe(line, g_nick));
+        return true;
+    }
+
+    if (msg.command == "RMSG") {
+        if (fields.size() < 2) return true;
+        const std::string roomId = fields[0];
+        // 记录区里的 Say 条目一律按 **SAY** 格式存：`RMSG` 只是"这条属于哪个会话"的
+        // 标注，而那个信息在**投递的时候**就已经用掉了（存进了对应的会话）。
+        // 把 RMSG 原样存进去的话，绘制层的 ParseSay 不认这个命令、整条消息会画不出来。
+        std::string sayLine = "SAY";
+        if (!time.empty()) sayLine += " " + time;
+        for (std::size_t i = 1; i < fields.size(); ++i) sayLine += " " + fields[i];
+        Item item;
+        item.kind = ItemKind::Say;
+        item.raw = sayLine;
+        DeliverToSession(EnsureSession(roomId, "group"), item, dchat::MentionsMe(line, g_nick));
+        return true;
+    }
+
+    if (msg.command == "REVENT") {
+        if (fields.size() < 2) return true;
+        const std::string roomId = fields[0];
+        std::string text = fields[1];
+        for (std::size_t i = 2; i < fields.size(); ++i) text += " " + fields[i];
+        Item item;
+        item.kind = ItemKind::Notice;
+        item.raw = text;
+        item.time = time.empty() ? dchat::NowTimeString() : time;
+        DeliverToSession(EnsureSession(roomId, "group"), item, false);
+        return true;
+    }
+
+    if (msg.command == "ANNOUNCE") {
+        const dchat::NoticeInfo notice = dchat::ParseNotice(line);
+        Item item;
+        item.kind = ItemKind::Announce;
+        item.raw = notice.text;
+        item.time = notice.time;
+        // 全服公告进**大厅**：它不属于任何群，塞进当前会话会让"这条公告是哪个群发的"
+        // 变成一个没人答得上来的问题。同时照常提示，免得用户待在群里就看不到。
+        DeliverToSession(HallSessionIndex(), item, true);
+        return true;
+    }
+    return false;
+}
+
+/** 让左侧会话列表重画（会话增删、未读数、免打扰变了都要调）。 */
+void RefreshSessionPanel() {
+    // 只 InvalidateRect 是不够的：左栏的**顺序和几何**（g_sessionOrder /
+    // g_sessionLayout）是在 LayoutWindowChrome 里算的，而它平时只在 WM_SIZE 时跑。
+    // 结果就是"置顶一个会话"点了之后行不会挪到最上面，要等下次改窗口大小才重排
+    // （自动化联调实测抓到的）。会话数量 / 顺序 / 未读 / 免打扰变了都得走这条路。
+    if (ui.hwnd == nullptr) return;
+    Layout(ui.hwnd);
+    InvalidateRect(ui.hwnd, nullptr, FALSE);
+}
+
 // ---------------- 未读提示 ----------------
 bool WindowIsActive() { return ui.hwnd != nullptr && GetForegroundWindow() == ui.hwnd; }
 
@@ -1439,6 +2032,30 @@ void LayoutWindowChrome(HWND hwnd) {
     g_bottom = dchat::LayoutBottom(dc, ui.font, rc.right, rc.bottom, g_contentTop);
     ReleaseDC(hwnd, dc);
 
+    // ---- 左侧会话列表 ----
+    // 只有服务端确认过 rooms1 才显示。对面是旧版服务端时整个左栏不出现，
+    // 界面和升级前一模一样 —— 这是"老服务端 + 新客户端"也要能用。
+    g_sessionOrder.clear();
+    g_sessionLayout = dchat::SessionListLayout();
+    if (g_roomsEnabled && !g_sessions.empty()) {
+        g_sessionOrder = SessionDisplayOrder();
+        std::vector<dchat::SessionRowInput> rows;
+        rows.reserve(g_sessionOrder.size());
+        for (int index : g_sessionOrder) {
+            const Session& session = g_sessions[index];
+            dchat::SessionRowInput row;
+            row.title = Utf8ToWide(session.title.empty() ? session.id : session.title);
+            row.subtitle = Utf8ToWide(SessionSubtitle(session));
+            row.unread = session.unread;
+            row.muted = session.prefs.muted;
+            row.pinned = session.prefs.pinned;
+            row.important = session.unreadImportant;
+            rows.push_back(row);
+        }
+        const int listTop = dchat::kMenuBarHeight;
+        const int listHeight = g_bottom.statusBar.top - listTop;
+        g_sessionLayout = dchat::LayoutSessionList(listTop, listHeight, g_sessionScroll, rows);
+    }
 }
 
 void DrawWindowChrome(HWND hwnd, HDC dc, const RECT& client) {
@@ -1483,6 +2100,116 @@ void DrawWindowChrome(HWND hwnd, HDC dc, const RECT& client) {
     if (!dchat::DrawGlyph(dc, g_gearRect, dchat::kGlyphGear, 20, g_palette->text)) {
         dchat::DrawGearIcon(dc, (g_gearRect.left + g_gearRect.right) / 2,
                             (g_gearRect.top + g_gearRect.bottom) / 2, 8, g_palette->text);
+    }
+
+    // ---- 左侧会话列表 ----
+    //
+    // 会话行只画**会话名 + 一行小字 + 未读气泡 + 免打扰/置顶标记**，不做头像图：
+    // 没有用户头像这套东西，画一个假头像只会让人觉得"这里应该有图但没加载出来"。
+    if (g_roomsEnabled && g_sessionLayout.valid) {
+        const RECT& panel = g_sessionLayout.panel;
+        HBRUSH panelBrush = CreateSolidBrush(g_palette->panel);
+        FillRect(dc, &panel, panelBrush);
+        DeleteObject(panelBrush);
+        HBRUSH splitBrush = CreateSolidBrush(g_palette->border);
+        RECT split{panel.right - 1, panel.top, panel.right, panel.bottom};
+        FillRect(dc, &split, splitBrush);
+        DeleteObject(splitBrush);
+
+        TextOutUtf8(dc, L"会话", g_sessionLayout.title, ui.fontSmall, g_palette->system,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        // 表头两个按钮。**几何层早就把它们算好了、点击也接上了，但之前忘了画** ——
+        // 症状就是"界面上根本看不到入口"，而代码看起来是完整的（有矩形、有命中测试、
+        // 有点击处理）。这类"算得到但画不出"的问题只有真人看界面才发现得了。
+        {
+            const bool searchHot = (g_sessionHover == -2);   // -2 = 悬停搜索
+            const bool newHot = (g_sessionHover == -3);      // -3 = 悬停新建
+            const RECT& search = g_sessionLayout.searchButton;
+            const RECT& create = g_sessionLayout.newButton;
+            if (searchHot) {
+                ui::FillRoundedRect(dc, search, 6, g_palette->hover, g_palette->hover, 0.0f);
+            }
+            if (newHot) {
+                ui::FillRoundedRect(dc, create, 6, g_palette->hover, g_palette->hover, 0.0f);
+            }
+            // 图标字体取不到时退回文字，绝不能变成一个空格子
+            if (!dchat::DrawGlyph(dc, search, dchat::kGlyphSearch, 16, g_palette->text)) {
+                TextOutUtf8(dc, L"搜", search, ui.fontSmall, g_palette->text,
+                            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+            if (!dchat::DrawGlyph(dc, create, dchat::kGlyphAdd, 16, g_palette->text)) {
+                TextOutUtf8(dc, L"＋", create, ui.fontSmall, g_palette->text,
+                            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+        }
+
+        for (const dchat::SessionRowLayout& row : g_sessionLayout.rows) {
+            if (!row.valid) continue;
+            const bool active = (row.index >= 0 &&
+                                 row.index < static_cast<int>(g_sessionOrder.size()) &&
+                                 g_sessionOrder[row.index] == g_currentSession);
+            if (active) {
+                ui::FillRoundedRect(dc, row.row, 0, g_palette->hover, g_palette->hover, 0.0f);
+            } else if (row.index == g_sessionHover) {
+                ui::FillRoundedRect(dc, row.row, 0, g_palette->noticeBg, g_palette->noticeBg, 0.0f);
+            }
+            TextOutUtf8(dc, L"", row.avatar, ui.font, g_palette->text, DT_LEFT);  // 占位，保持矩形一致
+            const std::wstring title = [&] {
+                if (row.index < 0 || row.index >= static_cast<int>(g_sessionOrder.size())) {
+                    return std::wstring();
+                }
+                const Session& session = g_sessions[g_sessionOrder[row.index]];
+                return Utf8ToWide(session.title.empty() ? session.id : session.title);
+            }();
+            const int titleColor = active ? g_palette->text : g_palette->text;
+            TextOutUtf8(dc, title, row.title, ui.font, titleColor,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            if (row.index >= 0 && row.index < static_cast<int>(g_sessionOrder.size())) {
+                const Session& session = g_sessions[g_sessionOrder[row.index]];
+                TextOutUtf8(dc, Utf8ToWide(SessionSubtitle(session)), row.subtitle, ui.fontSmall,
+                            g_palette->system, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+            if (row.badge.right > row.badge.left) {
+                const Session& session = g_sessions[g_sessionOrder[row.index]];
+                if (session.prefs.muted) {
+                    // 免打扰的会话只画一个小圆点，不显示数字 ——
+                    // 数字会让人下意识去"清零"，而用户设免打扰正是为了不用管它。
+                    // 但不能什么都不画：那样群看起来像死了。
+                    // 有重要消息（@我 / @全体）时点用强调色，普通消息用灰色。
+                    const int dot = 8;
+                    const int centerY = (row.badge.top + row.badge.bottom) / 2;
+                    RECT mark{row.badge.right - dot, centerY - dot / 2, row.badge.right,
+                              centerY + dot / 2};
+                    const COLORREF dotColor =
+                        session.unreadImportant ? g_palette->accent : g_palette->system;
+                    ui::FillRoundedRect(dc, mark, dot / 2, dotColor, dotColor, 0.0f);
+                } else {
+                    ui::FillRoundedRect(dc, row.badge, dchat::kSessionBadgeMin / 2,
+                                        g_palette->accent, g_palette->accent, 0.0f);
+                    const int unread = session.unread;
+                    TextOutUtf8(dc, std::to_wstring(unread > 99 ? 99 : unread), row.badge,
+                                ui.fontSmall, RGB(255, 255, 255),
+                                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                }
+            }
+            if (row.muteMark.right > row.muteMark.left) {
+                if (!dchat::DrawGlyph(dc, row.muteMark, dchat::kGlyphMute, 14, g_palette->system)) {
+                    dchat::DrawThinBar(dc, row.muteMark, g_palette->system);
+                }
+            }
+            if (row.pinMark.right > row.pinMark.left) {
+                if (!dchat::DrawGlyph(dc, row.pinMark, dchat::kGlyphPin, 14, g_palette->system)) {
+                    dchat::DrawThinBar(dc, row.pinMark, g_palette->system);
+                }
+            }
+        }
+        if (g_sessionLayout.rows.empty()) {
+            RECT hint{panel.left + 12, panel.top + dchat::kSessionListHeaderH, panel.right - 12,
+                      panel.top + dchat::kSessionListHeaderH + 40};
+            TextOutUtf8(dc, L"还没有会话", hint, ui.fontSmall, g_palette->system,
+                        DT_LEFT | DT_TOP | DT_WORDBREAK);
+        }
     }
 
     // ---- 状态条：只读信息，不是按钮 ----
@@ -1896,6 +2623,11 @@ void DisconnectFromServer(bool showNotice) {
         g_knownNicks.clear();
         g_authed = false;
         g_authPending = false;
+        // 多会话状态也要复位：换一台服务器（或对面换了版本）时，
+        // 上一次的能力协商结论不能留着 —— 留着就会出现"发出去的命令石沉大海"。
+        // 会话列表本身**保留**：本地设置（免打扰/置顶）挂在会话上，丢了用户会觉得白设了。
+        g_roomsDeclared = false;
+        g_roomsEnabled = false;
         ResetTransfers("连接已断开，接收中断");  // 没传完的文件不留半个在硬盘上
     UpdateStatus();
     if (showNotice) ViewAddItem(ItemKind::Notice, "已断开连接", dchat::NowTimeString());
@@ -2545,8 +3277,18 @@ void HandleFileLine(const std::string& line) {
     // 服务器发的每条消息都带 hh:mm；这里做兼容：没有时间戳也能解析
     if (!fields.empty() && dchat::LooksLikeTime(fields[0])) fields.erase(fields.begin());
 
-    if (msg.command == "FILE_OFFER") {
+    if (msg.command == "FILE_OFFER" || msg.command == "RFILE_OFFER") {
         // 有人上传好了：在记录区里加一张卡片，等人点「下载」
+        //
+        // RFILE_OFFER 比 FILE_OFFER 多一格**房间号**（紧跟在时间之后）。
+        // 服务端为它另起了一个命令名而不是给 FILE_OFFER 加字段：老客户端按位置解析
+        // FILE_OFFER（第 6 格是"有无缩略图"），往中间插一格会让它们把房间号当缩略图标志。
+        std::string roomId;
+        if (msg.command == "RFILE_OFFER") {
+            if (fields.empty()) return;
+            roomId = fields.front();
+            fields.erase(fields.begin());
+        }
         if (fields.size() < 4) return;
         unsigned long long size = 0;
         bool digits = !fields[3].empty() && fields[3].size() <= 20;
@@ -2569,11 +3311,8 @@ void HandleFileLine(const std::string& line) {
         // 安卓端录出来是 .m4a、桌面端是 .wav，扩展名不可靠。
         const std::string kind = fields.size() >= 6 ? fields[5] : std::string();
         item.isVoice = dchat::IsVoiceKind(kind);
-        g_items.push_back(item);
-        while (g_items.size() > kMaxItems) g_items.pop_front();
-        if (g_stickToBottom) g_scrollTop = 1 << 30;
-        if (ui.hView) InvalidateRect(ui.hView, nullptr, FALSE);
-        MarkMessageArrived(true);  // 有人发了文件，和「被 @」一样提醒一下
+        const int target = roomId.empty() ? HallSessionIndex() : EnsureSession(roomId, "group");
+        DeliverToSession(target, item, true);  // 有人发了文件，和「被 @」一样提醒一下
         const bool hasThumb = (fields.size() >= 5 && fields[4] == "1");
         // 语音和图片自动下载（语音的意义就是"立刻能听"）；视频不自动下整份，
         // 只取第一帧预览。判断只走 ShouldAutoDownloadVoice 这一个入口——
@@ -3918,6 +4657,1273 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 // 打开设置窗口（模态）。取消 / Esc / ✕ 都等于丢弃改动。
+// ---------------------------------------------------------------------------
+// 会话设置窗口（群聊 / 私聊 / 大厅）
+// ---------------------------------------------------------------------------
+//
+// ## 为什么是一个窗口而不是三个
+//
+// "群设置"和"私聊设置"的差别只有**行不一样**：群聊有群名、最大人数、加群方式、
+// 成员表……私聊只有免打扰、置顶、黑名单。做成三个窗口就是三份各自维护的绘制与
+// 命中测试代码，而它们迟早会对不上（改了一个忘了另两个）。
+//
+// 所以这里**行是按会话类型现算出来的**（BuildRoomRows），窗口本身完全不懂业务。
+// 加一个设置项 = 在 BuildRoomRows 里加一行，三个界面同时生效。
+//
+// ## 两类设置的边界画在哪
+//
+// 行上带 `key` 的 = 群管理员设置项，改动会发 `GSET` 出去，**全群可见**；
+// 行上带 `local` 的 = 成员本地设置，只改本机的 dchat-rooms.prefs，**永不上传**。
+// 这个区分在界面上也看得见：管理员项没有权限时是灰的，本地项永远可点。
+
+enum class RoomRowKind {
+    Section,   // 分组标题（"群设置" / "我的设置"）
+    ReadOnly,  // 只读：群聊 ID（不可更改）
+    Text,      // 文本，点一下就地编辑
+    Number,    // 数字，点一下就地编辑
+    Choice,    // 多选一，点一下循环
+    Toggle,    // 开关
+    Action,    // 一个按钮（退出群聊 / 解散群聊 / 删除本地聊天记录）
+    Member,    // 成员行：左边昵称，右边两个按钮
+    Request,   // 入群申请：左边昵称，右边同意 / 拒绝
+    Hint,      // 一行灰字说明
+};
+
+struct RoomRow {
+    RoomRowKind kind = RoomRowKind::Hint;
+    std::string label;   // 左边的名字
+    std::string value;   // 右边显示的值
+    std::string key;     // GSET 的设置名；非空 = 管理员设置项
+    std::string local;   // 本地设置名（mute/pin/alert/cache）；非空 = 只改本机
+    std::string arg;     // Action/Member/Request 的参数（昵称或动作名）
+    std::string role;    // Member 行：owner / admin / member
+    bool enabled = true; // 有没有权限改（没有就画灰、点了给提示）
+    bool on = false;     // Toggle 的当前状态
+    RECT rect{};
+    RECT box{};          // 右侧控件的矩形
+    RECT extra{};        // 第二个按钮（踢人 / 拒绝）
+    bool hasExtra = false;
+};
+
+struct RoomSettingsState {
+    HWND dlg = nullptr;
+    HWND edit = nullptr;   // 就地编辑用的 EDIT（同一时刻只有一个）
+    int editRow = -1;
+    int hover = -1;
+    int hoverExtra = -1;
+    std::string sessionId;
+    std::vector<RoomRow> rows;
+    int scrollTop = 0;
+    int contentHeight = 0;
+    // 同 GroupWindowState::closed：给 OpenRoomSettings 的模态嵌套循环一个退出信号，
+    // 而不是用线程级的 PostQuitMessage 把整个客户端一起送走。
+    bool* closed = nullptr;
+};
+
+constexpr const wchar_t* kRoomSettingsClass = L"DchatRoomSettingsDlg";
+constexpr int kRoomWndWidth = 500;
+constexpr int kRoomWndHeight = 620;
+constexpr int kRoomRowHeight = 34;
+constexpr int kRoomSectionHeight = 30;
+constexpr int kRoomHintHeight = 24;
+constexpr int kRoomPadX = 18;
+constexpr int kRoomLabelWidth = 150;
+
+/** 发一条多会话命令。返回 false 表示连接已断。 */
+bool SendRoomCommand(const std::string& command, const std::string& rest) {
+    if (!IsConnected()) return false;
+    return SendRawLine(dchat::BuildLine(command, rest));
+}
+
+const char* JoinModeLabelOf(const std::string& mode) {
+    if (mode == "direct") return "直接添加";
+    if (mode == "auto") return "自动审核";
+    return "管理员审核";
+}
+
+const char* RoleLabelOf(const std::string& role) {
+    if (role == "owner") return "群主";
+    if (role == "admin") return "管理员";
+    return "成员";
+}
+
+/** 数字 -> 文本。服务端回来的都是字符串，这里只做显示。 */
+std::string U64Text(unsigned long long value) { return std::to_string(value); }
+
+/**
+ * 按会话类型算出要显示哪些行。
+ *
+ * 权限判断也在这里：没有管理权限的设置项标记成 `enabled = false`，
+ * 窗口把它们画灰、点了给一句明确的提示 —— 比"点下去没反应"好得多。
+ */
+void BuildRoomRows(const Session& session, std::vector<RoomRow>* rows) {
+    rows->clear();
+    const bool isGroup = (session.kind == "group");
+    const bool isHall = (session.kind == "hall");
+    const bool isDm = (session.kind == "dm");
+    const bool canAdmin =
+        dchat::RoomRoleCanAdminister(session.myRole == "owner" ? dchat::RoomRole::Owner
+                                          : session.myRole == "admin" ? dchat::RoomRole::Admin
+                                                                      : dchat::RoomRole::Member);
+
+    auto section = [&](const char* text) {
+        RoomRow row;
+        row.kind = RoomRowKind::Section;
+        row.label = text;
+        rows->push_back(row);
+    };
+    auto hint = [&](const std::string& text) {
+        RoomRow row;
+        row.kind = RoomRowKind::Hint;
+        row.label = text;
+        rows->push_back(row);
+    };
+    auto readOnly = [&](const std::string& label, const std::string& value) {
+        RoomRow row;
+        row.kind = RoomRowKind::ReadOnly;
+        row.label = label;
+        row.value = value;
+        rows->push_back(row);
+    };
+
+    // ---- 会话身份（所有人可见）----
+    section(isDm ? "私聊" : (isHall ? "大厅" : "群聊"));
+    readOnly(isDm ? "对方" : "名称", session.title.empty() ? session.id : session.title);
+    readOnly("会话 ID", session.id);
+    if (isGroup) {
+        // 群聊 ID 不可更改 —— 这是需求里明确要求的，界面上也要说清楚，
+        // 否则用户会一直找"哪里能改名"
+        hint("会话 ID 建好后不可更改");
+    }
+    readOnly("我的身份", RoleLabelOf(session.myRole));
+    if (!isDm) {
+        readOnly("成员", std::to_string(session.members) +
+                             (session.maxMembers > 0 ? " / " + std::to_string(session.maxMembers)
+                                                     : ""));
+    }
+
+    // ---- 群管理员可设项（走服务端）----
+    if (isGroup || isHall) {
+        section("群设置（管理员修改，全群可见）");
+        auto setting = [&](RoomRowKind kind, const char* label, const std::string& value,
+                           const char* key, bool on) {
+            RoomRow row;
+            row.kind = kind;
+            row.label = label;
+            row.value = value;
+            row.key = key;
+            row.on = on;
+            row.enabled = canAdmin;
+            rows->push_back(row);
+        };
+        setting(RoomRowKind::Text, "群聊名称", session.name.empty() ? session.title : session.name,
+                "name", false);
+        setting(RoomRowKind::Number, "最大人数", std::to_string(session.maxMembers), "maxmembers",
+                false);
+        setting(RoomRowKind::Choice, "加群方式", JoinModeLabelOf(session.joinMode), "joinmode",
+                false);
+        setting(RoomRowKind::Toggle, "向公众展示",
+                session.listed ? "其他人可以在群搜索里找到" : "不在群搜索里出现", "listed",
+                session.listed);
+        setting(RoomRowKind::Number, "总缓存最大大小",
+                session.cacheMaxMb ? U64Text(session.cacheMaxMb) + " MB" : std::string(), "cachemaxmb",
+                false);
+        setting(RoomRowKind::Toggle, "消息重要提醒",
+                session.importantNotice ? "管理员可以发 @全体成员" : "谁都发不了 @全体成员",
+                "importantnotice", session.importantNotice);
+        {
+            RoomRow row;
+            row.kind = RoomRowKind::Text;
+            row.label = "群公告";
+            row.value = session.announcement.empty() ? "（没有公告）" : session.announcement;
+            row.key = "announcement";
+            row.enabled = canAdmin;
+            rows->push_back(row);
+        }
+        if (!canAdmin) hint("你不是群主或管理员，上面这些只能看不能改");
+    }
+
+    // ---- 我的本地设置（永不上传）----
+    section("我的设置（只在这台电脑上，不上传）");
+    {
+        RoomRow row;
+        row.kind = RoomRowKind::Toggle;
+        row.label = "免打扰";
+        row.value = session.prefs.muted ? "不提示新消息" : "新消息会提示";
+        row.local = "mute";
+        row.on = session.prefs.muted;
+        rows->push_back(row);
+    }
+    {
+        RoomRow row;
+        row.kind = RoomRowKind::Toggle;
+        row.label = "置顶";
+        row.value = session.prefs.pinned ? "排在最上面" : "按默认顺序排列";
+        row.local = "pin";
+        row.on = session.prefs.pinned;
+        rows->push_back(row);
+    }
+    {
+        RoomRow row;
+        row.kind = RoomRowKind::Toggle;
+        row.label = "重要提醒仍然提醒";
+        row.value = session.prefs.alertImportant ? "@我 / @全体成员 照常提示" : "免打扰时连 @我 也不提示";
+        row.local = "alert";
+        row.on = session.prefs.alertImportant;
+        rows->push_back(row);
+    }
+    {
+        RoomRow row;
+        row.kind = RoomRowKind::Number;
+        row.label = "本地缓存上限";
+        row.value = U64Text(session.prefs.localCacheMb) + " MB";
+        row.local = "cache";
+        rows->push_back(row);
+    }
+    if (isHall) {
+        hint("大厅是所有人的公共房间：默认免打扰，不能退出、不能删除");
+    }
+
+    // ---- 成员与入群申请（群主 / 管理员）----
+    if ((isGroup || isHall) && canAdmin) {
+        section("成员");
+        for (const SessionMember& member : session.memberList) {
+            RoomRow row;
+            row.kind = RoomRowKind::Member;
+            row.label = member.nick;
+            row.value = member.display.empty() ? std::string() : member.display;
+            row.role = member.role;
+            row.arg = member.nick;
+            // 群主只能有一个、管理员之间不能互相踢 —— 和服务器端同一套规则。
+            // 界面先把不能做的按钮藏掉/变灰，比让用户点了再被服务器拒绝好。
+            row.enabled = (member.nick != g_nick) && (session.myRole == "owner" ||
+                                                      member.role == "member");
+            row.on = (member.role != "member");
+            rows->push_back(row);
+        }
+        if (session.memberList.empty()) hint("成员表还没加载出来");
+
+        section("入群申请");
+        for (const std::string& nick : session.pending) {
+            RoomRow row;
+            row.kind = RoomRowKind::Request;
+            row.label = nick;
+            row.arg = nick;
+            row.hasExtra = true;
+            rows->push_back(row);
+        }
+        if (session.pending.empty()) hint("现在没有待审核的申请");
+    }
+
+    // ---- 危险操作 ----
+    section("其它");
+    if (isGroup) {
+        RoomRow leave;
+        leave.kind = RoomRowKind::Action;
+        leave.label = "退出群聊";
+        leave.arg = "leave";
+        rows->push_back(leave);
+    }
+    if (isGroup && session.myRole == "owner") {
+        RoomRow destroy;
+        destroy.kind = RoomRowKind::Action;
+        destroy.label = "解散群聊";
+        destroy.arg = "delete";
+        rows->push_back(destroy);
+    }
+    {
+        RoomRow clear;
+        clear.kind = RoomRowKind::Action;
+        clear.label = "删除本地聊天记录";
+        clear.arg = "clearlocal";
+        rows->push_back(clear);
+    }
+    if (isDm) {
+        RoomRow block;
+        block.kind = RoomRowKind::Action;
+        block.label = "拉黑对方";
+        block.arg = "block";
+        rows->push_back(block);
+    }
+}
+
+/**
+ * 把一条设置改动**先应用到本地镜像**（乐观更新）。
+ *
+ * 为什么必须这么做：只发 `GSET` 出去、等服务器回 `RSET` 才改界面的话，
+ * 用户点完开关**看不到任何反应**，会以为按钮坏了（真机实测就是这样反馈的）。
+ * 服务器的 `RSET` 随后回来会再确认一次，值不会有偏差；万一被服务端拒绝，
+ * 那条 `ERROR` 会显示出来，而随后的 `RSET` 会把界面纠正回去。
+ *
+ * 集中成一个函数是为了让"发出去"和"本地先改"用**同一套 key 语义** ——
+ * 分散在两处的话，迟早会有一个 key 只有一边认识。
+ */
+void ApplyLocalRoomSetting(Session& session, const std::string& key, const std::string& value) {
+    if (key == "name") {
+        session.name = value;
+        if (!value.empty()) session.title = value;
+    } else if (key == "maxmembers") {
+        session.maxMembers = std::atoi(value.c_str());
+    } else if (key == "joinmode") {
+        session.joinMode = value;
+    } else if (key == "listed") {
+        session.listed = (value == "true");
+    } else if (key == "cachemaxmb") {
+        session.cacheMaxMb = std::strtoull(value.c_str(), nullptr, 10);
+    } else if (key == "announcement") {
+        session.announcement = value;
+    } else if (key == "importantnotice") {
+        session.importantNotice = (value == "true");
+    }
+}
+
+void LayoutRoomSettings(RoomSettingsState* state) {
+    RECT client{};
+    GetClientRect(state->dlg, &client);
+    int y = 56 - state->scrollTop;
+    for (RoomRow& row : state->rows) {
+        int height = kRoomRowHeight;
+        if (row.kind == RoomRowKind::Section) height = kRoomSectionHeight;
+        if (row.kind == RoomRowKind::Hint) height = kRoomHintHeight;
+        row.rect = RECT{kRoomPadX, y, client.right - kRoomPadX, y + height};
+        const int boxRight = client.right - kRoomPadX;
+        const int boxLeft = kRoomPadX + kRoomLabelWidth;
+        switch (row.kind) {
+            case RoomRowKind::Toggle:
+                row.box = RECT{boxLeft, y + 7, boxLeft + 44, y + 27};
+                break;
+            case RoomRowKind::Member:
+                row.extra = RECT{boxRight - 60, y + 5, boxRight, y + 27};
+                row.box = RECT{boxRight - 152, y + 5, boxRight - 68, y + 27};
+                break;
+            case RoomRowKind::Request:
+                row.extra = RECT{boxRight - 60, y + 5, boxRight, y + 27};
+                row.box = RECT{boxRight - 130, y + 5, boxRight - 68, y + 27};
+                break;
+            case RoomRowKind::Action:
+                row.box = RECT{boxLeft, y + 5, boxLeft + 150, y + 29};
+                break;
+            case RoomRowKind::ReadOnly:
+            case RoomRowKind::Hint:
+            case RoomRowKind::Section:
+                break;
+            default:
+                row.box = RECT{boxLeft, y + 5, boxRight, y + 29};
+                break;
+        }
+        y += height;
+    }
+    state->contentHeight = y + state->scrollTop - 56;
+    if (state->edit && state->editRow >= 0 &&
+        state->editRow < static_cast<int>(state->rows.size())) {
+        const RECT box = state->rows[state->editRow].box;
+        MoveWindow(state->edit, box.left + 6, box.top + 2, (box.right - box.left) - 12,
+                   (box.bottom - box.top) - 4, TRUE);
+    }
+}
+
+void RefreshRoomSettings(RoomSettingsState* state);
+
+/** 就地编辑结束：把新值发出去。 */
+void CommitRoomRowEdit(RoomSettingsState* state, bool keep) {    if (!state->edit || state->editRow < 0) return;
+    const int index = state->editRow;
+    std::wstring text(static_cast<std::size_t>(GetWindowTextLengthW(state->edit)), L'\0');
+    if (!text.empty()) GetWindowTextW(state->edit, &text[0], static_cast<int>(text.size()) + 1);
+    DestroyWindow(state->edit);
+    state->edit = nullptr;
+    state->editRow = -1;
+    if (!keep || index >= static_cast<int>(state->rows.size())) return;
+    const RoomRow row = state->rows[index];  // 拷一份：发命令会触发重画、rows 可能被重建
+    const std::string value = WideToUtf8(text);
+    if (row.key == "name" || row.key == "announcement") {
+        // 群名和公告可能含空格，走 Base64（和服务端的约定一致）
+        SendRoomCommand("GSET", state->sessionId + " " + row.key + " " +
+                                    dchat::Base64Encode(value));
+    } else if (!row.key.empty()) {
+        SendRoomCommand("GSET", state->sessionId + " " + row.key + " " + value);
+    } else if (row.local == "cache") {
+        // 本地缓存上限：纯本机的事，服务端根本不知道有这一项
+        const int sessionIndex = FindSession(state->sessionId);
+        if (sessionIndex >= 0) {
+            unsigned long long mb = std::strtoull(value.c_str(), nullptr, 10);
+            if (mb < dchat::kMinLocalCacheMb) mb = dchat::kMinLocalCacheMb;
+            if (mb > dchat::kMaxLocalCacheMb) mb = dchat::kMaxLocalCacheMb;
+            g_sessions[sessionIndex].prefs.localCacheMb = mb;
+            SaveRoomPrefs();
+        }
+        RefreshRoomSettings(state);
+        return;
+    }
+    // 管理员设置项：本地先改再重画，和开关走同一条路径 ——
+    // 等服务器回 RSET 才变的话，用户编辑完什么都看不到
+    const int sessionIndex = FindSession(state->sessionId);
+    if (sessionIndex >= 0 && !row.key.empty()) {
+        ApplyLocalRoomSetting(g_sessions[sessionIndex], row.key, value);
+    }
+    RefreshRoomSettings(state);
+}
+
+void RefreshRoomSettings(RoomSettingsState* state) {
+    const int index = FindSession(state->sessionId);
+    if (index < 0) return;
+    BuildRoomRows(g_sessions[index], &state->rows);
+    LayoutRoomSettings(state);
+    if (state->dlg) InvalidateRect(state->dlg, nullptr, FALSE);
+}
+
+void PaintRoomSettings(RoomSettingsState* state, HDC dc) {
+    RECT client{};
+    GetClientRect(state->dlg, &client);
+    HBRUSH back = CreateSolidBrush(g_palette->panel);
+    FillRect(dc, &client, back);
+    DeleteObject(back);
+
+    const int sessionIndex = FindSession(state->sessionId);
+    const bool valid = sessionIndex >= 0;
+
+    // 标题栏
+    RECT title{0, 0, client.right, 52};
+    HBRUSH titleBrush = CreateSolidBrush(g_palette->windowBg);
+    FillRect(dc, &title, titleBrush);
+    DeleteObject(titleBrush);
+    TextOutUtf8(dc, L"会话设置", RECT{kRoomPadX, 0, client.right - kRoomPadX, 52}, ui.fontLarge,
+                g_palette->text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    RECT close{kRoomPadX, 10, kRoomPadX + 60, 42};
+    (void)close;
+    HBRUSH line = CreateSolidBrush(g_palette->border);
+    RECT sep{0, 51, client.right, 52};
+    FillRect(dc, &sep, line);
+    DeleteObject(line);
+
+    if (!valid) {
+        TextOutUtf8(dc, L"这个会话已经不存在了", RECT{kRoomPadX, 70, client.right, 100}, ui.font,
+                    g_palette->system, DT_LEFT | DT_TOP | DT_SINGLELINE);
+        return;
+    }
+
+    for (std::size_t i = 0; i < state->rows.size(); ++i) {
+        const RoomRow& row = state->rows[i];
+        if (row.rect.bottom < 52 || row.rect.top > client.bottom) continue;
+        const bool hovered = (static_cast<int>(i) == state->hover);
+        switch (row.kind) {
+            case RoomRowKind::Section:
+                TextOutUtf8(dc, Utf8ToWide(row.label), row.rect, ui.fontSmall, g_palette->accent,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                break;
+            case RoomRowKind::Hint:
+                TextOutUtf8(dc, Utf8ToWide(row.label), row.rect, ui.fontSmall, g_palette->system,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                break;
+            case RoomRowKind::ReadOnly:
+                TextOutUtf8(dc, Utf8ToWide(row.label),
+                            RECT{row.rect.left, row.rect.top, row.rect.left + kRoomLabelWidth,
+                                 row.rect.bottom},
+                            ui.font, g_palette->system, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                TextOutUtf8(dc, Utf8ToWide(row.value),
+                            RECT{row.rect.left + kRoomLabelWidth, row.rect.top, row.rect.right,
+                                 row.rect.bottom},
+                            ui.font, g_palette->text,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                break;
+            case RoomRowKind::Toggle: {
+                TextOutUtf8(dc, Utf8ToWide(row.label),
+                            RECT{row.rect.left, row.rect.top, row.rect.left + kRoomLabelWidth,
+                                 row.rect.bottom},
+                            ui.font, g_palette->text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                DrawToggle(dc, row.box, row.on);
+                TextOutUtf8(dc, Utf8ToWide(row.value),
+                            RECT{row.box.right + 12, row.rect.top, row.rect.right, row.rect.bottom},
+                            ui.fontSmall, g_palette->system,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                break;
+            }
+            case RoomRowKind::Action: {
+                const bool hot = hovered;
+                ui::DrawRoundedControl(dc, row.box, 6, g_palette->panel,
+                                       hot ? g_palette->hover : g_palette->neutral,
+                                       g_palette->neutralBorder);
+                TextOutUtf8(dc, Utf8ToWide(row.label), row.box, ui.font,
+                            row.arg == "delete" ? RGB(0xE8, 0x6B, 0x6B) : g_palette->text,
+                            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                break;
+            }
+            case RoomRowKind::Member:
+            case RoomRowKind::Request: {
+                TextOutUtf8(dc, Utf8ToWide(row.label),
+                            RECT{row.rect.left, row.rect.top, row.box.left - 8, row.rect.bottom},
+                            ui.font, g_palette->text,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                const std::string info =
+                    row.kind == RoomRowKind::Request
+                        ? std::string("申请入群")
+                        : (std::string(RoleLabelOf(row.role)) +
+                           (row.value.empty() ? std::string() : "・" + row.value));
+                TextOutUtf8(dc, Utf8ToWide(info),
+                            RECT{row.box.left + 4, row.rect.top, row.box.right + 60, row.rect.bottom},
+                            ui.fontSmall, g_palette->system, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                const wchar_t* primary =
+                    row.kind == RoomRowKind::Request ? L"同意"
+                                                     : (row.role == "member" ? L"设为管理员"
+                                                                             : L"撤销管理员");
+                ui::DrawRoundedControl(dc, row.box, 6, g_palette->panel,
+                                       hovered ? g_palette->hover : g_palette->neutral,
+                                       g_palette->neutralBorder);
+                TextOutUtf8(dc, primary, row.box, ui.fontSmall,
+                            row.enabled ? g_palette->text : g_palette->system,
+                            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                if (row.hasExtra) {
+                    ui::DrawRoundedControl(dc, row.extra, 6, g_palette->panel,
+                                           state->hoverExtra == static_cast<int>(i)
+                                               ? g_palette->hover
+                                               : g_palette->neutral,
+                                           g_palette->neutralBorder);
+                    TextOutUtf8(dc, row.kind == RoomRowKind::Request ? L"拒绝" : L"踢出",
+                                row.extra, ui.fontSmall,
+                                row.enabled ? RGB(0xE8, 0x6B, 0x6B) : g_palette->system,
+                                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                }
+                break;
+            }
+            default: {
+                TextOutUtf8(dc, Utf8ToWide(row.label),
+                            RECT{row.rect.left, row.rect.top, row.rect.left + kRoomLabelWidth,
+                                 row.rect.bottom},
+                            ui.font, g_palette->text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                const bool editing = (static_cast<int>(i) == state->editRow);
+                if (!editing) {
+                    ui::DrawRoundedControl(dc, row.box, 6, g_palette->panel,
+                                           hovered && row.enabled ? g_palette->hover
+                                                                  : g_palette->neutral,
+                                           g_palette->neutralBorder);
+                    TextOutUtf8(dc, Utf8ToWide(row.value), 
+                                RECT{row.box.left + 8, row.box.top, row.box.right - 8,
+                                     row.box.bottom},
+                                ui.font, row.enabled ? g_palette->text : g_palette->system,
+                                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                }
+                break;
+            }
+        }
+    }
+}
+
+LRESULT CALLBACK RoomSettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* state = reinterpret_cast<RoomSettingsState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+        case WM_NCCREATE: {
+            auto* created = reinterpret_cast<RoomSettingsState*>(
+                reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(created));
+            created->dlg = hwnd;
+            return TRUE;
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            if (state) PaintRoomSettings(state, dc);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_ERASEBKGND:
+            return 1;  // 背景由 WM_PAINT 画，避免闪
+        case WM_MOUSEMOVE: {
+            if (!state) break;
+            const int x = GET_X_LPARAM(lp);
+            const int y = GET_Y_LPARAM(lp);
+            int hover = -1;
+            int hoverExtra = -1;
+            for (std::size_t i = 0; i < state->rows.size(); ++i) {
+                const RoomRow& row = state->rows[i];
+                if (PtInRect(&row.rect, POINT{x, y})) hover = static_cast<int>(i);
+                if (row.hasExtra && PtInRect(&row.extra, POINT{x, y})) {
+                    hoverExtra = static_cast<int>(i);
+                }
+            }
+            if (hover != state->hover || hoverExtra != state->hoverExtra) {
+                state->hover = hover;
+                state->hoverExtra = hoverExtra;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+        case WM_MOUSEWHEEL: {
+            if (!state) break;
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            const int maxScroll = state->contentHeight > (client.bottom - 52)
+                                      ? state->contentHeight - (client.bottom - 52)
+                                      : 0;
+            state->scrollTop -= GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA * 48;
+            if (state->scrollTop < 0) state->scrollTop = 0;
+            if (state->scrollTop > maxScroll) state->scrollTop = maxScroll;
+            LayoutRoomSettings(state);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        case WM_LBUTTONDOWN: {
+            if (!state) break;
+            const int x = GET_X_LPARAM(lp);
+            const int y = GET_Y_LPARAM(lp);
+            const int index = state->hover;
+            if (index < 0 || index >= static_cast<int>(state->rows.size())) break;
+            const RoomRow row = state->rows[index];  // 拷一份：发命令会重建 rows
+            const int sessionIndex = FindSession(state->sessionId);
+            if (sessionIndex < 0) break;
+            Session& session = g_sessions[sessionIndex];
+
+            if (state->edit) CommitRoomRowEdit(state, true);
+
+            // ---- 本地设置：只改本机，永不上传 ----
+            if (!row.local.empty()) {
+                if (row.local == "mute") {
+                    session.prefs.muted = !session.prefs.muted;
+                } else if (row.local == "pin") {
+                    session.prefs.pinned = !session.prefs.pinned;
+                } else if (row.local == "alert") {
+                    session.prefs.alertImportant = !session.prefs.alertImportant;
+                }
+                SaveRoomPrefs();
+                RefreshSessionPanel();
+                RefreshRoomSettings(state);
+                return 0;
+            }
+
+            // ---- 只读 / 分组：点一下不说话 ----
+            if (row.kind == RoomRowKind::Section || row.kind == RoomRowKind::ReadOnly ||
+                row.kind == RoomRowKind::Hint) {
+                return 0;
+            }
+
+            // ---- 管理员设置项 ----
+            if (!row.key.empty()) {
+                if (!row.enabled) {
+                    ViewAddItem(ItemKind::Notice, "只有群主和管理员能改这一项",
+                                dchat::NowTimeString());
+                    return 0;
+                }
+                if (row.kind == RoomRowKind::Toggle) {
+                    const bool next = !row.on;
+                    const std::string value = next ? "true" : "false";
+                    SendRoomCommand("GSET", state->sessionId + " " + row.key + " " + value);
+                    // 本地先改再重画：只发不等的话用户点完看不到任何反应
+                    ApplyLocalRoomSetting(session, row.key, value);
+                    RefreshRoomSettings(state);
+                    return 0;
+                }
+                if (row.kind == RoomRowKind::Choice) {
+                    // 三个值循环。顺序固定，用户点几下就能到自己要的那个
+                    const std::string next = session.joinMode == "direct"    ? "approval"
+                                             : session.joinMode == "approval" ? "auto"
+                                                                              : "direct";
+                    SendRoomCommand("GSET", state->sessionId + " " + row.key + " " + next);
+                    ApplyLocalRoomSetting(session, row.key, next);
+                    RefreshRoomSettings(state);
+                    return 0;
+                }
+                // 文本 / 数字：就地开一个编辑框
+                std::string initial = row.value;
+                if (row.key == "maxmembers") initial = std::to_string(session.maxMembers);
+                if (row.key == "cachemaxmb") initial = U64Text(session.cacheMaxMb);
+                if (row.key == "announcement" && initial == "（没有公告）") initial.clear();
+                state->edit = CreateWindowExW(0, L"EDIT", Utf8ToWide(initial).c_str(),
+                                              WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 10, 10,
+                                              hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+                if (state->edit) {
+                    state->editRow = index;
+                    SendMessageW(state->edit, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
+                    LayoutRoomSettings(state);
+                    SetFocus(state->edit);
+                    SendMessageW(state->edit, EM_SETSEL, 0, -1);
+                }
+                return 0;
+            }
+
+            // ---- 成员行的两个按钮 ----
+            if (row.kind == RoomRowKind::Member) {
+                if (PtInRect(&row.extra, POINT{x, y})) {
+                    SendRoomCommand("GKICK", state->sessionId + " " + row.arg);
+                } else if (row.role == "member") {
+                    SendRoomCommand("GMEMBER", state->sessionId + " " + row.arg + " admin");
+                } else {
+                    SendRoomCommand("GMEMBER", state->sessionId + " " + row.arg + " member");
+                }
+                return 0;
+            }
+            if (row.kind == RoomRowKind::Request) {
+                const bool accept = !PtInRect(&row.extra, POINT{x, y});
+                SendRoomCommand("GREQ", state->sessionId + " " + row.arg + (accept ? " ok" : " no"));
+                const int target = FindSession(state->sessionId);
+                if (target >= 0) {
+                    g_sessions[target].pending.erase(
+                        std::remove(g_sessions[target].pending.begin(),
+                                    g_sessions[target].pending.end(), row.arg),
+                        g_sessions[target].pending.end());
+                }
+                RefreshRoomSettings(state);
+                return 0;
+            }
+
+            // ---- 危险操作 ----
+            if (row.kind == RoomRowKind::Action) {
+                if (row.arg == "leave") {
+                    SendRoomCommand("GLEAVE", state->sessionId);
+                    DestroyWindow(hwnd);
+                } else if (row.arg == "delete") {
+                    SendRoomCommand("GDELETE", state->sessionId);
+                    DestroyWindow(hwnd);
+                } else if (row.arg == "block") {
+                    SendRoomCommand("BLOCK", session.title);
+                    ViewAddItem(ItemKind::Notice, "已把 " + session.title + " 加入黑名单",
+                                dchat::NowTimeString());
+                } else if (row.arg == "clearlocal") {
+                    // 删除本地聊天记录：**只删这台机器上的**。
+                    // 服务端那份不动 —— 那是"群的历史"，不是"我的历史"。
+                    session.items.clear();
+                    if (sessionIndex == g_currentSession) {
+                        g_items.clear();
+                        g_scrollTop = 0;
+                        if (ui.hView) {
+                            InvalidateRect(ui.hView, nullptr, TRUE);
+                            ViewUpdateScrollbar(ui.hView);
+                        }
+                    }
+                    ViewAddItem(ItemKind::Notice, "已删除本机上这个会话的聊天记录",
+                                dchat::NowTimeString());
+                }
+                return 0;
+            }
+            break;
+        }
+        case WM_KEYDOWN:
+            if (state && state->edit && wp == VK_RETURN) {
+                CommitRoomRowEdit(state, true);
+                RefreshRoomSettings(state);
+                return 0;
+            }
+            if (state && state->edit && wp == VK_ESCAPE) {
+                CommitRoomRowEdit(state, false);
+                RefreshRoomSettings(state);
+                return 0;
+            }
+            break;
+        case WM_CLOSE:
+            if (state && state->edit) CommitRoomRowEdit(state, true);
+            DestroyWindow(hwnd);
+            return 0;
+        case WM_DESTROY:
+            // 通知 OpenRoomSettings 的模态嵌套循环退出。**不要用 PostQuitMessage**：
+            // 它是线程级的，主循环也会收到 WM_QUIT —— 后果是"关掉设置窗 = 整个客户端退出"。
+            if (state && state->closed) *state->closed = true;
+            g_roomSettingsWindow = nullptr;
+            return 0;
+        default:
+            break;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+/** 打开某个会话的设置窗口（群聊 / 私聊 / 大厅共用这一个）。 */
+void OpenRoomSettings(HWND parent, const std::string& sessionId) {
+    if (FindSession(sessionId) < 0) return;
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = RoomSettingsProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hbrBackground = nullptr;
+        wc.lpszClassName = kRoomSettingsClass;
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+
+    RoomSettingsState state;
+    // 模态循环的退出信号（窗口销毁时由 WM_DESTROY 置位）。
+    bool closed = false;
+    state.closed = &closed;
+    state.sessionId = sessionId;
+    RefreshRoomSettings(&state);
+
+    RECT rc{0, 0, kRoomWndWidth, kRoomWndHeight};
+    AdjustWindowRectEx(&rc, kDlgStyle, FALSE, kDlgExStyle);
+    const int width = rc.right - rc.left;
+    const int height = rc.bottom - rc.top;
+    RECT parentRect{};
+    GetWindowRect(parent, &parentRect);
+    int x = parentRect.left + ((parentRect.right - parentRect.left) - width) / 2;
+    int y = parentRect.top + ((parentRect.bottom - parentRect.top) - height) / 2;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+
+    HWND dlg = CreateWindowExW(kDlgExStyle, kRoomSettingsClass, L"会话设置", kDlgStyle, x, y, width,
+                               height, parent, nullptr, GetModuleHandleW(nullptr), &state);
+    if (!dlg) return;
+    g_roomSettingsWindow = dlg;  // 记进进程内全局：状态导出要用它，不能靠 FindWindowW
+    EnableWindow(parent, FALSE);
+    ShowWindow(dlg, SW_SHOW);
+    SetFocus(dlg);
+    RefreshRoomSettings(&state);  // 有了真实客户区尺寸之后再排一次版
+
+    // 模态嵌套循环：**靠 closed 退出**，不靠 PostQuitMessage（线程级，会把主循环
+    // 一起干掉 = 关掉设置窗就退出整个客户端）。
+    MSG msg;
+    while (!closed && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (msg.message == WM_QUIT) break;
+        if (!IsDialogMessageW(dlg, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    EnableWindow(parent, TRUE);
+    SetForegroundWindow(parent);
+}
+
+// ---------------------------------------------------------------------------
+// 群聊窗口：新建群聊 + 搜索群聊
+// ---------------------------------------------------------------------------
+//
+// 两件事放一个窗口，因为它们本来就是一件事的两头：想加群的人先搜，搜不到就自己建。
+// 分成两个窗口的话，"搜不到"之后用户还得回去找另一个入口。
+//
+// 搜索结果（GHIT）是**异步**回来的，所以这里不用轮询也不用手动刷新：
+// 收齐一轮（GHIT_END）之后由 WM_APP_LINE 往这个窗口发一条消息，
+// 窗口收到就重画面板。
+constexpr const wchar_t* kGroupWindowClass = L"DchatGroupWindow";
+constexpr int kGroupWndWidth = 470;
+constexpr int kGroupWndHeight = 560;
+constexpr int kGroupResultRowHeight = 46;
+
+struct GroupWindowState {
+    HWND dlg = nullptr;
+    HWND idEdit = nullptr;
+    HWND nameEdit = nullptr;
+    HWND keywordEdit = nullptr;
+    // 输入框的背景刷子。系统默认的 EDIT 是**白底黑字**，压在这个深色界面上
+    // 非常突兀（真机反馈原话："这个输入很突兀"）。WM_CTLCOLOREDIT 里换成主题色，
+    // 和程序里其它输入框保持一致。
+    HBRUSH fieldBrush = nullptr;
+    RECT createButton{};
+    RECT searchButton{};
+    RECT resultsTop{};
+    int hoverJoin = -1;
+    std::string hint;
+    // 窗口销毁时置位，用来通知 OpenGroupWindow 里那个模态嵌套循环退出。
+    // **不能用 PostQuitMessage**：它是线程级的，主循环也会收到 WM_QUIT，
+    // 于是"关掉群聊窗"就变成了"退出整个客户端"（真机 + 自动化都实测过）。
+    bool* closed = nullptr;
+};
+
+HWND g_groupWindow = nullptr;
+constexpr UINT kMsgGroupHits = WM_APP + 40;
+
+void LayoutGroupWindow(GroupWindowState* state) {
+    RECT client{};
+    GetClientRect(state->dlg, &client);
+    const int left = 18;
+    const int right = client.right - 18;
+    const int editHeight = 26;
+    int y = 66;
+    MoveWindow(state->idEdit, left + 90, y, right - left - 90 - 110, editHeight, TRUE);
+    state->createButton = RECT{right - 104, y - 2, right, y + editHeight + 2};
+    y += editHeight + 10;
+    MoveWindow(state->nameEdit, left + 90, y, right - left - 90, editHeight, TRUE);
+    y += editHeight + 26;
+
+    MoveWindow(state->keywordEdit, left + 90, y, right - left - 90 - 110, editHeight, TRUE);
+    state->searchButton = RECT{right - 104, y - 2, right, y + editHeight + 2};
+    y += editHeight + 18;
+    state->resultsTop = RECT{left, y, right, client.bottom - 14};
+}
+
+// 「＋ 新建群聊」和「搜索」两个表头按钮共用一个窗口
+void OpenGroupWindow(HWND parent);
+
+/**
+ * 群搜索结果里第 index 行的「加入」按钮矩形。
+ *
+ * 命中测试和自动化测试的状态导出**共用这一个函数**：这个项目已经吃过"布局两边各算
+ * 一次、迟早错位"的亏（见 ui_layout.h 开头那段），坐标只留一份就不会再错。
+ */
+RECT GroupJoinRect(const GroupWindowState* state, int clientRight, std::size_t index) {
+    int rowY = state->resultsTop.top + (state->hint.empty() ? 0 : 28);
+    rowY += static_cast<int>(index) * kGroupResultRowHeight;
+    return RECT{clientRight - 18 - 78, rowY + 6, clientRight - 18, rowY + 30};
+}
+
+/**
+ * 导出两个**自绘**弹窗的可点区域（会话设置窗、群聊窗）。
+ *
+ * 为什么不在测试脚本里把布局再算一遍：这两个窗口的按钮没有 HWND（第 304 行那段
+ * 注释解释了为什么改成自绘），只能按坐标点；而"布局两边各算一次、迟早错位"这个坑
+ * 项目里已经吃过。所以把**这一帧真正用来命中的那份矩形**导出来给脚本。
+ *
+ * 坐标一律是**弹窗客户区坐标**；脚本自己换算到屏幕再发消息。
+ */
+void AppendDialogState(std::string* out) {
+    const auto rectText = [](const RECT& r) {
+        return std::to_string(r.left) + "," + std::to_string(r.top) + "," +
+               std::to_string(r.right) + "," + std::to_string(r.bottom);
+    };
+    const auto handleText = [](HWND h) {
+        return std::to_string(reinterpret_cast<unsigned long long>(h));
+    };
+
+    // ---- 会话设置窗 ----
+    HWND roomDlg = g_roomSettingsWindow;  // 进程内全局，见它的声明处（不能用 FindWindowW）
+    *out += "dialog.roomSettings.open=" + std::to_string(roomDlg != nullptr ? 1 : 0) + "\n";
+    if (roomDlg != nullptr) {
+        auto* state = reinterpret_cast<RoomSettingsState*>(
+            GetWindowLongPtrW(roomDlg, GWLP_USERDATA));
+        *out += "dialog.roomSettings.hwnd=" + handleText(roomDlg) + "\n";
+        if (state != nullptr) {
+            *out += "dialog.roomSettings.id=" + EscapeStateValue(state->sessionId) + "\n";
+            *out += "dialog.roomSettings.edit=" + handleText(state->edit) + "\n";
+            *out += "dialog.roomSettings.scrollTop=" + std::to_string(state->scrollTop) + "\n";
+            *out += "dialog.roomSettings.rows=" + std::to_string(state->rows.size()) + "\n";
+            for (std::size_t i = 0; i < state->rows.size(); ++i) {
+                const RoomRow& row = state->rows[i];
+                const std::string q = "dialog.roomSettings.row." + std::to_string(i) + ".";
+                *out += q + "label=" + EscapeStateValue(row.label) + "\n";
+                *out += q + "value=" + EscapeStateValue(row.value) + "\n";
+                *out += q + "key=" + EscapeStateValue(row.key) + "\n";
+                *out += q + "local=" + EscapeStateValue(row.local) + "\n";
+                *out += q + "arg=" + EscapeStateValue(row.arg) + "\n";
+                *out += q + "role=" + EscapeStateValue(row.role) + "\n";
+                *out += q + "enabled=" + std::to_string(row.enabled ? 1 : 0) + "\n";
+                *out += q + "on=" + std::to_string(row.on ? 1 : 0) + "\n";
+                *out += q + "hasExtra=" + std::to_string(row.hasExtra ? 1 : 0) + "\n";
+                *out += q + "row=" + rectText(row.rect) + "\n";
+                *out += q + "box=" + rectText(row.box) + "\n";
+                *out += q + "extra=" + rectText(row.extra) + "\n";
+            }
+        }
+    }
+
+    // ---- 群聊窗（新建 / 搜索）----
+    *out += "dialog.group.open=" + std::to_string(g_groupWindow != nullptr ? 1 : 0) + "\n";
+    if (g_groupWindow != nullptr) {
+        auto* state = reinterpret_cast<GroupWindowState*>(
+            GetWindowLongPtrW(g_groupWindow, GWLP_USERDATA));
+        *out += "dialog.group.hwnd=" + handleText(g_groupWindow) + "\n";
+        // 窗口**存不存在**和**看不看得见**是两件事：FindWindow 找得到隐藏窗口，
+        // 而隐藏窗口点了没反应。少了这个字段，"点了没反应"就只能靠猜。
+        *out += "dialog.group.visible=" +
+                std::to_string(IsWindowVisible(g_groupWindow) ? 1 : 0) + "\n";
+        if (state != nullptr) {
+            *out += "dialog.group.create=" + rectText(state->createButton) + "\n";
+            *out += "dialog.group.search=" + rectText(state->searchButton) + "\n";
+            *out += "dialog.group.edit.id=" + handleText(state->idEdit) + "\n";
+            *out += "dialog.group.edit.name=" + handleText(state->nameEdit) + "\n";
+            *out += "dialog.group.edit.keyword=" + handleText(state->keywordEdit) + "\n";
+            // 关键词原文也导出来：搜索搜不到时，第一件要分清的事就是
+            // "客户端到底把什么词发出去了" —— 少了它就只能靠猜。
+            {
+                std::wstring keyword(
+                    static_cast<std::size_t>(GetWindowTextLengthW(state->keywordEdit)), L'\0');
+                if (!keyword.empty()) {
+                    GetWindowTextW(state->keywordEdit, &keyword[0],
+                                   static_cast<int>(keyword.size()) + 1);
+                }
+                *out += "dialog.group.keyword=" + EscapeStateValue(WideToUtf8(keyword)) + "\n";
+            }
+            *out += "dialog.group.hint=" + EscapeStateValue(state->hint) + "\n";
+            RECT client{};
+            GetClientRect(state->dlg, &client);
+            for (std::size_t i = 0; i < g_groupHits.size() && i < 10; ++i) {
+                *out += "dialog.group.join." + std::to_string(i) + "=" +
+                        rectText(GroupJoinRect(state, client.right, i)) + "\n";
+            }
+        }
+    }
+
+    // ---- 群搜索结果的内容（点了搜索之后才有）----
+    for (std::size_t i = 0; i < g_groupHits.size() && i < 10; ++i) {
+        const GroupHit& hit = g_groupHits[i];
+        const std::string q = "groupHits." + std::to_string(i) + ".";
+        *out += q + "id=" + EscapeStateValue(hit.id) + "\n";
+        *out += q + "name=" + EscapeStateValue(hit.name) + "\n";
+        *out += q + "members=" + std::to_string(hit.members) + "\n";
+        *out += q + "maxMembers=" + std::to_string(hit.maxMembers) + "\n";
+        *out += q + "joinMode=" + EscapeStateValue(hit.joinMode) + "\n";
+    }
+}
+
+LRESULT CALLBACK GroupWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* state = reinterpret_cast<GroupWindowState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+        case WM_NCCREATE: {
+            auto* created = reinterpret_cast<GroupWindowState*>(
+                reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(created));
+            created->dlg = hwnd;
+            return TRUE;
+        }
+        case kMsgGroupHits:
+            if (state) {
+                state->hint = g_groupHits.empty()
+                                  ? "没有找到公开的群（只有管理员勾了「向公众展示」的群才会出现在这里）"
+                                  : ("搜到 " + std::to_string(g_groupHits.size()) + " 个群");
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            HBRUSH back = CreateSolidBrush(g_palette->panel);
+            FillRect(dc, &client, back);
+            DeleteObject(back);
+            RECT title{0, 0, client.right, 52};
+            HBRUSH titleBrush = CreateSolidBrush(g_palette->windowBg);
+            FillRect(dc, &title, titleBrush);
+            DeleteObject(titleBrush);
+            TextOutUtf8(dc, L"群聊", RECT{18, 0, client.right - 18, 52}, ui.fontLarge,
+                        g_palette->text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            HBRUSH line = CreateSolidBrush(g_palette->border);
+            RECT sep{0, 51, client.right, 52};
+            FillRect(dc, &sep, line);
+            DeleteObject(line);
+
+            if (state) {
+                TextOutUtf8(dc, L"群聊 ID", RECT{18, 66, 108, 92}, ui.font, g_palette->text,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                TextOutUtf8(dc, L"群聊名称", RECT{18, 102, 108, 128}, ui.font, g_palette->text,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                ui::DrawRoundedControl(dc, state->createButton, 6, g_palette->panel,
+                                       g_palette->accent, g_palette->accent);
+                TextOutUtf8(dc, L"创建群聊", state->createButton, ui.font, g_palette->accentText,
+                            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                TextOutUtf8(dc, L"ID 只能用 3-16 位小写字母 / 数字 / 下划线 / 减号，建好后不可更改",
+                            RECT{18, 138, client.right - 18, 160}, ui.fontSmall, g_palette->system,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+                const int searchTop = static_cast<int>(state->resultsTop.top) - 44;
+                TextOutUtf8(dc, L"关键词", RECT{18, searchTop, 108, searchTop + 26}, ui.font,
+                            g_palette->text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                ui::DrawRoundedControl(dc, state->searchButton, 6, g_palette->panel,
+                                       g_palette->neutral, g_palette->neutralBorder);
+                TextOutUtf8(dc, L"搜索群聊", state->searchButton, ui.font, g_palette->text,
+                            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+                // ---- 结果列表 ----
+                if (!state->hint.empty()) {
+                    TextOutUtf8(dc, Utf8ToWide(state->hint),
+                                RECT{18, state->resultsTop.top, client.right - 18,
+                                     state->resultsTop.top + 24},
+                                ui.fontSmall, g_palette->system, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                }
+                int y = state->resultsTop.top + (state->hint.empty() ? 0 : 28);
+                for (std::size_t i = 0; i < g_groupHits.size(); ++i) {
+                    const GroupHit& hit = g_groupHits[i];
+                    RECT row{18, y, client.right - 18, y + kGroupResultRowHeight - 6};
+                    if (row.bottom > state->resultsTop.bottom) break;
+                    TextOutUtf8(dc, Utf8ToWide(hit.name), RECT{row.left, row.top, row.right - 90, row.top + 22},
+                                ui.font, g_palette->text,
+                                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    const std::string sub = hit.id + "　" + std::to_string(hit.members) + " / " +
+                                            std::to_string(hit.maxMembers) + " 人　" +
+                                            JoinModeLabelOf(hit.joinMode);
+                    TextOutUtf8(dc, Utf8ToWide(sub),
+                                RECT{row.left, row.top + 20, row.right - 90, row.bottom}, ui.fontSmall,
+                                g_palette->system, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                    RECT join{row.right - 78, row.top + 6, row.right, row.top + 30};
+                    ui::DrawRoundedControl(dc, join, 6, g_palette->panel,
+                                           static_cast<int>(i) == state->hoverJoin ? g_palette->hover
+                                                                                   : g_palette->neutral,
+                                           g_palette->neutralBorder);
+                    TextOutUtf8(dc, L"加入", join, ui.fontSmall, g_palette->text,
+                                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    y += kGroupResultRowHeight;
+                }
+            }
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_CTLCOLOREDIT: {
+            // 输入框跟随主题：不改的话是系统默认的白底黑字，在深色界面上很扎眼
+            if (!state) break;
+            HDC editDc = reinterpret_cast<HDC>(wp);
+            SetTextColor(editDc, g_palette->text);
+            SetBkColor(editDc, g_palette->windowBg);
+            if (!state->fieldBrush) state->fieldBrush = CreateSolidBrush(g_palette->windowBg);
+            return reinterpret_cast<LRESULT>(state->fieldBrush);
+        }
+        case WM_MOUSEMOVE: {
+            if (!state) break;
+            RECT client{};
+            GetClientRect(state->dlg, &client);
+            const int x = GET_X_LPARAM(lp);
+            const int y = GET_Y_LPARAM(lp);
+            int hoverJoin = -1;
+            for (std::size_t i = 0; i < g_groupHits.size(); ++i) {
+                const RECT join = GroupJoinRect(state, client.right, i);
+                if (PtInRect(&join, POINT{x, y})) hoverJoin = static_cast<int>(i);
+            }
+            if (hoverJoin != state->hoverJoin) {
+                state->hoverJoin = hoverJoin;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+        case WM_LBUTTONDOWN: {
+            if (!state) break;
+            RECT client{};
+            GetClientRect(state->dlg, &client);
+            const int x = GET_X_LPARAM(lp);
+            const int y = GET_Y_LPARAM(lp);
+            if (PtInRect(&state->createButton, POINT{x, y})) {
+                std::wstring id(static_cast<std::size_t>(GetWindowTextLengthW(state->idEdit)), L'\0');
+                if (!id.empty()) GetWindowTextW(state->idEdit, &id[0], static_cast<int>(id.size()) + 1);
+                std::wstring name(static_cast<std::size_t>(GetWindowTextLengthW(state->nameEdit)), L'\0');
+                if (!name.empty()) GetWindowTextW(state->nameEdit, &name[0], static_cast<int>(name.size()) + 1);
+                const std::string idText = WideToUtf8(id);
+                const std::string nameText = WideToUtf8(name);
+                if (idText.empty() || nameText.empty()) {
+                    state->hint = "群聊 ID 和群聊名称都要填";
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    break;
+                }
+                // 先在本地校验一遍 ID：不合规的 ID 让服务器拒也行，但本地判能立刻
+                // 告诉用户"哪个字符不行"，而不用等一个来回
+                dchat::RoomIdError idError = dchat::RoomIdError::None;
+                const std::string normalized = dchat::NormalizeGroupId(idText, &idError);
+                if (normalized.empty()) {
+                    state->hint = dchat::RoomIdErrorText(idError);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    break;
+                }
+                SendRoomCommand("GCREATE",
+                                normalized + " " + dchat::Base64Encode(nameText));
+                state->hint = "已创建「" + nameText + "」（ID：" + normalized + "）";
+                SetWindowTextW(state->idEdit, L"");
+                SetWindowTextW(state->nameEdit, L"");
+                InvalidateRect(hwnd, nullptr, FALSE);
+                break;
+            }
+            if (PtInRect(&state->searchButton, POINT{x, y})) {
+                std::wstring keyword(static_cast<std::size_t>(GetWindowTextLengthW(state->keywordEdit)), L'\0');
+                if (!keyword.empty()) {
+                    GetWindowTextW(state->keywordEdit, &keyword[0], static_cast<int>(keyword.size()) + 1);
+                }
+                const std::string text = WideToUtf8(keyword);
+                if (text.empty()) {
+                    state->hint = "先填一个关键词再搜";
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    break;
+                }
+                g_groupHits.clear();
+                g_groupSearchDone = false;
+                state->hint = "正在搜索…";
+                SendRoomCommand("GSEARCH", dchat::Base64Encode(text));
+                InvalidateRect(hwnd, nullptr, FALSE);
+                break;
+            }
+            if (state->hoverJoin >= 0 &&
+                state->hoverJoin < static_cast<int>(g_groupHits.size())) {
+                SendRoomCommand("GJOIN", g_groupHits[state->hoverJoin].id);
+                state->hint = "已申请加入「" + g_groupHits[state->hoverJoin].name + "」";
+                InvalidateRect(hwnd, nullptr, FALSE);
+                break;
+            }
+            break;
+        }
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            return 0;
+        case WM_DESTROY:
+            if (state && state->fieldBrush) {
+                DeleteObject(state->fieldBrush);
+                state->fieldBrush = nullptr;
+            }
+            // 通知 OpenGroupWindow 里那个模态嵌套循环：窗口没了，该退出了。
+            if (state && state->closed) *state->closed = true;
+            g_groupWindow = nullptr;
+            // **不要在这里 PostQuitMessage**：它是线程级的，主循环也会收到 WM_QUIT，
+            // 于是"关掉群聊窗"就变成了"退出整个客户端"。
+            return 0;
+        default:
+            break;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void OpenGroupWindow(HWND parent) {
+    if (g_groupWindow) {
+        SetForegroundWindow(g_groupWindow);
+        return;
+    }
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = GroupWindowProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hbrBackground = nullptr;
+        wc.lpszClassName = kGroupWindowClass;
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+
+    GroupWindowState state;
+    // 模态循环的退出信号：窗口销毁时由 WM_DESTROY 置位（见 state.closed 的说明）。
+    bool closed = false;
+    state.closed = &closed;
+    RECT rc{0, 0, kGroupWndWidth, kGroupWndHeight};
+    AdjustWindowRectEx(&rc, kDlgStyle, FALSE, kDlgExStyle);
+    const int width = rc.right - rc.left;
+    const int height = rc.bottom - rc.top;
+    RECT parentRect{};
+    GetWindowRect(parent, &parentRect);
+    int x = parentRect.left + ((parentRect.right - parentRect.left) - width) / 2;
+    int y = parentRect.top + ((parentRect.bottom - parentRect.top) - height) / 2;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+
+    HWND dlg = CreateWindowExW(kDlgExStyle, kGroupWindowClass, L"群聊", kDlgStyle, x, y, width,
+                               height, parent, nullptr, GetModuleHandleW(nullptr), &state);
+    if (!dlg) return;
+    g_groupWindow = dlg;
+
+    // 三个输入框：ID / 名称 / 搜索关键词。用系统 EDIT，中文输入法才能正常工作
+    // （自绘的输入控件要自己处理 IME 组合串，那是另一个量级的活）。
+    auto makeEdit = [&](const wchar_t* initial) {
+        HWND edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initial,
+                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 10,
+                                    10, dlg, nullptr, GetModuleHandleW(nullptr), nullptr);
+        SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
+        return edit;
+    };
+    state.idEdit = makeEdit(L"");
+    state.nameEdit = makeEdit(L"");
+    state.keywordEdit = makeEdit(L"");
+    LayoutGroupWindow(&state);
+
+    EnableWindow(parent, FALSE);
+    ShowWindow(dlg, SW_SHOW);
+    SetFocus(state.idEdit);
+    LayoutGroupWindow(&state);
+
+    // 模态嵌套循环：**靠 closed 退出**，不靠 PostQuitMessage（那个是线程级的，
+    // 会把主循环一起干掉 = 关掉群聊窗就退出整个客户端）。
+    MSG msg;
+    while (!closed && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (msg.message == WM_QUIT) break;
+        if (!IsDialogMessageW(dlg, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    EnableWindow(parent, TRUE);
+    SetForegroundWindow(parent);
+}
+
 void OpenSettings(HWND parent) {
     static bool registered = false;
     if (!registered) {
@@ -4233,11 +6239,14 @@ void Layout(HWND hwnd) {
 
     LayoutWindowChrome(hwnd);  // 菜单栏 / 状态条 / 输入行的几何（ui_layout）
 
-    // 记录区：左右各留一点边距，上下紧贴菜单栏与状态条
+    // 记录区：左右各留一点边距，上下紧贴菜单栏与状态条。
+    // 多会话时给左侧会话列表让出位置（左栏只在服务端确认支持多会话后才出现）。
+    const int listWidth = g_roomsEnabled ? dchat::kSessionListWidth : 0;
     const int viewTop = g_contentTop;
     const int viewBottom = g_bottom.statusBar.top;
     const int viewHeight = viewBottom - viewTop;
-    MoveWindow(ui.hView, 12, viewTop, width - 24, viewHeight > 60 ? viewHeight : 60, TRUE);
+    MoveWindow(ui.hView, listWidth + 12, viewTop, width - listWidth - 24,
+               viewHeight > 60 ? viewHeight : 60, TRUE);
 
     // 输入框：父窗口画胶囊背景，编辑框内嵌在里面
     // （这样文字天然有内边距，圆角也不会被方形底色盖住）
@@ -4632,9 +6641,305 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             auto* payload = reinterpret_cast<std::string*>(lp);
             if (payload) {
                 const dchat::Message raw = dchat::ParseLine(*payload);
-                // 文件传输的几条消息不进记录区，由文件模块自己处理
-                if (raw.command.compare(0, 5, "FILE_") == 0) {
+                // 文件传输的几条消息不进记录区，由文件模块自己处理。
+                // RFILE_ 是"群聊/私聊里的附件"（比 FILE_ 多一格房间号），
+                // 也走同一个模块：文件 ID 是全局唯一的，下载流程完全一样。
+                if (raw.command.compare(0, 5, "FILE_") == 0 ||
+                    raw.command.compare(0, 6, "RFILE_") == 0) {
                     HandleFileLine(*payload);
+                    delete payload;
+                    return 0;
+                }
+
+                // ---- 多会话（私聊 / 群聊）的控制行：全部不进记录区 ----
+                if (raw.command == "FEATURES") {
+                    // 服务端确认能力。**必须以它为准**：没有 rooms1 就说明对面是旧版
+                    // 服务端，这时要老老实实退回"只有大厅"的老界面，而不是发一堆
+                    // 它看不懂的命令然后什么都不发生。
+                    g_roomsEnabled = raw.rest.find("rooms1") != std::string::npos;
+                    if (!g_roomsEnabled) {
+                        ViewAddItem(ItemKind::Notice,
+                                    "服务器版本较旧，本次连接只能用大厅（没有群聊和私聊）",
+                                    dchat::NowTimeString());
+                    }
+                    Layout(ui.hwnd);
+                    RefreshSessionPanel();
+                    delete payload;
+                    return 0;
+                }
+                if (raw.command == "ROOMLIST") {
+                    std::vector<std::string> fields = raw.Words();
+                    if (fields.size() >= 6) {
+                        const std::string id = fields[0];
+                        const std::string kind = fields[1];
+                        std::string title;
+                        std::vector<unsigned char> nameBytes;
+                        if (dchat::Base64Decode(fields[2], &nameBytes)) {
+                            title.assign(nameBytes.begin(), nameBytes.end());
+                        }
+                        const int index = EnsureSession(id, kind);
+                        Session& session = g_sessions[index];
+                        if (!title.empty()) session.title = title;
+                        session.kind = kind;
+                        session.members = std::atoi(fields[3].c_str());
+                        session.maxMembers = std::atoi(fields[4].c_str());
+                        session.myRole = fields[5];
+                        g_roomListSeen.push_back(id);  // 这一轮名单里有它（ROOMLIST_END 要用）
+                    }
+                    RefreshSessionPanel();
+                    delete payload;
+                    return 0;
+                }
+                if (raw.command == "ROOMLIST_END") {
+                    // 名单是**全量**的：这一轮没出现的群聊，说明我已经不在里面了
+                    // （退群 / 被踢），要从左栏拿掉。以前只增不减 —— 退群之后那个群
+                    // 会永远留在列表里（自动化联调实测）。
+                    // 只处理群聊：大厅不是"退出"语义，私聊也不在这份名单里。
+                    for (int i = static_cast<int>(g_sessions.size()) - 1; i >= 0; --i) {
+                        if (g_sessions[i].kind != "group") continue;
+                        bool seen = false;
+                        for (const std::string& seenId : g_roomListSeen) {
+                            if (g_sessions[i].id == seenId) { seen = true; break; }
+                        }
+                        if (seen) continue;
+                        const bool removingCurrent = (i == g_currentSession);
+                        if (removingCurrent) {
+                            // 守住"g_items 是当前会话的活副本"这条不变量：
+                            // 删的就是当前会话，先把活副本存回去，再把大厅的换上来。
+                            g_sessions[i].items = g_items;
+                            g_sessions[i].scrollTop = g_scrollTop;
+                        }
+                        g_sessions.erase(g_sessions.begin() + i);
+                        if (removingCurrent) {
+                            g_currentSession = -1;
+                            if (!g_sessions.empty()) {
+                                const int hall = FindSession(dchat::kHallId);
+                                g_currentSession = hall >= 0 ? hall : 0;
+                                Session& landed = g_sessions[g_currentSession];
+                                g_items = landed.items;
+                                g_scrollTop = landed.scrollTop;
+                                g_stickToBottom = landed.stickToBottom;
+                                SendRawLine(dchat::BuildLine("ROOM", landed.id));
+                            } else {
+                                g_items.clear();
+                                g_scrollTop = 0;
+                            }
+                        } else if (i < g_currentSession) {
+                            --g_currentSession;
+                        }
+                    }
+                    g_roomListSeen.clear();
+                    // 列表发完了：如果当前会话还是空的（第一次登录），落到大厅上
+                    if (g_sessions.empty()) EnsureSession(dchat::kHallId, "hall");
+                    if (g_currentSession < 0 ||
+                        g_currentSession >= static_cast<int>(g_sessions.size())) {
+                        SwitchSession(HallSessionIndex());
+                    }
+                    if (ui.hwnd) Layout(ui.hwnd);
+                    RefreshSessionPanel();
+                    delete payload;
+                    return 0;
+                }
+                if (raw.command == "RINFO") {
+                    // RINFO <房间ID> <kind> <显示名B64> <群主> <成员数> <上限> <我的角色> <加群方式> <listed>
+                    std::vector<std::string> fields = raw.Words();
+                    if (fields.size() >= 9) {
+                        const int index = EnsureSession(fields[0], fields[1]);
+                        Session& session = g_sessions[index];
+                        session.kind = fields[1];
+                        std::vector<unsigned char> nameBytes;
+                        if (dchat::Base64Decode(fields[2], &nameBytes)) {
+                            session.title.assign(nameBytes.begin(), nameBytes.end());
+                        }
+                        session.owner = fields[3];
+                        session.members = std::atoi(fields[4].c_str());
+                        session.maxMembers = std::atoi(fields[5].c_str());
+                        session.myRole = fields[6];
+                        session.joinMode = fields[7];
+                        session.listed = (fields[8] == "true");
+                        session.memberList.clear();  // 紧接着会收到整张成员表
+                    }
+                    RefreshSessionPanel();
+                    delete payload;
+                    return 0;
+                }
+                if (raw.command == "RSET") {
+                    // RSET <房间ID> <设置名> <值>；群名和公告的值是 Base64
+                    std::vector<std::string> fields = raw.Words();
+                    if (fields.size() >= 2) {
+                        const int index = FindSession(fields[0]);
+                        if (index >= 0) {
+                            Session& session = g_sessions[index];
+                            const std::string& key = fields[1];
+                            const std::string value = fields.size() >= 3 ? fields[2] : std::string();
+                            std::string text;
+                            std::vector<unsigned char> bytes;
+                            if (key == "name" || key == "announcement") {
+                                if (dchat::Base64Decode(value, &bytes)) {
+                                    text.assign(bytes.begin(), bytes.end());
+                                }
+                            }
+                            if (key == "name") {
+                                session.name = text;
+                                if (!text.empty()) session.title = text;
+                            } else if (key == "announcement") {
+                                session.announcement = text;
+                            } else if (key == "maxmembers") {
+                                session.maxMembers = std::atoi(value.c_str());
+                            } else if (key == "joinmode") {
+                                session.joinMode = value;
+                            } else if (key == "listed") {
+                                session.listed = (value == "true");
+                            } else if (key == "cachemaxmb") {
+                                session.cacheMaxMb = std::strtoull(value.c_str(), nullptr, 10);
+                            } else if (key == "importantnotice") {
+                                session.importantNotice = (value == "true");
+                            }
+                        }
+                    }
+                    RefreshSessionPanel();
+                    delete payload;
+                    return 0;
+                }
+                if (raw.command == "RMEMBERS") {
+                    std::vector<std::string> fields = raw.Words();
+                    if (fields.size() >= 3) {
+                        const int index = FindSession(fields[0]);
+                        if (index >= 0) {
+                            SessionMember member;
+                            member.nick = fields[1];
+                            member.role = fields[2];
+                            std::vector<unsigned char> bytes;
+                            if (fields.size() >= 4 && dchat::Base64Decode(fields[3], &bytes)) {
+                                member.display.assign(bytes.begin(), bytes.end());
+                            }
+                            Session& session = g_sessions[index];
+                            bool replaced = false;
+                            for (SessionMember& existing : session.memberList) {
+                                if (existing.nick == member.nick) {
+                                    existing = member;
+                                    replaced = true;
+                                    break;
+                                }
+                            }
+                            if (!replaced) session.memberList.push_back(member);
+                        }
+                    }
+                    delete payload;
+                    return 0;
+                }
+                if (raw.command == "RMEMBERS_END") {
+                    RefreshSessionPanel();
+                    delete payload;
+                    return 0;
+                }
+                if (raw.command == "RHIST") {
+                    // RHIST <房间ID> <序号> <原始协议行>：序号之后的原文本身就是一条
+                    // 完整的协议行，所以**原样再走一遍实时那条路径** —— 两条路径共用
+                    // 同一个函数，历史里能显示对的东西实时也一定显示得对。
+                    const dchat::Message outer = dchat::ParseLine(raw.rest);
+                    const std::vector<std::string> fields = outer.Words();
+                    if (fields.size() >= 3) {
+                        std::size_t offset = fields[0].size() + 1 + fields[1].size() + 1;
+                        if (offset <= raw.rest.size()) RenderChatLine(raw.rest.substr(offset));
+                    }
+                    delete payload;
+                    return 0;
+                }
+                if (raw.command == "RHIST_END") {
+                    if (ui.hView) {
+                        g_stickToBottom = true;
+                        g_scrollTop = 1 << 30;
+                        InvalidateRect(ui.hView, nullptr, TRUE);
+                        ViewUpdateScrollbar(ui.hView);
+                    }
+                    delete payload;
+                    return 0;
+                }
+                if (raw.command == "GDMLINK") {
+                    // GDMLINK <房间ID> <对方昵称>：对方主动找我，或者我自己点了某人
+                    std::vector<std::string> fields = raw.Words();
+                    if (fields.size() >= 2) {
+                        const int index = EnsureSession(fields[0], "dm");
+                        if (g_sessions[index].title.empty() || g_sessions[index].title == fields[0]) {
+                            g_sessions[index].title = fields[1];
+                        }
+                        RefreshSessionPanel();
+                    }
+                    delete payload;
+                    return 0;
+                }
+                if (raw.command == "GHIT") {
+                    // GHIT <房间ID> <群名B64> <成员数> <上限> <加群方式>
+                    std::vector<std::string> fields = raw.Words();
+                    if (fields.size() >= 5) {
+                        std::vector<unsigned char> bytes;
+                        std::string name = fields[0];
+                        if (dchat::Base64Decode(fields[1], &bytes)) {
+                            name.assign(bytes.begin(), bytes.end());
+                        }
+                        g_groupHits.push_back({fields[0], name, std::atoi(fields[2].c_str()),
+                                               std::atoi(fields[3].c_str()), fields[4]});
+                    }
+                    delete payload;
+                    return 0;
+                }
+                if (raw.command == "GHIT_END") {
+                    g_groupSearchDone = true;
+                    // 搜索结果窗口开着就通知它重画。不用轮询：收齐一轮才发一条消息，
+                    // 空闲时一个定时器都不用跑。
+                    if (g_groupWindow) PostMessageW(g_groupWindow, kMsgGroupHits, 0, 0);
+                    delete payload;
+                    return 0;
+                }
+                if (raw.command == "GREQ") {
+                    // GREQ <时间> <房间ID> <昵称>：有人申请入群（或 GREQS 的逐行回应）
+                    std::vector<std::string> fields = raw.Words();
+                    if (!fields.empty() && dchat::LooksLikeTime(fields[0])) {
+                        fields.erase(fields.begin());
+                    }
+                    if (fields.size() >= 2) {
+                        const int index = FindSession(fields[0]);
+                        const std::string title =
+                            index >= 0 ? g_sessions[index].title : fields[0];
+                        ViewAddItem(ItemKind::Notice,
+                                    fields[1] + " 申请加入「" + title + "」" +
+                                        (index >= 0 && g_sessions[index].myRole != "member"
+                                             ? "（用群设置里的「入群申请」同意或拒绝）"
+                                             : ""),
+                                    dchat::NowTimeString());
+                        if (index >= 0) {
+                            g_sessions[index].pending.push_back(fields[1]);
+                        }
+                    }
+                    delete payload;
+                    return 0;
+                }
+                if (raw.command == "GREQ_END") {
+                    RefreshSessionPanel();
+                    delete payload;
+                    return 0;
+                }
+                if (raw.command == "GBLOCKS") {
+                    // 一轮黑名单 = 连续若干行 + GBLOCKS_END。协议里没有单独的"开始"
+                    // 标记，所以用"上一轮已经收完"来判断这是新一轮的开头 ——
+                    // 不清空的话，重新请求（拉黑之后服务端会主动推一次）会越积越多。
+                    if (g_blockListDone) {
+                        g_blockList.clear();
+                        g_blockListDone = false;
+                    }
+                    if (!raw.rest.empty()) g_blockList.push_back(raw.rest);
+                    delete payload;
+                    return 0;
+                }
+                if (raw.command == "GBLOCKS_END") {
+                    g_blockListDone = true;
+                    delete payload;
+                    return 0;
+                }
+
+                // ---- 聊天类：按房间投递 ----
+                if (RenderChatLine(*payload)) {
                     delete payload;
                     return 0;
                 }
@@ -4711,6 +7016,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         AuthDialogOnResult(true, std::wstring());
                     } else {
                         ViewAddItem(ItemKind::Notice, "已登录：" + g_nick, notice.time);
+                    }
+                    // 声明多会话能力。服务端会回一行 FEATURES 确认；没有确认、
+                    // 或者确认里没有 rooms1，就说明对面还是旧版服务端 ——
+                    // 那时我们会一直停在"只有大厅"的老界面，而不是发一堆
+                    // 对方看不懂的命令然后什么都不发生。
+                    if (!g_roomsDeclared) {
+                        SendRawLine(dchat::BuildLine("FEATURES", "rooms1"));
+                        g_roomsDeclared = true;
+                        // 顺带把黑名单拉回来。以前**从来没有**人请求过它，
+                        // 于是 g_blockList 永远是空的（自动化联调实测：拉黑明明
+                        // 成功了，界面上却什么都看不到）。
+                        SendRawLine(dchat::BuildLine("BLOCKS"));
                     }
                     UpdateStatus();
                 } else {
@@ -4849,11 +7166,65 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (y < dchat::kMenuBarHeight) return 0;  // 点菜单栏空白处：不做任何事
+
+            // ---- 左侧会话列表：点一行就切过去 ----
+            if (g_roomsEnabled && g_sessionLayout.valid) {
+                const dchat::SessionHitResult hit = dchat::HitTestSessionList(g_sessionLayout, x, y);
+                if (hit.what == dchat::SessionHit::Row && hit.index >= 0 &&
+                    hit.index < static_cast<int>(g_sessionOrder.size())) {
+                    SwitchSession(g_sessionOrder[hit.index]);
+                    return 0;
+                }
+                if (hit.what == dchat::SessionHit::NewGroup || hit.what == dchat::SessionHit::Search) {
+                    // 表头两个按钮：都打开群聊窗口（新建和搜索本就在一个窗口里，
+                    // 搜不到就自己建 —— 分成两个入口的话用户还得回头找）
+                    OpenGroupWindow(hwnd);
+                    return 0;
+                }
+            }
             break;                                     // 其它地方交给默认处理
+        }
+        case WM_RBUTTONUP: {
+            // 右键会话列表里的一行 = 打开那个会话的设置。
+            // 设置项本身（免打扰、置顶、群设置、成员……）全在窗口里，不在右键菜单里
+            // 再列一遍 —— 两处入口迟早会出现"菜单里有、窗口里没有"这种不一致，
+            // 而用户会以为功能坏了。
+            if (g_roomsEnabled && g_sessionLayout.valid) {
+                const int x = GET_X_LPARAM(lp);
+                const int y = GET_Y_LPARAM(lp);
+                const dchat::SessionHitResult hit =
+                    dchat::HitTestSessionList(g_sessionLayout, x, y);
+                if (hit.what == dchat::SessionHit::Row && hit.index >= 0 &&
+                    hit.index < static_cast<int>(g_sessionOrder.size())) {
+                    const int sessionIndex = g_sessionOrder[hit.index];
+                    SwitchSession(sessionIndex);  // 右键一个会话，多半就是要看它
+                    OpenRoomSettings(hwnd, g_sessions[sessionIndex].id);
+                    return 0;
+                }
+            }
+            break;
         }
         case WM_MOUSEMOVE: {
             const int x = GET_X_LPARAM(lp);
             const int y = GET_Y_LPARAM(lp);
+            // 会话列表的悬停高亮（和菜单栏各自独立，互不干扰）
+            if (g_roomsEnabled && g_sessionLayout.valid) {
+                const dchat::SessionHitResult hit =
+                    dchat::HitTestSessionList(g_sessionLayout, x, y);
+                // -1 无、>=0 第几行、-2 搜索按钮、-3 新建按钮（见绘制处的约定）
+                int hover = -1;
+                if (hit.what == dchat::SessionHit::Row) {
+                    hover = hit.index;
+                } else if (hit.what == dchat::SessionHit::Search) {
+                    hover = -2;
+                } else if (hit.what == dchat::SessionHit::NewGroup) {
+                    hover = -3;
+                }
+                if (hover != g_sessionHover) {
+                    g_sessionHover = hover;
+                    InvalidateRect(hwnd, &g_sessionLayout.header, FALSE);
+                }
+            }
             int hover = -1;
             for (std::size_t i = 0; i < g_menuItems.size(); ++i) {
                 if (PtInRect(&g_menuItems[i].rect, POINT{x, y})) {
@@ -4896,6 +7267,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         case WM_TIMER:
+            if (wp == kStateTimerId) {
+                WriteClientState();  // 自动化测试：把界面状态导出给脚本断言
+                return 0;
+            }
             if (wp == kRecordTimerId) {
                 if (!g_recorder.IsRunning()) {
                     KillTimer(hwnd, kRecordTimerId);  // 已经收尾了，别再空转
@@ -5017,6 +7392,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DestroyWindow(hwnd);
             return 0;
         case WM_DESTROY:
+            // 会话的本地设置（免打扰 / 置顶 / 本地缓存）在退出时落盘。
+            // 也在这里存是因为它们是**纯客户端**的东西：丢了服务端不会有任何记录，
+            // 用户只会觉得"我上次明明设过免打扰"。
+            SaveRoomPrefs();
             if (ui.font) DeleteObject(ui.font);
             if (ui.fontSmall) DeleteObject(ui.fontSmall);
             if (ui.fontLarge) DeleteObject(ui.fontLarge);
@@ -5036,7 +7415,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int showCmd) {
     SetProcessDPIAware();
+    // 自动化测试用：`--state-file <路径>` 让客户端周期性把界面状态写进这个文件。
+    // 正常启动没有这个参数，g_statePath 为空 —— 导出函数第一行就返回。
+    {
+        int argc = 0;
+        LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+        if (argv != nullptr) {
+            for (int i = 1; i + 1 < argc; ++i) {
+                if (std::wstring(argv[i]) == L"--state-file") g_statePath = argv[i + 1];
+            }
+            LocalFree(argv);
+        }
+    }
     ui::Startup();  // 圆角与气泡都用 GDI+ 画
+    // 会话的本地设置（免打扰 / 置顶 / 本地缓存）先读回来。
+    // 这些是**纯本地**的东西，服务端永远不知道它们存在 —— 读在连接之前，
+    // 这样"免打扰"从第一秒就生效，而不是等用户切一次会话才想起来。
+    LoadRoomPrefs();
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -5064,6 +7459,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int showCmd) {
 
     ShowWindow(hwnd, showCmd);
     UpdateWindow(hwnd);
+
+    // 只有自动化测试才需要周期性导出（200ms，和录音计时同一个节奏）
+    if (!g_statePath.empty()) SetTimer(hwnd, kStateTimerId, 200, nullptr);
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

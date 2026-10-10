@@ -178,6 +178,113 @@ int SegmentHitTest(const RECT& segment, int segments, int x, int y) {
 }
 
 // ---------------------------------------------------------------------------
+// 左侧会话列表
+// ---------------------------------------------------------------------------
+
+int SessionListContentHeight(const std::vector<SessionRowInput>& sessions) {
+    return kSessionListHeaderH + static_cast<int>(sessions.size()) * kSessionRowHeight;
+}
+
+SessionListLayout LayoutSessionList(int top, int height, int scrollTop,
+                                    const std::vector<SessionRowInput>& sessions) {
+    SessionListLayout layout;
+    if (height <= 0) return layout;
+    layout.valid = true;
+    layout.panel = RECT{0, top, kSessionListWidth, top + height};
+    layout.header = RECT{0, top, kSessionListWidth, top + kSessionListHeaderH};
+
+    // 表头右侧两个方形按钮：搜索在左、新建在右（新建用得更多，靠右手更顺手）
+    const int buttonSize = kSessionListHeaderH - 8;
+    const int newLeft = kSessionListWidth - kSessionRowPadX - buttonSize;
+    layout.newButton = RECT{newLeft, top + 4, newLeft + buttonSize, top + 4 + buttonSize};
+    layout.searchButton =
+        RECT{newLeft - 4 - buttonSize, top + 4, newLeft - 4, top + 4 + buttonSize};
+    layout.title = RECT{kSessionRowPadX, top, layout.searchButton.left - 4, top + kSessionListHeaderH};
+
+    if (scrollTop < 0) scrollTop = 0;
+    // 只排**放得下**的行。可见范围由几何层算，点击命中就不会和绘制对不上 ——
+    // 两边各算一次"哪些行可见"是这类列表最容易出的错。
+    const int listTop = top + kSessionListHeaderH;
+    const int listBottom = top + height;
+    for (std::size_t i = 0; i < sessions.size(); ++i) {
+        const int rowTop = listTop + static_cast<int>(i) * kSessionRowHeight - scrollTop;
+        const int rowBottom = rowTop + kSessionRowHeight;
+        if (rowBottom <= listTop) continue;  // 滚到上面去了
+        if (rowTop >= listBottom) break;     // 下面放不下了
+
+        SessionRowLayout row;
+        row.valid = true;
+        row.index = static_cast<int>(i);
+        row.row = RECT{0, rowTop, kSessionListWidth, rowBottom};
+        const int centerY = rowTop + kSessionRowHeight / 2;
+        row.avatar = RECT{kSessionRowPadX, centerY - kSessionAvatarSize / 2,
+                          kSessionRowPadX + kSessionAvatarSize,
+                          centerY - kSessionAvatarSize / 2 + kSessionAvatarSize};
+
+        const int textLeft = row.avatar.right + 8;
+        const int textRight = kSessionListWidth - kSessionRowPadX;
+        row.title = RECT{textLeft, rowTop + 10, textRight, rowTop + 10 + 18};
+        row.subtitle = RECT{textLeft, rowTop + 30, textRight, rowTop + 30 + 16};
+
+        // 右侧的标记从右往左排：未读气泡最靠右，然后免打扰、图钉
+        int markRight = textRight;
+        if (sessions[i].unread > 0) {
+            const int badge = kSessionBadgeMin;
+            row.badge = RECT{markRight - badge, centerY - badge / 2, markRight,
+                             centerY - badge / 2 + badge};
+            markRight = row.badge.left - 6;
+        }
+        if (sessions[i].muted) {
+            row.muteMark = RECT{markRight - 16, centerY - 8, markRight, centerY + 8};
+            markRight = row.muteMark.left - 4;
+        }
+        if (sessions[i].pinned) {
+            row.pinMark = RECT{markRight - 16, centerY - 8, markRight, centerY + 8};
+        }
+        if (!row.badge.left && !row.muteMark.left && !row.pinMark.left) {
+            // 没有任何标记时把标题区留满；有标记时标题不能压到标记上
+            row.title.right = textRight;
+            row.subtitle.right = textRight;
+        } else {
+            int limit = textRight;
+            if (row.pinMark.left) limit = std::min(limit, static_cast<int>(row.pinMark.left) - 4);
+            if (row.muteMark.left) limit = std::min(limit, static_cast<int>(row.muteMark.left) - 4);
+            if (row.badge.left) limit = std::min(limit, static_cast<int>(row.badge.left) - 4);
+            row.title.right = std::max<LONG>(limit, row.title.left);
+            row.subtitle.right = std::max<LONG>(limit, row.subtitle.left);
+        }
+        layout.rows.push_back(row);
+    }
+    return layout;
+}
+
+SessionHitResult HitTestSessionList(const SessionListLayout& layout, int x, int y) {
+    SessionHitResult result;
+    if (!layout.valid) return result;
+    auto inside = [&](const RECT& rect) {
+        return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+    };
+    if (inside(layout.searchButton)) {
+        result.what = SessionHit::Search;
+        return result;
+    }
+    if (inside(layout.newButton)) {
+        result.what = SessionHit::NewGroup;
+        return result;
+    }
+    for (const SessionRowLayout& row : layout.rows) {
+        if (!row.valid) continue;
+        // 整行都是热区（不只是文字），这样点空白处也能切过去 —— 符合直觉
+        if (inside(row.row)) {
+            result.what = SessionHit::Row;
+            result.index = row.index;
+            return result;
+        }
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // 图标
 // ---------------------------------------------------------------------------
 

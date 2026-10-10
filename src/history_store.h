@@ -59,6 +59,15 @@ public:
      */
     std::vector<HistoryEntry> Since(unsigned long long afterSeq, std::size_t limit) const;
 
+    /**
+     * 取**最近** limit 条（旧 -> 新）。
+     *
+     * 和 Since 的区别很重要：Since 是"从头往后取 limit 条"，Recent 是"取最后 limit 条"。
+     * 客户端切进一个会话时要看的是最近发生的事，用 Since(0, 200) 在一条攒了两千条的
+     * 群里会拿到**最老的** 200 条 —— 用户切进群看到的是一片几个月前的内容。
+     */
+    std::vector<HistoryEntry> Recent(std::size_t limit) const;
+
     /** 序列化成文件内容（用于压实重写）。 */
     std::string Serialize() const;
 
@@ -71,6 +80,16 @@ public:
 
     /** 按字节预算再裁一次（服务端把它和文件占用放在同一个预算里）。 */
     void TrimToBytes(unsigned long long maxBytes);
+
+    /**
+     * 改预算，并立刻按新预算裁一次。
+     *
+     * 为什么需要它：每个房间的预算是群管理员的「总缓存最大大小」，运行期间随时会变，
+     * 而且历史和文件**共享**同一个预算 —— 群文件占多了，历史能用的就少了。
+     * 只靠 Append 里那次裁剪不行：它按的是构造时的 maxBytes_，
+     * 预算调大调小都不会生效，结果是"管理员把缓存调小了一半，磁盘占用纹丝不动"。
+     */
+    void SetBudget(std::size_t maxLines, unsigned long long maxBytes);
 
     void Clear();
 

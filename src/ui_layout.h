@@ -131,6 +131,86 @@ SettingsLayout LayoutSettings(int clientWidth, int clientHeight);
 int SegmentHitTest(const RECT& segment, int segments, int x, int y);
 
 // ---------------------------------------------------------------------------
+// 左侧会话列表（多会话改造新增）
+// ---------------------------------------------------------------------------
+//
+// 和别处一样的理由：一行多高、点在哪一行、未读气泡画在哪个矩形里，全是几何。
+// 写在 client.cpp 里就只能靠手点验证，而"点偏两像素没切过去"这种问题手点最难发现。
+inline constexpr int kSessionListWidth = 208;   // 左栏宽度
+inline constexpr int kSessionListHeaderH = 34;  // 表头（标题 + 两个按钮）
+inline constexpr int kSessionRowHeight = 58;
+inline constexpr int kSessionAvatarSize = 36;
+inline constexpr int kSessionRowPadX = 10;
+inline constexpr int kSessionBadgeMin = 18;     // 未读气泡最小直径
+
+/** 一行要显示的东西。**纯数据**，不带任何 client.cpp 的类型，这样单测直接塞假数据。 */
+struct SessionRowInput {
+    std::wstring title;
+    std::wstring subtitle;   // 群名/成员数，或私聊的最后一句话
+    int unread = 0;
+    bool muted = false;
+    bool pinned = false;
+    bool important = false;  // 有未读的重要消息（@我 / @全体）
+};
+
+struct SessionRowLayout {
+    RECT row{};
+    RECT avatar{};
+    RECT title{};
+    RECT subtitle{};
+    RECT badge{};
+    RECT pinMark{};
+    RECT muteMark{};
+    int index = -1;          // 对应哪个会话；-1 表示不是一个会话行
+    bool valid = false;
+};
+
+struct SessionListLayout {
+    RECT panel{};
+    RECT header{};
+    RECT title{};            // 表头上的「会话」
+    RECT searchButton{};     // 搜索群聊
+    RECT newButton{};        // 新建群聊
+    std::vector<SessionRowLayout> rows;
+    bool valid = false;
+};
+
+/**
+ * 算左栏的几何。
+ *
+ * 只排**放得下**的行：列表比栏高时后面的行不生成（滚动由调用方按 scrollTop 偏移
+ * 之后重新调用本函数实现 —— 让"可见范围"由几何层决定，点击命中就不会算错）。
+ *
+ * @param top     左栏顶边（菜单栏底边）
+ * @param height  左栏高度
+ * @param scrollTop 已经滚过去多少像素
+ */
+SessionListLayout LayoutSessionList(int top, int height, int scrollTop,
+                                    const std::vector<SessionRowInput>& sessions);
+
+/** 内容总高度（用于滚动条）。 */
+int SessionListContentHeight(const std::vector<SessionRowInput>& sessions);
+
+/** 点在哪个按钮/哪一行上？ */
+enum class SessionHit { None, Row, Search, NewGroup };
+
+struct SessionHitResult {
+    SessionHit what = SessionHit::None;
+    int index = -1;  // what == Row 时有效
+};
+
+SessionHitResult HitTestSessionList(const SessionListLayout& layout, int x, int y);
+
+/** 会话行的图标字形（系统图标字体）。 */
+inline constexpr wchar_t kGlyphSearch = L'\uE721';   // 放大镜
+inline constexpr wchar_t kGlyphAdd = L'\uE710';      // 加号
+inline constexpr wchar_t kGlyphMute = L'\uE74F';     // 铃铛关闭（免打扰）
+inline constexpr wchar_t kGlyphPin = L'\uE718';      // 图钉（置顶）
+inline constexpr wchar_t kGlyphHall = L'\uE7F4';     // 大厅 / 公共房间
+inline constexpr wchar_t kGlyphGroup = L'\uE902';    // 群聊
+inline constexpr wchar_t kGlyphPerson = L'\uE77B';   // 私聊
+
+// ---------------------------------------------------------------------------
 // 图标与装饰
 //
 // **用 Windows 自带的图标字体**（Segoe MDL2 Assets，Win10/11 都在），不自己画：

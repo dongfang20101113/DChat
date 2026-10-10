@@ -26,7 +26,7 @@ else()
     set(DCHAT_CRYPTO_BACKEND src/crypto_backend_openssl.cpp)
 endif()
 
-add_library(dchat_protocol STATIC src/socket_util.cpp src/protocol.cpp src/render.cpp src/input_history.cpp src/server_command.cpp src/auth.cpp src/file_transfer.cpp src/server_rules.cpp src/register_guard.cpp src/history_store.cpp src/crypto.cpp ${DCHAT_CRYPTO_BACKEND})
+add_library(dchat_protocol STATIC src/socket_util.cpp src/protocol.cpp src/render.cpp src/input_history.cpp src/server_command.cpp src/auth.cpp src/file_transfer.cpp src/server_rules.cpp src/register_guard.cpp src/history_store.cpp src/room.cpp src/room_registry.cpp src/crypto.cpp ${DCHAT_CRYPTO_BACKEND})
 target_include_directories(dchat_protocol PUBLIC src)
 # 密码学后端各自要链的系统库：
 #   Windows 用系统自带的 CNG（bcrypt.dll）
@@ -303,10 +303,30 @@ if(NOT TARGET test_register_guard)
     add_executable(test_register_guard tests/test_register_guard.cpp)
     target_link_libraries(test_register_guard PRIVATE dchat_protocol)
 endif()
+# 房间模型（大厅/群聊/私聊）的纯逻辑测试：ID 规则、加入退出审核踢人、群设置权限、
+# 搜索、序列化。跨平台目标 —— Windows 和 Linux 都要能编、能跑。
+if(NOT TARGET test_room)
+    add_executable(test_room tests/test_room.cpp)
+    target_link_libraries(test_room PRIVATE dchat_protocol)
+endif()
+# 服务端房间注册表：房间生命周期、私聊幂等、会话列表顺序、搜索、每房间独立历史、预算裁剪。
+if(NOT TARGET test_room_registry)
+    add_executable(test_room_registry tests/test_room_registry.cpp)
+    target_link_libraries(test_room_registry PRIVATE dchat_protocol)
+endif()
+# 多会话协议的端到端探针：直接说协议、不依赖任何界面。
+# 它测的是单测测不到的东西（命令有没有真的接上、消息有没有真的发对人），
+# 由 tools/run-rooms-e2e.ps1 驱动。两端都建：Linux 上也能拿它验服务端。
+add_executable(room_probe tools/room_probe.cpp)
+if(WIN32)
+    target_link_libraries(room_probe PRIVATE dchat_protocol ws2_32 Threads::Threads)
+else()
+    target_link_libraries(room_probe PRIVATE dchat_protocol Threads::Threads)
+endif()
 # ---- 编译告警选项：跨平台目标（用 if(TARGET) 兜住两端差异）----
 foreach(target_name dchat_protocol dchat_server test_protocol test_render test_server_rules
                      test_history test_server_command test_auth test_file_transfer test_crypto
-                     test_register_guard test_history_store)
+                     test_register_guard test_history_store test_room test_room_registry)
     if(NOT TARGET ${target_name})
         continue()
     endif()
@@ -351,6 +371,8 @@ dchat_add_test(file_transfer_tests test_file_transfer)
 dchat_add_test(crypto_tests test_crypto)
 dchat_add_test(register_guard_tests test_register_guard)
 dchat_add_test(history_store_tests test_history_store)
+dchat_add_test(room_tests test_room)
+dchat_add_test(room_registry_tests test_room_registry)
 dchat_add_test(voice_notes_tests test_voice_notes)
 dchat_add_test(ui_layout_tests test_ui_layout)
 dchat_add_test(chat_color_tests test_chat_color)

@@ -216,6 +216,94 @@ int main() {
               "选择器外面不算点中");
     }
 
+    // -----------------------------------------------------------------------
+    // 左侧会话列表（多会话）
+    //
+    // 这一块的 bug 全是"点偏两像素没切过去"那种：手点最难发现，所以每个矩形
+    // 和每一次命中都断言一遍。
+    {
+        std::printf("[会话列表] 几何与命中\n");
+        std::vector<dchat::SessionRowInput> rows;
+        for (int i = 0; i < 5; ++i) {
+            dchat::SessionRowInput row;
+            row.title = L"会话";
+            row.subtitle = L"3 人";
+            row.unread = (i == 1) ? 7 : 0;
+            row.muted = (i == 2);
+            row.pinned = (i == 0);
+            row.important = (i == 4);
+            rows.push_back(row);
+        }
+
+        const int top = dchat::kMenuBarHeight;
+        const int height = 400;
+        const dchat::SessionListLayout layout = dchat::LayoutSessionList(top, height, 0, rows);
+        check(layout.valid, "布局有效");
+        check(layout.panel.left == 0 && layout.panel.right == dchat::kSessionListWidth,
+              "面板贴着左边、宽度固定");
+        check(layout.panel.top == top, "面板上边贴菜单栏");
+        check(layout.panel.bottom == top + height, "面板下边到状态条");
+        check(layout.rows.size() == rows.size(), "五行都排得下");
+        check(dchat::SessionListContentHeight(rows) ==
+                  dchat::kSessionListHeaderH + 5 * dchat::kSessionRowHeight,
+              "内容总高度 = 表头 + 每行高度之和");
+
+        // 行必须**从上到下、不重叠、不跳行** —— 这三条任意一条破了，
+        // 点击就会落到相邻的会话上（用户会说"点 A 打开了 B"）
+        for (std::size_t i = 1; i < layout.rows.size(); ++i) {
+            check(layout.rows[i].row.top == layout.rows[i - 1].row.bottom,
+                  "相邻两行首尾相接、没有缝也没有重叠");
+            check(layout.rows[i].index == static_cast<int>(i), "行的下标按顺序递增");
+        }
+        check(layout.rows[0].row.top == top + dchat::kSessionListHeaderH, "第一行在表头下面");
+
+        // 表头两个按钮：不重叠、都落在面板内、搜索在新建左边
+        check(!Overlaps(layout.searchButton, layout.newButton), "搜索和新建按钮不重叠");
+        check(layout.newButton.right <= dchat::kSessionListWidth, "新建按钮不越出面板右边");
+        check(layout.searchButton.left > layout.title.left, "标题不会被按钮压住");
+        check(layout.searchButton.right < layout.newButton.left, "搜索在新建左边");
+
+        // 命中：整行都是热区，不只是文字
+        dchat::SessionHitResult hit =
+            dchat::HitTestSessionList(layout, 4, layout.rows[2].row.top + 4);
+        check(hit.what == dchat::SessionHit::Row && hit.index == 2, "点行的空白处也能命中这一行");
+        hit = dchat::HitTestSessionList(layout, layout.rows[4].row.left + 3,
+                                        layout.rows[4].row.bottom - 3);
+        check(hit.what == dchat::SessionHit::Row && hit.index == 4, "点行的下边缘命中同一行");
+        hit = dchat::HitTestSessionList(layout, layout.searchButton.left + 2,
+                                        layout.searchButton.top + 2);
+        check(hit.what == dchat::SessionHit::Search, "命中搜索按钮");
+        hit = dchat::HitTestSessionList(layout, layout.newButton.left + 2,
+                                        layout.newButton.top + 2);
+        check(hit.what == dchat::SessionHit::NewGroup, "命中新建按钮");
+        hit = dchat::HitTestSessionList(layout, dchat::kSessionListWidth + 5,
+                                        layout.rows[0].row.top + 4);
+        check(hit.what == dchat::SessionHit::None, "面板外面不算命中");
+        hit = dchat::HitTestSessionList(layout, 4, top + 2);
+        check(hit.what == dchat::SessionHit::None, "表头空白处不算命中任何一行");
+
+        // 放不下时只排可见的行，而且**下标仍然指向正确的会话** ——
+        // 这是滚动列表最容易出的错：可见行从第 3 条开始，但下标却从 0 数起
+        const dchat::SessionListLayout scrolled = dchat::LayoutSessionList(
+            top, dchat::kSessionListHeaderH + dchat::kSessionRowHeight * 2,
+            dchat::kSessionRowHeight, rows);
+        check(scrolled.rows.size() == 2, "只排放得下的行");
+        check(scrolled.rows[0].index == 1, "滚一行之后第一行是第 1 个会话（下标不能从 0 重来）");
+        check(scrolled.rows[1].index == 2, "第二行是第 2 个会话");
+        check(scrolled.rows[0].row.top == top + dchat::kSessionListHeaderH, "滚动后第一行仍贴表头");
+
+        // 极端情况不能崩：高度为 0、会话为空、滚动量为负
+        const dchat::SessionListLayout empty = dchat::LayoutSessionList(top, 0, 0, rows);
+        check(!empty.valid, "高度为 0 时布局无效（调用方据此跳过绘制）");
+        const dchat::SessionListLayout noRows =
+            dchat::LayoutSessionList(top, 300, 0, std::vector<dchat::SessionRowInput>());
+        check(noRows.valid && noRows.rows.empty(), "没有会话时不产生行，但面板仍然有效");
+        // 负数滚动量要夹回 0，否则第一行会跑到表头上面去、点不到
+        const dchat::SessionListLayout negative = dchat::LayoutSessionList(top, 300, -50, rows);
+        check(negative.rows[0].row.top == top + dchat::kSessionListHeaderH,
+              "滚动量为负时夹回 0");
+    }
+
     DeleteDC(dc);
     DeleteObject(g_font);
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

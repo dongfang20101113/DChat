@@ -26,6 +26,7 @@
 #include "file_transfer.h"
 #include "server_rules.h"
 #include "server_command.h"
+#include "room_registry.h"
 
 // 下面这些 using 让业务代码一个字都不用动就能两端编译。
 // 名字像 Winsock 是刻意的——大面积改名会让 diff 淹没真正的移植点。
@@ -76,6 +77,11 @@ bool ParseByteCount(const std::string& text, unsigned long long* out) {
 // 语音消息也是走这条路径（kind=voice），所以一起落盘。
 struct PendingUpload {          // 正在上传的文件（每个连接最多一个）
     std::string id;             // 客户端自己的传输 ID（只用于日志）
+    // 这个上传属于哪个房间。**在 FILE_SEND 的时候钉死**，之后不再看 currentRoom：
+    // 上传要跨越 FILE_SEND -> 一串 FILE_CHUNK -> FILE_END 好几条命令，用户完全
+    // 可能中途切到别的会话去。不钉死的话，文件的前半段会进 A 群、后半段进 B 群，
+    // 而 .part 文件只有一个 —— 结果是两个群里都出现一个内容错乱的附件。
+    std::string roomId = dchat::kHallId;
     std::string nameB64;
     unsigned long long declared = 0;
     // ---- 磁盘暂存 ----
@@ -110,9 +116,13 @@ struct PendingUpload {          // 正在上传的文件（每个连接最多一
 struct StoredFile {             // 已经传完、等人下载的文件
     std::string id;             // 服务器分配（F1、F2…）
     std::string owner;
+    // 这个文件属于哪个房间。**必须记**：不记的话，群 A 里的文件能被群 B 的人
+    // 拿着文件 ID 直接下载（FILE_GET 只认 ID），等于把私聊附件暴露给所有人。
+    // 同时也用来算"这个房间的缓存预算被文件占了多少"。
+    std::string roomId;
     std::string nameB64;
     unsigned long long size = 0;
-    std::string path;           // 文件内容在磁盘上的位置（dchat-files/upload-N）
+    std::string path;           // 文件内容在磁盘上的位置（dchat-files[/房间ID]/upload-N）
     std::string thumb;          // 缩略图（PNG，仍放内存：只有几 KB，且预览路径到处在用）
     std::chrono::steady_clock::time_point expires;
 };
@@ -183,17 +193,21 @@ unsigned long long StoredBytesLocked() {
 }
 
 // ---- 暂存目录 ----
-// 放在工作目录下，和 dchat-history.txt 一致：管理员知道去哪找，也方便单独做磁盘配额。
-std::string g_filesDir = "dchat-files";
+// 每个房间一个目录：dchat-files/<房间ID>/。**大厅沿用原来的 dchat-files 根目录**
+// （见 RoomRegistry::FilesDirFor），所以升级前已经传上去的文件照样下载得到。
+// 分目录不只是为了整齐：群被解散时删掉整个目录就能把它的文件清干净，
+// 不会误删别的群的东西。
+std::string g_filesRoot = "dchat-files";
 // 上传临时文件的序号，只用来保证 .part 名字唯一（正式附件的名字由 StoredFile::id 决定）
 unsigned long long g_uploadSeq = 0;
 constexpr const char* kPartSuffix = ".part";
 
-bool EnsureFilesDir() {
+bool EnsureFilesDir(const std::string& roomId) {
     std::error_code ec;
-    std::filesystem::create_directories(g_filesDir, ec);
+    const std::string dir = dchat::RoomRegistry::FilesDirFor(roomId);
+    std::filesystem::create_directories(dir, ec);
     if (ec) {
-        Log("cannot create file staging dir " + g_filesDir + "：" + ec.message());
+        Log("cannot create file staging dir " + dir + "：" + ec.message());
         return false;
     }
     return true;
@@ -207,23 +221,34 @@ void RemoveStoredFileQuiet(const std::string& path) {
     if (ec) Log("failed to remove staged file " + path + "：" + ec.message());
 }
 
-// 启动时清空暂存目录。
+// 启动时清空暂存根目录（连同各房间子目录一起）。
 // 文件本来就不跨重启（和以前"内存暂存"的行为一致：重启后旧附件不可下载），
 // 顺带把上次崩溃留下的 .part 残留一起清掉。
 void ClearFilesDir() {
     std::error_code ec;
     std::size_t removed = 0;
-    if (std::filesystem::exists(g_filesDir, ec)) {
-        for (const auto& entry : std::filesystem::directory_iterator(g_filesDir, ec)) {
+    if (std::filesystem::exists(g_filesRoot, ec)) {
+        for (const auto& entry : std::filesystem::directory_iterator(g_filesRoot, ec)) {
             std::error_code rm;
             if (std::filesystem::remove_all(entry.path(), rm)) ++removed;
         }
     }
     if (removed > 0) {
-        Log("cleared " + std::to_string(removed) + " leftover file(s) in " + g_filesDir +
+        Log("cleared " + std::to_string(removed) + " leftover file(s) in " + g_filesRoot +
             "（暂存不跨重启）");
     }
-    EnsureFilesDir();
+}
+
+/** 群被解散时把它的暂存目录整个删掉。大厅不走这里（它没有独立的子目录）。 */
+void ClearRoomFilesDir(const std::string& roomId) {
+    if (roomId == dchat::kHallId) return;
+    std::error_code ec;
+    const std::string dir = dchat::RoomRegistry::FilesDirFor(roomId);
+    if (!std::filesystem::exists(dir, ec)) return;
+    const std::uintmax_t removed = std::filesystem::remove_all(dir, ec);
+    if (removed > 0) {
+        Log("removed " + std::to_string(removed) + " item(s) in " + dir + "（房间已删除）");
+    }
 }
 
 // 清掉过期文件；返回被清掉的描述（用于日志）
@@ -243,17 +268,45 @@ std::vector<std::string> ExpireFilesLocked() {
     return expired;
 }
 
-// 存一个文件；成功返回服务器分配的 ID，失败返回空串
-std::string StoreFile(const std::string& owner, const std::string& nameB64,
-                      unsigned long long size, const std::string& path,
-                      const std::string& thumb) {
+/** 某个房间当前的文件占用（调用方已持有 g_filesMutex）。 */
+unsigned long long RoomStoredBytesLocked(const std::string& roomId) {
+    unsigned long long total = 0;
+    for (const auto& file : g_files) {
+        if (file->roomId == roomId) total += file->size;
+    }
+    return total;
+}
+
+// 存一个文件；成功返回服务器分配的 ID，失败返回空串。
+// roomBudget 为 0 表示"这个房间没有单独预算，只受全服 maxservertemp 约束"。
+std::string StoreFile(const std::string& roomId, const std::string& owner,
+                      const std::string& nameB64, unsigned long long size,
+                      const std::string& path, const std::string& thumb,
+                      unsigned long long roomBudget) {
     std::lock_guard<std::mutex> lock(g_filesMutex);
     for (const std::string& line : ExpireFilesLocked()) Log("stored file expired: " + line);
-    const unsigned long long budget = TempBudgetBytes();
-    if (size > budget) return std::string();  // 单个就超总量，存不下
-    // 腾地方：先按最旧的删，直到数量和总量都满足
+    const unsigned long long global = TempBudgetBytes();
+    const unsigned long long roomLimit =
+        (roomBudget > 0 && roomBudget < global) ? roomBudget : global;
+    if (size > roomLimit) return std::string();  // 单个就超预算，存不下
+
+    // 腾地方分两步，顺序很重要：
+    //   1) 先删**本房间**最旧的。群文件超预算是这个群自己的事，不该把别的房间的
+    //      东西挤掉 —— 否则会变成"隔壁群传了个大文件，我的文件凭空没了"。
+    //   2) 再按全服总量删最旧的。maxservertemp 是所有房间共享的那道总闸。
+    while (!g_files.empty() && RoomStoredBytesLocked(roomId) + size > roomLimit) {
+        auto victim = std::find_if(g_files.begin(), g_files.end(),
+                                   [&](const std::shared_ptr<StoredFile>& file) {
+                                       return file->roomId == roomId;
+                                   });
+        if (victim == g_files.end()) break;  // 本房间已经没有可删的了
+        Log("stored file evicted (room budget): " + (*victim)->id + "（" + (*victim)->owner +
+            " 上传）");
+        RemoveStoredFileQuiet((*victim)->path);
+        g_files.erase(victim);
+    }
     while (!g_files.empty() && (g_files.size() >= kMaxStoredFiles ||
-                                StoredBytesLocked() + size > budget)) {
+                                StoredBytesLocked() + size > global)) {
         Log("stored file evicted (no room): " + g_files.front()->id + "（" +
             g_files.front()->owner + " 上传）");
         // 淘汰时把磁盘文件一起删掉，否则"腾地方"只腾了内存、磁盘越攒越多
@@ -263,6 +316,7 @@ std::string StoreFile(const std::string& owner, const std::string& nameB64,
     auto file = std::make_shared<StoredFile>();
     file->id = "F" + std::to_string(++g_fileSeq);
     file->owner = owner;
+    file->roomId = roomId;
     file->nameB64 = nameB64;
     file->size = size;
     file->path = path;  // 内容已经在磁盘上了，这里只登记位置
@@ -273,50 +327,84 @@ std::string StoreFile(const std::string& owner, const std::string& nameB64,
 }
 
 // 按 ID 取文件（同时做过期清理）；找不到返回 nullptr
-// ---- 聊天记录：内存缓存 + 落盘 ----
+// ---- 聊天记录：每个房间各自一份 ----
 // keepchathistory 打开时，新加入的人能看到之前的记录，而且**服务端重启后还在**。
-std::mutex g_historyMutex;
-std::unique_ptr<dchat::HistoryStore> g_history;
-std::string g_historyPath = "dchat-history.txt";
+//
+// 从"一个全局记录"改成"每房间一份"是这次多会话改造的核心之一：私聊内容如果和
+// 群聊共用一份历史，回放时就会串会话 —— 那是最严重的一类 bug（串会话等于泄露）。
+//
+// 房间表、每房间历史、每房间落盘流全部由 g_roomsMutex 罩住。用同一把锁的理由是
+// "查房间 -> 改历史 -> 取广播目标"必须是一个原子操作，分层加锁迟早会出现
+// "广播到一半房间被删了"。锁顺序固定为 g_roomsMutex -> g_filesMutex
+// （算房间预算时要知道文件占了多大），绝不反过来。
+std::mutex g_roomsMutex;
+std::unique_ptr<dchat::RoomRegistry> g_rooms;
+
+// 房间名单（群聊 + 私聊）。大厅**不在**这个文件里 —— 它由代码建，
+// 写进去只会多一份可能与代码不一致的状态。和 dchat-admins.txt 同目录（服务工作目录）。
+constexpr const char* kRoomsPath = "dchat-rooms.txt";
+
+struct RoomHistoryFile {
+    std::ofstream out;
+    bool dirty = false;
+    bool compactDue = false;
+    unsigned long long sinceCompact = 0;
+    std::chrono::steady_clock::time_point flushedAt{};
+};
+// 只有真正写过盘的房间才会在这里留下条目。
+std::map<std::string, std::unique_ptr<RoomHistoryFile>> g_historyFiles;
+
 constexpr std::size_t kMaxHistoryLines = 2000;
-
-// 落盘的写入节流。
-// 为什么必须节流：每条消息都 flush 的话，16 客户端压测（实测 47 万条消息）
-// 会被磁盘 I/O 拖成另一个数量级。这里最多每秒 flush 一次，由周期任务兜底，
-// 退出前再补一次。**代价是崩溃时最多丢最后一秒的记录** —— 聊天记录可以接受。
-std::ofstream g_historyOut;
-std::chrono::steady_clock::time_point g_historyFlushedAt{};
-bool g_historyDirty = false;
 constexpr int kHistoryFlushMs = 1000;
-
-// 累计追加多少条就整份重写一次（文件里会攒下大量已被裁掉的旧行）。
-// 只在"规则开着"时才可能触发。
-unsigned long long g_historySinceCompact = 0;
 constexpr unsigned long long kHistoryCompactEvery = 512;
-// 该压实了：由 RememberHistory 置位、周期任务执行。
-// **不能在 RememberHistory 里直接压实** —— 那里持有 g_historyMutex，
-// 而 CompactHistory 要拿同一把锁，带着锁调用就是死锁。
-bool g_historyCompactDue = false;
 
-// 拿走 g_historyMutex 之后用这个取存储；懒建，上限只在这里定义一处
-dchat::HistoryStore& HistoryLocked() {
-    if (!g_history) {
-        g_history = std::make_unique<dchat::HistoryStore>(kMaxHistoryLines, ~0ull);
+dchat::RoomRegistry& RoomsLocked() {
+    if (!g_rooms) {
+        g_rooms = std::make_unique<dchat::RoomRegistry>(
+            kMaxHistoryLines, dchat::RuleMbToBytes(CurrentRules().maxServerTempMb));
     }
-    return *g_history;
+    return *g_rooms;
 }
 
-/** 把一条记录追加到历史文件（调用方已持有 g_historyMutex 且确认规则为真）。 */
-void AppendHistoryFileLocked(const dchat::HistoryEntry& entry) {
-    if (!g_historyOut.is_open()) {
-        g_historyOut.open(g_historyPath, std::ios::binary | std::ios::app);
-        if (!g_historyOut) {
-            Log("failed to open history file for append: " + g_historyPath);
+RoomHistoryFile& HistoryFileLocked(const std::string& roomId) {
+    std::unique_ptr<RoomHistoryFile>& slot = g_historyFiles[roomId];
+    if (!slot) slot = std::make_unique<RoomHistoryFile>();
+    return *slot;
+}
+
+/** 某个房间当前被群文件占掉的字节数（算历史能分到多少预算时要减掉）。 */
+unsigned long long RoomFilesBytes(const std::string& roomId) {
+    std::lock_guard<std::mutex> lock(g_filesMutex);
+    unsigned long long total = 0;
+    for (const auto& file : g_files) {
+        if (file->roomId == roomId) total += file->size;
+    }
+    return total;
+}
+
+/** 房间实际可用的缓存预算：群自己设的 cachemaxmb 和全局 maxservertemp 取小的那个。 */
+unsigned long long EffectiveRoomBudget(const dchat::Room& room) {
+    const unsigned long long own = dchat::RoomRegistry::BudgetBytes(room);
+    const unsigned long long global = dchat::RuleMbToBytes(CurrentRules().maxServerTempMb);
+    return own < global ? own : global;
+}
+
+/** 把一条记录追加到该房间的历史文件（调用方已持有 g_roomsMutex 且确认规则为真）。 */
+void AppendHistoryFileLocked(const std::string& roomId, const dchat::HistoryEntry& entry) {
+    RoomHistoryFile& file = HistoryFileLocked(roomId);
+    if (!file.out.is_open()) {
+        const std::string path = dchat::RoomRegistry::HistoryPathFor(roomId);
+        std::error_code ec;
+        const std::filesystem::path parent = std::filesystem::path(path).parent_path();
+        if (!parent.empty()) std::filesystem::create_directories(parent, ec);
+        file.out.open(path, std::ios::binary | std::ios::app);
+        if (!file.out) {
+            Log("failed to open history file for append: " + path);
             return;
         }
     }
-    g_historyOut << dchat::FormatHistoryFileLine(entry);
-    g_historyDirty = true;
+    file.out << dchat::FormatHistoryFileLine(entry);
+    file.dirty = true;
 }
 
 // ---- 每用户的阅读进度（离线补发用）----
@@ -341,10 +429,13 @@ constexpr unsigned long long kSeenCompactEvery = 512;
 void RecordSeen(const std::string& nick) {
     if (nick.empty()) return;
     // **先取序号、再拿 g_seenMutex**：两把锁不嵌套，避免锁顺序问题。
+    // 阅读进度这条路径只服务**大厅**的离线补发（群聊/私聊第一版不做离线补发，
+    // 重新登录后切到那个会话就能拉到最近历史），所以这里看的是大厅的序号。
     unsigned long long seq = 0;
     {
-        std::lock_guard<std::mutex> lock(g_historyMutex);
-        seq = HistoryLocked().LastSeq();
+        std::lock_guard<std::mutex> lock(g_roomsMutex);
+        dchat::HistoryStore* store = RoomsLocked().HistoryOf(dchat::kHallId);
+        seq = store ? store->LastSeq() : 0;
     }
     std::lock_guard<std::mutex> lock(g_seenMutex);
     unsigned long long& slot = g_lastSeen[nick];
@@ -409,53 +500,119 @@ void LoadSeen() {
 
 /** 把攒着的记录刷到磁盘（周期任务与退出前调用）。 */
 void FlushHistoryIfDirty() {
-    std::lock_guard<std::mutex> lock(g_historyMutex);
-    if (!g_historyDirty || !g_historyOut.is_open()) return;
-    g_historyOut.flush();
-    g_historyDirty = false;
-    g_historyFlushedAt = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(g_roomsMutex);
+    const auto now = std::chrono::steady_clock::now();
+    for (auto& pair : g_historyFiles) {
+        RoomHistoryFile& file = *pair.second;
+        if (!file.dirty || !file.out.is_open()) continue;
+        file.out.flush();
+        file.dirty = false;
+        file.flushedAt = now;
+    }
 }
 
 /** 整份重写历史文件，只留内存里还保着的那些（压实）。 */
 void CompactHistory() {
-    std::lock_guard<std::mutex> lock(g_historyMutex);
-    if (!g_history) return;
-    // 先关掉追加流，否则重写和追加会互相踩
-    if (g_historyOut.is_open()) {
-        g_historyOut.flush();
-        g_historyOut.close();
+    std::lock_guard<std::mutex> lock(g_roomsMutex);
+    dchat::RoomRegistry& rooms = RoomsLocked();
+    for (auto it = g_historyFiles.begin(); it != g_historyFiles.end();) {
+        const std::string roomId = it->first;
+        RoomHistoryFile& file = *it->second;
+
+        // 房间已经没了（群被解散）：把落盘流和这条记录一起清掉。
+        // 不清的话 g_historyFiles 会随着"建群 -> 解散"无限增长，而且下一次
+        // 建一个同名群时会**继承上一个群的历史** —— 那是最难查的一类串会话。
+        dchat::HistoryStore* store = rooms.HistoryOf(roomId);
+        if (!store) {
+            if (file.out.is_open()) file.out.close();
+            it = g_historyFiles.erase(it);
+            continue;
+        }
+        if (!file.compactDue) {
+            ++it;
+            continue;
+        }
+        // 先关掉追加流，否则重写和追加会互相踩
+        if (file.out.is_open()) {
+            file.out.flush();
+            file.out.close();
+        }
+        const std::string path = dchat::RoomRegistry::HistoryPathFor(roomId);
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            Log("failed to compact history file: " + path);
+            ++it;
+            continue;
+        }
+        out << store->Serialize();
+        file.sinceCompact = 0;
+        file.dirty = false;
+        file.compactDue = false;
+        Log("history compacted [" + roomId + "]: " + std::to_string(store->Size()) + " line(s) kept");
+        ++it;
     }
-    std::ofstream out(g_historyPath, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        Log("failed to compact history file: " + g_historyPath);
+}
+
+/** 启动时读一次房间名单（dchat-rooms.txt），恢复群聊与私聊。 */
+void LoadRooms() {
+    std::lock_guard<std::mutex> lock(g_roomsMutex);
+    dchat::RoomRegistry& rooms = RoomsLocked();
+    rooms.Reset();  // 先建大厅；它在文件里不存在，永远由代码建
+    std::ifstream in(kRoomsPath, std::ios::binary);
+    if (!in) {
+        Log(std::string("no rooms file yet; only the hall exists: ") + kRoomsPath);
         return;
     }
-    out << g_history->Serialize();
-    g_historySinceCompact = 0;
-    g_historyDirty = false;
-    Log("history compacted: " + std::to_string(g_history->Size()) + " line(s) kept");
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::size_t loaded = rooms.LoadFromText(text);
+    Log("loaded " + std::to_string(loaded) + " room(s) from " + kRoomsPath);
+}
+
+/** 写回房间名单。**调用前必须已经持有 g_roomsMutex**（和 SaveOpsLocked 同一个约定）。 */
+void SaveRoomsLocked() {
+    std::ofstream out(kRoomsPath, std::ios::binary | std::ios::trunc);
+    if (!out) return;  // 写不进去也不影响运行，内存里的房间照常生效
+    out << RoomsLocked().Serialize();
+}
+
+void SaveRooms() {
+    std::lock_guard<std::mutex> lock(g_roomsMutex);
+    SaveRoomsLocked();
 }
 
 /**
- * 启动时读一次历史文件。
+ * 启动时把每个房间的历史文件各读一遍。
  *
  * **无论 keepchathistory 是开还是关都要读**：读的目的不只是回放，
  * 更重要的是**继承文件里的最大序号**。否则：规则关着跑一阵（不写盘，
  * 但内存序号在涨），中途打开规则开始追加，序号是对的；可如果反过来 ——
  * 没读文件就从 1 开始追加，文件里已有的 N 条会让新行全部被判为"序号未递增"
  * 而在**下次启动时被丢弃**。
+ *
+ * 大厅沿用原来的 dchat-history.txt，所以升级后线上已有的记录照样读得回来。
  */
 void LoadHistory() {
-    std::ifstream in(g_historyPath, std::ios::binary);
-    std::lock_guard<std::mutex> lock(g_historyMutex);
-    if (!in) {
-        Log("no history file yet, will create when keepchathistory is on: " + g_historyPath);
-        return;
+    std::lock_guard<std::mutex> lock(g_roomsMutex);
+    dchat::RoomRegistry& rooms = RoomsLocked();
+    bool anyHall = false;
+    for (const dchat::Room& room : rooms.Snapshot()) {
+        const std::string path = dchat::RoomRegistry::HistoryPathFor(room.id);
+        std::ifstream in(path, std::ios::binary);
+        if (!in) continue;
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        dchat::HistoryStore* store = rooms.HistoryOf(room.id);
+        if (!store) continue;
+        const std::size_t loaded = store->LoadFromText(text);
+        if (room.id == dchat::kHallId) anyHall = true;
+        if (loaded > 0) {
+            Log("loaded " + std::to_string(loaded) + " history line(s) from " + path + "（末序号 " +
+                std::to_string(store->LastSeq()) + "）");
+        }
     }
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    const std::size_t loaded = HistoryLocked().LoadFromText(text);
-    Log("loaded " + std::to_string(loaded) + " history line(s) from " + g_historyPath +
-        "（末序号 " + std::to_string(g_history->LastSeq()) + "）");
+    if (!anyHall) {
+        Log(std::string("no history file yet, will create when keepchathistory is on: ") +
+            dchat::RoomRegistry::HistoryPathFor(dchat::kHallId));
+    }
 }
 
 unsigned long long StoredBytesTotal() {
@@ -463,58 +620,89 @@ unsigned long long StoredBytesTotal() {
     return StoredBytesLocked();
 }
 
-void RememberHistory(const std::string& line) {
-    std::lock_guard<std::mutex> lock(g_historyMutex);
-    dchat::HistoryStore& store = HistoryLocked();
-    const unsigned long long seq = store.Append(line);
+void RememberHistory(const std::string& roomId, const std::string& line) {
+    std::lock_guard<std::mutex> lock(g_roomsMutex);
+    dchat::RoomRegistry& rooms = RoomsLocked();
+    const dchat::Room* room = rooms.Find(roomId);
+    if (!room) return;
+    dchat::HistoryStore* store = rooms.HistoryOf(roomId);
+    if (!store) return;
 
-    // 行数和总预算都要守（预算 = 文件 + 聊天记录，由 maxservertemp 决定）
-    const unsigned long long budget = TempBudgetBytes();
-    const unsigned long long usedByFiles = StoredBytesTotal();
-    store.TrimToBytes(budget > usedByFiles ? budget - usedByFiles : 0);
+    const unsigned long long seq = store->Append(line);
+
+    // 预算 = 这个房间的「总缓存最大大小」（历史和群文件**共享**这一份），
+    // 同时受全局 maxservertemp 约束。文件先占，剩下的才是历史的：
+    // 文件大、价值低，磁盘要满的时候先丢它才合理，所以历史是"用剩下的"。
+    const unsigned long long budget = EffectiveRoomBudget(*room);
+    const unsigned long long usedByFiles = RoomFilesBytes(roomId);
+    store->TrimToBytes(budget > usedByFiles ? budget - usedByFiles : 0);
 
     if (!CurrentRules().keepChatHistory) return;  // 规则关着：不写盘
 
     dchat::HistoryEntry entry;
     entry.seq = seq;
     entry.line = line;
-    AppendHistoryFileLocked(entry);
+    AppendHistoryFileLocked(roomId, entry);
 
+    RoomHistoryFile& file = HistoryFileLocked(roomId);
     // 节流 flush：距上次超过 1 秒才真正落盘
     const auto now = std::chrono::steady_clock::now();
-    const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           now - g_historyFlushedAt)
-                           .count();
-    if (g_historyDirty && since >= kHistoryFlushMs) {
-        g_historyOut.flush();
-        g_historyDirty = false;
-        g_historyFlushedAt = now;
+    const auto since =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - file.flushedAt).count();
+    if (file.dirty && since >= kHistoryFlushMs) {
+        file.out.flush();
+        file.dirty = false;
+        file.flushedAt = now;
     }
 
-    if (++g_historySinceCompact >= kHistoryCompactEvery) {
+    if (++file.sinceCompact >= kHistoryCompactEvery) {
         // 只有在"确实有旧行被裁掉"时压实才有意义：
         // 否则重写一遍文件一个字节都省不下来，纯属白费 I/O。
-        const bool droppedAny = store.TotalAppended() > store.Size();
-        if (droppedAny) g_historyCompactDue = true;
-        g_historySinceCompact = 0;
+        if (store->TotalAppended() > store->Size()) file.compactDue = true;
+        // 这一行是**诊断用**的，每 512 条才打一次，开销可以忽略。
+        // 为什么值得留着：预算到底有没有生效，光看磁盘文件是分不清三种情况的 ——
+        // ①内存按预算裁了、只是文件还没压实；②内存压根没裁；③裁了但压实没跑。
+        // 这三个数字（追加过多少 / 现在还留多少 / 实际占多少字节）一眼就能区分。
+        Log("history budget [" + roomId + "]: appended=" + std::to_string(store->TotalAppended()) +
+            " kept=" + std::to_string(store->Size()) + " bytes=" + std::to_string(store->Bytes()) +
+            " budget=" + std::to_string(budget) + " compactDue=" +
+            (file.compactDue ? "1" : "0"));
+        file.sinceCompact = 0;
     }
 }
 
+/** 全部房间的历史条数合计（状态日志用）。 */
 std::size_t HistoryCount() {
-    std::lock_guard<std::mutex> lock(g_historyMutex);
-    return HistoryLocked().Size();
+    std::lock_guard<std::mutex> lock(g_roomsMutex);
+    dchat::RoomRegistry& rooms = RoomsLocked();
+    std::size_t total = 0;
+    for (const dchat::Room& room : rooms.Snapshot()) {
+        dchat::HistoryStore* store = rooms.HistoryOf(room.id);
+        if (store) total += store->Size();
+    }
+    return total;
 }
 
 /**
- * 取序号大于 afterSeq 的记录（第 5 项：离线补发用）。
- * 调用方不能持有 g_historyMutex。
+ * 取某个房间里序号大于 afterSeq 的记录（离线补发用）。
+ * 调用方不能持有 g_roomsMutex。
  */
-std::vector<dchat::HistoryEntry> HistorySince(unsigned long long afterSeq, std::size_t limit) {
-    std::lock_guard<std::mutex> lock(g_historyMutex);
-    return HistoryLocked().Since(afterSeq, limit);
+std::vector<dchat::HistoryEntry> HistorySince(const std::string& roomId, unsigned long long afterSeq,
+                                              std::size_t limit) {
+    std::lock_guard<std::mutex> lock(g_roomsMutex);
+    return RoomsLocked().HistorySince(roomId, afterSeq, limit);
 }
 
-// 把预算外的文件和聊天记录裁掉（maxservertemp 调小时立刻生效）
+/**
+ * 取某个房间**最近** limit 条历史（旧 -> 新）。
+ * 调用方不能持有 g_roomsMutex。
+ */
+std::vector<dchat::HistoryEntry> RoomRecentHistory(const std::string& roomId, std::size_t limit) {
+    std::lock_guard<std::mutex> lock(g_roomsMutex);
+    return RoomsLocked().RecentHistory(roomId, limit);
+}
+
+// 把预算外的文件和聊天记录裁掉（maxservertemp 或某个群的 cachemaxmb 调小时立刻生效）
 void EnforceTempBudget() {
     const unsigned long long budget = TempBudgetBytes();
     {
@@ -525,10 +713,12 @@ void EnforceTempBudget() {
             g_files.erase(g_files.begin());
         }
     }
-    {
-        std::lock_guard<std::mutex> lock(g_historyMutex);
-        const unsigned long long usedByFiles = StoredBytesTotal();
-        HistoryLocked().TrimToBytes(budget > usedByFiles ? budget - usedByFiles : 0);
+    // 逐个房间把「该群预算」重新应用一遍。管理员把 cachemaxmb 调小之后，
+    // 必须真的有东西被裁掉，否则那个设置项就只是个好看的数字。
+    std::lock_guard<std::mutex> lock(g_roomsMutex);
+    dchat::RoomRegistry& rooms = RoomsLocked();
+    for (const dchat::Room& room : rooms.Snapshot()) {
+        rooms.SetHistoryBudget(room.id, EffectiveRoomBudget(room), RoomFilesBytes(room.id));
     }
 }
 
@@ -640,6 +830,14 @@ struct Client {
     // 正在上传的文件（收齐后由服务器暂存，别人点击下载时才发出去）
     std::shared_ptr<PendingUpload> upload;
     std::chrono::steady_clock::time_point lastMessage{};  // chatinterval 用：上一条消息的时间
+
+    // ---- 多会话（私聊 / 群聊）----
+    // 当前会话：MSG 发到这里。默认大厅 —— 老客户端从不下发 ROOM 命令，
+    // 于是一直停在大厅，行为与本功能上线前**逐字节一致**。
+    std::string currentRoom = dchat::kHallId;
+    // 客户端在 HELLO 里声明过 rooms1 能力。没声明就是老客户端：只收大厅消息、
+    // 不参与群聊和私聊。这个开关是"新服务端 + 正在用的旧客户端"能安全共存的关键。
+    bool roomsCapable = false;
 
     // 每个客户端各自的限速器（uploadrate / downloadrate）。0 = 不限制。
     // 用阻塞 Sleep 形成背压，而不是丢包或断连——发送方只是变慢，数据不会损坏。
@@ -1074,15 +1272,168 @@ std::string OpList() {
     return text;
 }
 
+// ---- 私聊黑名单：谁不想收到谁的消息 ----
+//
+// 用户明确要求私聊设置里有黑名单。**必须由服务端持久化并拦截** ——
+// 只做在客户端上的话拦不住对方：他换个客户端、或者干脆手打协议，消息照样进得来。
+// 那就不是"拉黑"，只是"我自己不看"。
+//
+// 拦截范围刻意**只限私聊**：大厅和群聊是公共空间，在那里拦会让对话看起来缺了一块
+// （别人回复他，你只看到回复、看不到原话，比看到更难受）。这和主流 IM 的做法一致。
+constexpr const char* kBlocksPath = "dchat-blocks.txt";
+
+std::mutex g_blockMutex;
+std::map<std::string, std::vector<std::string>> g_blocks;  // 拉黑者 -> 被拉黑的人
+
+/** 写回黑名单文件。**调用前必须已经持有 g_blockMutex**（和 SaveOpsLocked 同一个约定）。 */
+void SaveBlocksLocked() {
+    std::ofstream out(kBlocksPath, std::ios::binary | std::ios::trunc);
+    if (!out) return;  // 写不进去也不影响运行，内存里的名单照常生效
+    out << "# dchat 私聊黑名单，一行一条：<拉黑的人> <被拉黑的人>。\n"
+        << "# 由 BLOCK / UNBLOCK 自动写回；也可以手工编辑，改完需要重启服务。\n";
+    for (const auto& pair : g_blocks) {
+        for (const std::string& target : pair.second) out << pair.first << " " << target << "\n";
+    }
+}
+
+void LoadBlocks() {
+    std::ifstream in(kBlocksPath, std::ios::binary);
+    std::lock_guard<std::mutex> lock(g_blockMutex);
+    g_blocks.clear();
+    if (!in) return;  // 还没有黑名单文件：不是错误
+    std::string line;
+    std::size_t count = 0;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        const std::size_t space = line.find(' ');
+        if (space == std::string::npos || space == 0) continue;
+        const std::string from = line.substr(0, space);
+        const std::string to = line.substr(space + 1);
+        if (to.empty() || from == to) continue;  // 拉黑自己没有意义
+        std::vector<std::string>& list = g_blocks[from];
+        if (std::find(list.begin(), list.end(), to) == list.end()) {
+            list.push_back(to);
+            ++count;
+        }
+    }
+    if (count > 0) {
+        Log("loaded " + std::to_string(count) + " block entr(ies) from " + kBlocksPath);
+    }
+}
+
+/** from 有没有拉黑 to。 */
+bool IsBlocked(const std::string& from, const std::string& to) {
+    if (from.empty() || to.empty()) return false;
+    std::lock_guard<std::mutex> lock(g_blockMutex);
+    const auto it = g_blocks.find(from);
+    if (it == g_blocks.end()) return false;
+    return std::find(it->second.begin(), it->second.end(), to) != it->second.end();
+}
+
+/**
+ * 这两个人之间的私聊通不通。
+ * **任意一方拉黑了对方就不通** —— 单向生效的话，被拉黑的人还能继续骚扰，
+ * 而且他发出来的消息会在对方那边凭空消失，双方都以为是对方不理自己。
+ */
+bool DirectBlocked(const std::string& a, const std::string& b) {
+    return IsBlocked(a, b) || IsBlocked(b, a);
+}
+
+bool AddBlock(const std::string& from, const std::string& to) {
+    if (from.empty() || to.empty() || from == to) return false;
+    std::lock_guard<std::mutex> lock(g_blockMutex);
+    std::vector<std::string>& list = g_blocks[from];
+    if (std::find(list.begin(), list.end(), to) != list.end()) return false;
+    list.push_back(to);
+    SaveBlocksLocked();  // 立刻落盘：拉黑是"我现在就不想收到"，重启丢掉最不能接受
+    return true;
+}
+
+bool RemoveBlock(const std::string& from, const std::string& to) {
+    std::lock_guard<std::mutex> lock(g_blockMutex);
+    const auto it = g_blocks.find(from);
+    if (it == g_blocks.end()) return false;
+    const auto before = it->second.size();
+    it->second.erase(std::remove(it->second.begin(), it->second.end(), to), it->second.end());
+    if (it->second.size() == before) return false;
+    if (it->second.empty()) g_blocks.erase(it);
+    SaveBlocksLocked();
+    return true;
+}
+
+std::vector<std::string> BlockListOf(const std::string& from) {
+    std::lock_guard<std::mutex> lock(g_blockMutex);
+    const auto it = g_blocks.find(from);
+    return it == g_blocks.end() ? std::vector<std::string>() : it->second;
+}
+
 std::vector<std::shared_ptr<Client>> ClientSnapshot() {
     std::lock_guard<std::mutex> lock(g_clientsMutex);
     return g_clients;
 }
-
 void Broadcast(const std::string& line, const Client* except = nullptr) {
     for (const auto& client : ClientSnapshot()) {
         if (client.get() == except) continue;
         client->SendLine(line);  // 发送失败由该客户端的读线程负责清理
+    }
+}
+
+/**
+ * 把一个房间的成员昵称抄一份出来。
+ *
+ * 为什么不直接持着 g_roomsMutex 遍历客户端发消息：SendLine 是**阻塞的 socket 写**，
+ * 持锁做网络 I/O 会把"某一个客户端卡住"放大成"整个服务器的房间操作全卡住"。
+ * 所以先抄名单、放锁、再发。
+ */
+std::vector<std::string> RoomAudience(const std::string& roomId) {
+    std::vector<std::string> audience;
+    std::lock_guard<std::mutex> lock(g_roomsMutex);
+    const dchat::Room* room = RoomsLocked().Find(roomId);
+    if (!room) return audience;
+    for (const dchat::RoomMember& member : room->members) audience.push_back(member.nick);
+    return audience;
+}
+
+/**
+ * 这个客户端能不能看/下载某个房间的附件。
+ *
+ * 必须校验：文件 ID 是全局递增的（F1、F2…），不校验的话，任何登录用户
+ * 随手猜几个 ID 就能把**私聊附件**拉下来 —— 那是直接的隐私泄露，而且
+ * 从界面上完全看不出来（卡片不显示，但数据已经到手了）。
+ * 大厅保持原行为：它是公共房间，历史上就是谁都能下。
+ */
+bool CanAccessRoomFile(const Client& client, const std::string& roomId) {
+    if (roomId == dchat::kHallId) return true;
+    if (client.nick.empty()) return false;
+    std::lock_guard<std::mutex> lock(g_roomsMutex);
+    const dchat::Room* room = RoomsLocked().Find(roomId);
+    return room != nullptr && dchat::IsRoomMember(*room, client.nick);
+}
+
+/**
+ * 往一个房间发消息。
+ *
+ * 大厅走**原来的全量 Broadcast**，一个字节都没变 —— 这是"老客户端零影响"这条
+ * 硬约束的落点，不能改成"只发给大厅成员"：大厅成员表是登录时才维护的，
+ * 而老行为里连还没登录的连接都会收到 SAY。
+ *
+ * 其他房间只发给该房间成员，而且**必须**是声明过 rooms1 的客户端。
+ * 老客户端收到 RMSG 也只会当未知命令丢掉，但它本来也不该出现在群里。
+ */
+void BroadcastRoom(const std::string& roomId, const std::string& line,
+                   const Client* except = nullptr) {
+    if (roomId == dchat::kHallId) {
+        Broadcast(line, except);
+        return;
+    }
+    const std::vector<std::string> audience = RoomAudience(roomId);
+    if (audience.empty()) return;
+    for (const auto& client : ClientSnapshot()) {
+        if (client.get() == except) continue;
+        if (client->nick.empty() || !client->roomsCapable) continue;
+        if (std::find(audience.begin(), audience.end(), client->nick) == audience.end()) continue;
+        client->SendLine(line);
     }
 }
 
@@ -1165,6 +1516,22 @@ void RemoveClient(Client* target) {
     // 此刻 LastSeq() 就是他"在线期间已经收到"的最大序号 —— 因为在线时每条都是实时发的。
     // 万一漏记，后果也只是下次多补几条（重复）而不会漏消息。
     if (target) RecordSeen(target->nick);
+
+    // 从大厅成员表里摘掉。大厅的成员表就是"当前在线的人"（登录时加入、这里移除），
+    // 不这么做的话它会一直涨 —— 而它恰恰是唯一一张**不落盘、只活在内存**的表。
+    if (target && !target->nick.empty()) {
+        std::lock_guard<std::mutex> lock(g_roomsMutex);
+        dchat::Room* hall = RoomsLocked().Hall();
+        if (hall) {
+            const std::string nick = target->nick;
+            hall->members.erase(std::remove_if(hall->members.begin(), hall->members.end(),
+                                               [&](const dchat::RoomMember& member) {
+                                                   return member.nick == nick;
+                                               }),
+                                hall->members.end());
+        }
+    }
+
     std::lock_guard<std::mutex> lock(g_clientsMutex);
     g_clients.erase(std::remove_if(g_clients.begin(), g_clients.end(),
                                    [target](const std::shared_ptr<Client>& c) {
@@ -1301,7 +1668,7 @@ void ExecuteCommand(const dchat::ServerCommand& command, Client* source) {
             {
                 const std::string announce = Timed("ANNOUNCE", command.text);
                 Broadcast(announce);  // 全服公告：客户端会大字居中显示
-                RememberHistory(announce);  // 公告也进聊天记录缓存
+                RememberHistory(dchat::kHallId, announce);  // 公告进大厅的聊天记录
             }
             reply("公告已发出：" + command.text, false);
             break;
@@ -1464,7 +1831,7 @@ void PollAnnounceFile() {
     Log("announce (from file): " + text);
     const std::string announce = Timed("ANNOUNCE", text);
     Broadcast(announce);         // 全服公告：客户端会大字居中显示
-    RememberHistory(announce);   // 和 /say 一样，也进聊天记录
+    RememberHistory(dchat::kHallId, announce);   // 和 /say 一样，也进大厅的聊天记录
 
     // 播完就删；删不掉（权限/占用）就清空，**否则每秒都会重播一遍**。
     // CronJob 那边是"先写临时文件再改名"，所以这里不会读到写了一半的内容。
@@ -1490,12 +1857,9 @@ void BanMaintenanceLoop() {
         g_loginFails.Sweep();
         // 账号文件的写入被节流了（注册路径不做文件 I/O），这里补写落盘
         FlushUsersIfDirty();
-    FlushHistoryIfDirty();
-        // 聊天记录同样被节流（最多每秒一次），这里兜底 flush
+        // 聊天记录同样被节流（最多每秒一次），这里兜底 flush（所有房间一起）
         FlushHistoryIfDirty();
-    FlushSeenIfDirty();
         FlushSeenIfDirty();
-        // 压实标记是 RememberHistory 置的，在这里执行 —— 它要自己拿锁
         // 进度文件是追加写的，同一用户会攒下多行，攒够就压实
         {
             std::lock_guard<std::mutex> lock(g_seenMutex);
@@ -1508,10 +1872,9 @@ void BanMaintenanceLoop() {
             g_seenCompactDue = false;
             CompactSeen();
         }
-        if (g_historyCompactDue) {
-            g_historyCompactDue = false;
-            CompactHistory();
-        }
+        // 压实标记是 RememberHistory 按房间置的，在这里统一执行。
+        // CompactHistory 自己会判断哪些房间"该压实了"，也顺手清掉已解散房间的落盘流。
+        CompactHistory();
         // 注册时间记录也要清：只保留窗口内的，否则长期运行时那张表无限增长
         {
             const auto now = std::chrono::steady_clock::now();
@@ -1529,8 +1892,12 @@ void BanMaintenanceLoop() {
     }
 }
 
-// 认证通过后加入房间：登记昵称、打招呼、广播加入
-// 新加入的人：把之前的聊天记录和还留着的文件卡片回放给他（keepchathistory 打开时）
+// 认证通过后加入**大厅**：补大厅的历史和还留着的大厅文件卡片。
+//
+// 只回放大厅，不回放群聊/私聊：一个用户可能在几十个群里，登录时把它们的历史
+// 全推一遍既慢又没意义。客户端切到某个会话时发 ROOM <id>，服务端再按需回放
+// 那个房间的历史（见 ReplayRoomHistoryTo）。
+// keepchathistory 关闭时直接返回 —— 这是原行为，升级后不变。
 void ReplayHistoryTo(const std::shared_ptr<Client>& client) {
     if (!CurrentRules().keepChatHistory) return;
 
@@ -1550,8 +1917,9 @@ void ReplayHistoryTo(const std::shared_ptr<Client>& client) {
     }
 
     std::vector<dchat::HistoryEntry> entries =
-        HistorySince(sinceSeq, catchUp ? static_cast<std::size_t>(offlineLimit)
-                                       : static_cast<std::size_t>(-1));
+        HistorySince(dchat::kHallId, sinceSeq,
+                     catchUp ? static_cast<std::size_t>(offlineLimit)
+                             : static_cast<std::size_t>(-1));
     std::vector<std::string> lines;
     lines.reserve(entries.size());
     for (const dchat::HistoryEntry& entry : entries) lines.push_back(entry.line);
@@ -1560,6 +1928,9 @@ void ReplayHistoryTo(const std::shared_ptr<Client>& client) {
     {
         std::lock_guard<std::mutex> lock(g_filesMutex);
         for (const auto& file : g_files) {
+            // 只发大厅自己的文件卡片。群聊/私聊的文件在切到那个会话时按需拉 ——
+            // 登录时把几十个群的附件卡片一次性推过来，既慢又没意义
+            if (file->roomId != dchat::kHallId) continue;
             offers.push_back(Timed("FILE_OFFER", file->owner + " " + file->id + " " + file->nameB64 +
                                                      " " + std::to_string(file->size) + " " +
                                                      (file->thumb.empty() ? "0" : "1")));
@@ -1575,6 +1946,253 @@ void ReplayHistoryTo(const std::shared_ptr<Client>& client) {
         client->SendLine(Timed("SYS", "房间里还留着这些文件，点卡片可以下载："));
         for (const std::string& offer : offers) client->SendLine(offer);
     }
+}
+
+// ---------------------------------------------------------------------------
+// 多会话：把房间信息同步给客户端
+// ---------------------------------------------------------------------------
+//
+// 所有 "SendXxx" 都遵守同一条纪律：**在 g_roomsMutex 里只拼字符串，出了锁才发**。
+// SendLine 是阻塞的 socket 写，持锁发消息会把"某个客户端网络卡住"放大成
+// "整个服务器的房间操作全卡住"。拼好的行是字符串副本，出锁后房间被删也不影响。
+
+/** 一个会话的详情：RINFO + 全部 RSET 行。**调用方必须已持有 g_roomsMutex。** */
+std::vector<std::string> RoomInfoLinesLocked(const dchat::Room& room, const std::string& viewer) {
+    dchat::RoomRole role = dchat::RoomRole::Member;
+    dchat::TryRoleOf(room, viewer, &role);
+    std::vector<std::string> lines;
+    // 设置项**不塞进 RINFO**：以后加一个设置就要改 RINFO 的字段数，
+    // 而字段数一变三个端会一起解析错位。拆成独立的 RSET 行就没有这个问题。
+    lines.push_back(dchat::BuildLine(
+        "RINFO", room.id + " " + dchat::RoomKindText(room.kind) + " " +
+                     dchat::Base64Encode(dchat::RoomRegistry::DisplayNameFor(room, viewer)) + " " +
+                     room.owner + " " + std::to_string(room.members.size()) + " " +
+                     std::to_string(room.maxMembers) + " " + dchat::RoomRoleText(role) + " " +
+                     dchat::JoinModeText(room.joinMode) + " " + (room.listed ? "true" : "false")));
+    for (dchat::RoomSettingKey key : dchat::AllRoomSettingKeys()) {
+        lines.push_back(dchat::RoomSettingLine(room, key));
+    }
+    return lines;
+}
+
+void SendRoomInfoTo(const std::shared_ptr<Client>& client, const std::string& roomId) {
+    if (!client || !client->roomsCapable) return;
+    std::vector<std::string> lines;
+    {
+        std::lock_guard<std::mutex> lock(g_roomsMutex);
+        const dchat::Room* room = RoomsLocked().Find(roomId);
+        if (!room) return;
+        lines = RoomInfoLinesLocked(*room, client->nick);
+    }
+    for (const std::string& line : lines) client->SendLine(line);
+}
+
+/** 群成员表（一行一个），末尾跟 RMEMBERS_END。 */
+void SendRoomMembersTo(const std::shared_ptr<Client>& client, const std::string& roomId) {
+    if (!client || !client->roomsCapable) return;
+    std::vector<std::string> lines;
+    {
+        std::lock_guard<std::mutex> lock(g_roomsMutex);
+        const dchat::Room* room = RoomsLocked().Find(roomId);
+        if (!room) return;
+        for (const dchat::RoomMember& member : room->members) {
+            lines.push_back(dchat::BuildLine("RMEMBERS", roomId + " " + member.nick + " " +
+                                                             dchat::RoomRoleText(member.role) + " " +
+                                                             dchat::Base64Encode(member.displayName)));
+        }
+    }
+    for (const std::string& line : lines) client->SendLine(line);
+    client->SendLine(dchat::BuildLine("RMEMBERS_END", roomId));
+}
+
+/**
+ * 房间的成员变了之后，把新状态推给**还留在群里的所有人**。
+ *
+ * 只推给"新来的 / 走掉的那个人"是不够的：群主那边的成员**表和数**都会停在旧值
+ * （自动化联调实测：同意 bob 入群之后，群主看到的成员列表里根本没有 bob，
+ * 于是"设为管理员 / 踢人"两个按钮都点不到）。入群、退群、踢人三处都要调它。
+ *
+ * **必须在锁外面调**：SendRoomInfoTo / SendRoomMembersTo 内部自己也要拿
+ * g_roomsMutex，而 std::mutex 不是递归的 —— 持着锁进去就是自己等自己。
+ */
+void NotifyRoomMembersChanged(const std::string& roomId, const Client* except = nullptr) {
+    const std::vector<std::shared_ptr<Client>> online = ClientSnapshot();
+    std::vector<std::shared_ptr<Client>> members;
+    {
+        std::lock_guard<std::mutex> lock(g_roomsMutex);
+        const dchat::Room* room = RoomsLocked().Find(roomId);
+        if (room != nullptr) {
+            for (const auto& other : online) {
+                if (!other->roomsCapable) continue;
+                if (except != nullptr && other.get() == except) continue;
+                if (dchat::IsRoomMember(*room, other->nick)) members.push_back(other);
+            }
+        }
+    }
+    for (const auto& member : members) {
+        SendRoomInfoTo(member, roomId);
+        SendRoomMembersTo(member, roomId);
+    }
+}
+
+/**
+ * 会话列表。只发"有哪些会话 + 每个会话的基本信息"，**不发历史**：
+ * 一个人可能在几十个群里，登录时把每个群的历史都推一遍既慢又没意义。
+ * 历史等他切到那个会话（ROOM）时再按需拉。
+ */
+void SendRoomList(const std::shared_ptr<Client>& client) {
+    if (!client || client->nick.empty() || !client->roomsCapable) return;
+    std::vector<std::string> lines;
+    {
+        std::lock_guard<std::mutex> lock(g_roomsMutex);
+        for (const dchat::Room* room : RoomsLocked().RoomsOf(client->nick)) {
+            dchat::RoomRole role = dchat::RoomRole::Member;
+            dchat::TryRoleOf(*room, client->nick, &role);
+            lines.push_back(dchat::BuildLine(
+                "ROOMLIST",
+                room->id + " " + dchat::RoomKindText(room->kind) + " " +
+                    dchat::Base64Encode(dchat::RoomRegistry::DisplayNameFor(*room, client->nick)) +
+                    " " + std::to_string(room->members.size()) + " " +
+                    std::to_string(room->maxMembers) + " " + dchat::RoomRoleText(role)));
+        }
+    }
+    for (const std::string& line : lines) client->SendLine(line);
+    client->SendLine(dchat::BuildLine("ROOMLIST_END"));
+}
+
+/** 切到某个会话时回放它最近的历史（旧 -> 新），末尾跟 RHIST_END。 */
+// 会话里最多回放多少条历史。刻意不大：切换会话是高频操作，一次推几千条
+// 会让界面卡住、也白烧流量。真要翻更早的记录，那是"加载更多"该干的事。
+constexpr std::size_t kRoomHistoryReplay = 200;
+
+/** 给一个房间里所有在线的群主/管理员发一条通知（入群申请之类）。 */
+void NotifyRoomAdmins(const std::string& roomId, const std::string& line) {
+    std::vector<std::string> admins;
+    {
+        std::lock_guard<std::mutex> lock(g_roomsMutex);
+        const dchat::Room* room = RoomsLocked().Find(roomId);
+        if (!room) return;
+        for (const dchat::RoomMember& member : room->members) {
+            if (dchat::RoomRoleCanAdminister(member.role)) admins.push_back(member.nick);
+        }
+    }
+    if (admins.empty()) return;
+    for (const auto& target : ClientSnapshot()) {
+        if (target->nick.empty() || !target->roomsCapable) continue;
+        if (std::find(admins.begin(), admins.end(), target->nick) == admins.end()) continue;
+        target->SendLine(line);
+    }
+}
+
+/**
+ * 播一条房间内事件（谁加入了、谁退出了、谁被踢了、设置改了什么）。
+ *
+ * 大厅用 **SYS** 而不是 REVENT：大厅的消息要发给所有人，包括老客户端，
+ * 而老客户端不认识 REVENT。SYS 是它们本来就认识、会当系统提示显示的命令，
+ * 所以给大厅发 SYS 既保持了老行为，又不会给旧客户端塞未知命令。
+ */
+void BroadcastRoomEvent(const std::string& roomId, const std::string& text) {
+    const std::string line = (roomId == dchat::kHallId) ? Timed("SYS", text)
+                                                        : Timed("REVENT", roomId + " " + text);
+    BroadcastRoom(roomId, line);
+    RememberHistory(roomId, line);
+}
+
+/**
+ * 检查"我能不能对这个房间行使管理员权限"。
+ * 不通过时直接回一条 ERROR 并返回 false，调用方 `return true` 即可。
+ */
+bool RequireRoomAdmin(const std::shared_ptr<Client>& client, const std::string& roomId,
+                      dchat::RoomRole* role) {
+    if (!client || client->nick.empty()) return false;
+    dchat::RoomRole found = dchat::RoomRole::Member;
+    bool exists = false;
+    bool member = false;
+    {
+        std::lock_guard<std::mutex> lock(g_roomsMutex);
+        const dchat::Room* room = RoomsLocked().Find(roomId);
+        if (room) {
+            exists = true;
+            member = dchat::TryRoleOf(*room, client->nick, &found);
+        }
+    }
+    if (!exists) {
+        client->SendLine(Timed("ERROR", "找不到这个群：" + roomId));
+        return false;
+    }
+    if (!member) {
+        client->SendLine(Timed("ERROR", "你不在这个群里"));
+        return false;
+    }
+    if (!dchat::RoomRoleCanAdminister(found)) {
+        client->SendLine(Timed("ERROR", "只有群主和管理员能做这件事"));
+        return false;
+    }
+    if (role) *role = found;
+    return true;
+}
+
+void ReplayRoomHistoryTo(const std::shared_ptr<Client>& client, const std::string& roomId,
+                         std::size_t limit) {
+    if (!client || !client->roomsCapable) return;
+    const std::vector<dchat::HistoryEntry> entries = RoomRecentHistory(roomId, limit);
+    for (const dchat::HistoryEntry& entry : entries) {
+        client->SendLine(dchat::BuildLine("RHIST", roomId + " " + std::to_string(entry.seq) + " " +
+                                                       entry.line));
+    }
+    client->SendLine(dchat::BuildLine("RHIST_END", roomId));
+}
+
+/** 这个房间还留着的附件卡片（切进会话时一并给他，否则他看不到群文件）。 */
+void SendRoomFilesTo(const std::shared_ptr<Client>& client, const std::string& roomId) {
+    if (!client || !client->roomsCapable) return;
+    std::vector<std::string> lines;
+    {
+        std::lock_guard<std::mutex> lock(g_filesMutex);
+        for (const auto& file : g_files) {
+            if (file->roomId != roomId) continue;
+            const std::string args = file->owner + " " + file->id + " " + file->nameB64 + " " +
+                                     std::to_string(file->size) + " " +
+                                     (file->thumb.empty() ? "0" : "1");
+            lines.push_back((roomId == dchat::kHallId)
+                                ? Timed("FILE_OFFER", args)
+                                : Timed("RFILE_OFFER", roomId + " " + args));
+        }
+    }
+    for (const std::string& line : lines) client->SendLine(line);
+}
+
+/** 把一个房间的完整现状发给一个人：会话信息 + 成员 + 历史 + 还留着的附件。 */
+void SendWholeRoomTo(const std::shared_ptr<Client>& client, const std::string& roomId) {
+    SendRoomInfoTo(client, roomId);
+    SendRoomMembersTo(client, roomId);
+    ReplayRoomHistoryTo(client, roomId, kRoomHistoryReplay);
+    SendRoomFilesTo(client, roomId);
+}
+
+/**
+ * 这条命令需要客户端声明过 rooms1。
+ * 老客户端不该也不会发这些命令；万一有人手打，给一条明确的报错比默默忽略好 ——
+ * 默默忽略会让人以为"服务器坏了"。
+ */
+bool RequireRoomsFeature(const std::shared_ptr<Client>& client) {
+    if (client->nick.empty()) {
+        client->SendLine(Timed("ERROR", "请先登录"));
+        return false;
+    }
+    if (!client->roomsCapable) {
+        client->SendLine(Timed("ERROR", "你的客户端版本不支持群聊/私聊，请更新到最新版客户端"));
+        return false;
+    }
+    return true;
+}
+
+/** 把 Base64 的参数解成文本；解不开返回 false。 */
+bool DecodeTextArg(const std::string& text, std::string* out) {
+    std::vector<unsigned char> bytes;
+    if (!dchat::Base64Decode(text, &bytes)) return false;
+    out->assign(bytes.begin(), bytes.end());
+    return true;
 }
 
 bool CompleteLogin(const std::shared_ptr<Client>& client, const std::string& nick) {
@@ -1600,12 +2218,151 @@ bool CompleteLogin(const std::shared_ptr<Client>& client, const std::string& nic
     client->SendLine(Timed("NAMES", NickList()));
     SendKnownNames(client);  // 已注册账号名单：Tab 补 /ban /op /unban /ip 用
     client->SendLine(RulesLineForClient(CurrentRules()));  // 把当前规则告诉客户端
-    ReplayHistoryTo(client);                                // keepchathistory 打开时补历史
+
+    // ---- 多会话：登记进大厅，然后把会话列表发过去 ----
+    // 大厅的成员表就是"当前在线的人"：登录时加入、断开时移除（见 RemoveClient）。
+    // 它**不落盘** —— 大厅本来就是所有在线的人，存一份历史成员名单没有意义，
+    // 而且会长到几万个名字。老客户端也照样登记：它们只在大厅，但服务端统计
+    // 大厅人数、以后给人发群邀请都要用这张表。
+    {
+        std::lock_guard<std::mutex> lock(g_roomsMutex);
+        dchat::Room* hall = RoomsLocked().Hall();
+        if (hall && !dchat::IsRoomMember(*hall, nick)) {
+            dchat::RoomMember member;
+            member.nick = nick;
+            hall->members.push_back(member);
+        }
+    }
+
+    // 先告诉客户端"服务端支持多会话"，再发列表。客户端必须以 FEATURES 为准：
+    // 没有 rooms1 就退回"只有大厅"的老界面（连的是旧版服务端时会发生）。
+    if (client->roomsCapable) {
+        client->SendLine(dchat::BuildLine("FEATURES", "rooms1"));
+        SendRoomList(client);
+    }
+
+    ReplayHistoryTo(client);                                // keepchathistory 打开时补大厅历史
     Log(client->address + " joined as " + nick);
     return true;
 }
 
 // 返回 false 表示客户端要求断开
+/** 去掉首尾的 ASCII 空格 / Tab（昵称前后多打一个空格不该算错）。 */
+std::string TrimNick(const std::string& text) {
+    std::size_t begin = 0;
+    std::size_t end = text.size();
+    while (begin < end && (text[begin] == ' ' || text[begin] == '\t')) ++begin;
+    while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\t')) --end;
+    return text.substr(begin, end - begin);
+}
+
+/**
+ * 建立（或复用）与 peer 的私聊会话。
+ *
+ * 抽成函数是因为它有**两个入口**：
+ *   1. 协议命令 `DM <昵称>`：自动化脚本、以及别的客户端实现走这条；
+ *   2. 聊天框里的 `/dm <昵称>`：**用户真正的入口**（见 MSG 分支里的说明）。
+ * 两处各写一遍的话，迟早有一边漏掉"拉黑拦截"或"顺手切当前会话"这种细节。
+ */
+bool OpenDirectMessage(const std::shared_ptr<Client>& client, const std::string& rawPeer) {
+    if (!RequireRoomsFeature(client)) return true;
+    const std::string peer = TrimNick(rawPeer);
+    if (peer.empty()) {
+        client->SendLine(Timed("ERROR", "用法：/dm <昵称>"));
+        return true;
+    }
+    if (peer == client->nick) {
+        client->SendLine(Timed("ERROR", "不能和自己私聊"));
+        return true;
+    }
+    if (!UserExists(peer, nullptr)) {
+        client->SendLine(Timed("ERROR", "没有这个账号：" + peer));
+        return true;
+    }
+    // 拉黑是双向生效的，连会话都不该给建 —— 建了之后发什么都发不出去，
+    // 用户只会觉得"私聊坏了"
+    if (DirectBlocked(client->nick, peer)) {
+        client->SendLine(Timed("ERROR", "你们之间有一个人把对方拉黑了，私聊发不出去"));
+        return true;
+    }
+    std::string roomId;
+    {
+        std::lock_guard<std::mutex> lock(g_roomsMutex);
+        const dchat::Room* room = RoomsLocked().EnsureDmRoom(client->nick, peer);
+        if (!room) {
+            client->SendLine(Timed("ERROR", "无法建立私聊会话"));
+            return true;
+        }
+        roomId = room->id;
+    }
+    SaveRooms();  // 新会话要落盘，否则重启后这个私聊就没了、历史变成孤儿文件
+    // **顺手把当前会话切过去**。不切的话，客户端点开某人的私聊之后紧接着发的
+    // 那句会掉进大厅（实测踩过：私聊里发"私聊一句"，大厅里所有人都看到了）。
+    // 客户端再补一条 ROOM 也救不了 —— 消息已经发出去了。
+    client->currentRoom = roomId;
+    client->SendLine(dchat::BuildLine("GDMLINK", roomId + " " + peer));
+    SendWholeRoomTo(client, roomId);
+    // 对方在线的话，让他那边立刻多出这个会话，不用等他重新登录
+    for (const auto& other : ClientSnapshot()) {
+        if (other.get() == client.get() || other->nick != peer) continue;
+        if (!other->roomsCapable) continue;
+        other->SendLine(dchat::BuildLine("GDMLINK", roomId + " " + client->nick));
+        SendWholeRoomTo(other, roomId);
+    }
+    Log("dm opened: " + client->nick + " <-> " + peer + " (" + roomId + ")");
+    return true;
+}
+
+/**
+ * 给自己在**当前会话**里设群昵称（聊天指令 `/nick <群昵称>` 的实现）。
+ *
+ * 为什么要加这条指令：协议命令 `GNICK` 需要 `<房间ID> <昵称> <群昵称(Base64)>`，
+ * 而**客户端从来不发送它** —— 也就是说"成员群昵称"这个设置项在界面上根本没有入口，
+ * 谁也改不了。走聊天指令这条路三端通用，客户端一行都不用改。
+ *
+ * 空参数 = 清掉群昵称（回到账号名）。
+ */
+bool SetOwnRoomNick(const std::shared_ptr<Client>& client, const std::string& rawDisplay) {
+    if (!RequireRoomsFeature(client)) return true;
+    const std::string roomId = client->currentRoom;
+    if (roomId.empty() || roomId == dchat::kHallId) {
+        client->SendLine(Timed("ERROR", "大厅没有群昵称这回事；先切到一个群聊再设"));
+        return true;
+    }
+    const std::string display = TrimNick(rawDisplay);
+    std::string error;
+    bool ok = false;
+    std::string displayLine;
+    {
+        std::lock_guard<std::mutex> lock(g_roomsMutex);
+        dchat::Room* room = RoomsLocked().Find(roomId);
+        if (room != nullptr) {
+            ok = dchat::SetMemberDisplayName(room, client->nick, display, &error);
+            if (ok) {
+                const dchat::RoomMember* member = dchat::FindMember(*room, client->nick);
+                if (member != nullptr) {
+                    displayLine = dchat::BuildLine(
+                        "RMEMBERS", roomId + " " + member->nick + " " +
+                                        dchat::RoomRoleText(member->role) + " " +
+                                        dchat::Base64Encode(member->displayName));
+                }
+            }
+        } else {
+            error = "找不到这个会话：" + roomId;
+        }
+    }
+    if (!ok) {
+        client->SendLine(Timed("ERROR", error.empty() ? "改群昵称失败" : error));
+        return true;
+    }
+    SaveRooms();
+    // 只广播这一个成员的那一行，不用把整张成员表重发一遍（和 GNICK 同一套做法）
+    if (!displayLine.empty()) BroadcastRoom(roomId, displayLine);
+    client->SendLine(Timed("SYS", display.empty() ? "群昵称已清掉（回到账号名）"
+                                                  : "群昵称已设为「" + display + "」"));
+    return true;
+}
+
 bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) {
     const dchat::Message msg = dchat::ParseLine(line);
     if (msg.command.empty()) return true;
@@ -1685,6 +2442,31 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             client->SendLine(Timed("ERROR", "会话启动失败"));
             return true;
         }
+
+        // ---- 可选的第 4 个字段：逗号分隔的能力标签 ----
+        // **老客户端只有 3 个字段**，所以它们永远不会进多会话模式：服务端只给它们
+        // 推大厅消息、只发 SAY。这是"新服务端 + 正在用的旧客户端"能安全共存的关键，
+        // 也是这次改造里最不能省的一步。
+        //
+        // 放在握手**成功之后**才置位：握手失败（公钥不合法之类）的连接不该
+        // 因为报了个能力就被当成新客户端。
+        if (words.size() >= 4) {
+            const std::string& caps = words[3];
+            std::size_t start = 0;
+            while (start <= caps.size()) {
+                const std::size_t comma = caps.find(',', start);
+                const std::string tag =
+                    (comma == std::string::npos) ? caps.substr(start)
+                                                 : caps.substr(start, comma - start);
+                if (tag == "rooms1") client->roomsCapable = true;
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
+        }
+        if (client->roomsCapable) {
+            Log("client supports rooms1: " + client->address);
+        }
+
         Log("encrypted channel established with " + client->address +
             "（指纹 " + dchat::PublicKeyFingerprint(serverKey.publicKey) + "）");
         return true;
@@ -1822,6 +2604,35 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             client->SendLine(Timed("ERROR", "消息内容不能为空"));
             return true;
         }
+        // `/dm <昵称>`：**用户真正能用的发起私聊入口**。
+        //
+        // 为什么不在 server_command.cpp 那张斜杠指令表里加一条：那张表刻意不依赖服务端
+        // 状态（房间注册表、拉黑名单、在线名单都在本文件里）。塞进去要么得把状态透出去、
+        // 要么还得在这里再派发一次，不划算。
+        // 放在 MSG 这条路上还有个好处 —— **三端通用**：客户端只管把输入框的内容当文本
+        // 发出来，桌面端和安卓端都不用各自加界面按钮。
+        //
+        // 背景：客户端从来不发协议命令 `DM`（它只在收到 GDMLINK 时才认识私聊），
+        // 所以在这条路之前，"私聊只能被别人发起、自己发不起来" —— 这是补上的缺口。
+        {
+            std::string head = msg.rest;
+            const std::size_t space = head.find(' ');
+            std::string name = (space == std::string::npos) ? head : head.substr(0, space);
+            const std::string argument =
+                (space == std::string::npos) ? std::string() : head.substr(space + 1);
+            for (char& ch : name) {
+                if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+            }
+            if (name == "/dm" || name == "/msg" || name == "/pm" || name == "/tell") {
+                return OpenDirectMessage(client, argument);
+            }
+            // `/nick <群昵称>`：和 `/dm` 同一个理由 —— 协议命令 GNICK 没有界面入口，
+            // 而"成员群昵称"是明确要求有的功能。空参数 = 清掉。
+            if (name == "/nick" || name == "/nickname" || name == "/mynick") {
+                return SetOwnRoomNick(client, argument);
+            }
+        }
+
         // 只要以 '/' 开头就当成命令尝试（和 Minecraft 一样）：打错了也只回给本人，不广播
         if (dchat::IsCommandAttempt(msg.rest)) {
             const dchat::ServerCommand command = dchat::ParseServerCommand(msg.rest);
@@ -1889,10 +2700,712 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             return true;
         }
         client->lastMessage = now;
-        const std::string sayLine = Timed("SAY", client->nick + " " + msg.rest);
-        Broadcast(sayLine);  // 连发送者一起发，便于回显
-        RememberHistory(sayLine);
-        Log("MSG " + client->nick + ": " + msg.rest);
+
+        // ---- 发到「当前会话」----
+        // 默认是大厅。老客户端从不发 ROOM，所以永远走大厅分支，
+        // 发出去的那一行和升级前**逐字节一致**（SAY，全量广播）。
+        const std::string roomId = client->currentRoom;
+        dchat::RoomRole role = dchat::RoomRole::Member;
+        bool inRoom = false;
+        bool importantOn = true;
+        std::string dmPeer;  // 私聊时的对方；空表示这不是私聊
+        {
+            std::lock_guard<std::mutex> lock(g_roomsMutex);
+            const dchat::Room* room = RoomsLocked().Find(roomId);
+            if (room && dchat::TryRoleOf(*room, client->nick, &role)) {
+                inRoom = true;
+                importantOn = room->importantNotice;
+                if (room->kind == dchat::RoomKind::Direct) {
+                    for (const dchat::RoomMember& member : room->members) {
+                        if (member.nick != client->nick) dmPeer = member.nick;
+                    }
+                }
+            }
+        }
+        if (!inRoom) {
+            // 会话被解散、或者自己被踢了：切回大厅而不是把消息默默丢掉 ——
+            // 默默丢掉会让用户以为"发出去了但没人理我"
+            client->SendLine(Timed("ERROR", "你不在这个会话里了（可能已被移出或群已解散），已切回大厅"));
+            client->currentRoom = dchat::kHallId;
+            return true;
+        }
+        // 私聊黑名单：任意一方拉黑了对方，这条消息就不该发出去。
+        // 发出去再让对方客户端丢掉是不行的 —— 那样服务端历史里留着、
+        // 对方换个客户端就看得见，等于没拦。
+        if (!dmPeer.empty() && DirectBlocked(client->nick, dmPeer)) {
+            client->SendLine(Timed("ERROR", "你们之间有一个人把对方拉黑了，私聊发不出去"));
+            return true;
+        }
+
+        // @全体成员 是唯一能越过所有人免打扰的东西，**必须由服务端把关**：
+        // 做成纯客户端约定等于没约束 —— 任何改过的客户端都能随便发。
+        // 大厅没有群主，那里只有服务器管理员（/op）能发。
+        if (dchat::ContainsAllMention(msg.rest)) {
+            if (!importantOn) {
+                client->SendLine(
+                    Timed("ERROR", "这个群关闭了「消息重要提醒」，现在谁都发不了 @全体成员"));
+                return true;
+            }
+            const bool allowed = (roomId == dchat::kHallId) ? IsOp(client->nick)
+                                                            : dchat::RoomRoleCanAdminister(role);
+            if (!allowed) {
+                client->SendLine(
+                    Timed("ERROR", "@全体成员 只有群主和管理员能发（大厅里只有服务器管理员能发）"));
+                return true;
+            }
+        }
+
+        const bool hall = (roomId == dchat::kHallId);
+        const std::string sayLine =
+            hall ? Timed("SAY", client->nick + " " + msg.rest)
+                 : Timed("RMSG", roomId + " " + client->nick + " " + msg.rest);
+        BroadcastRoom(roomId, sayLine);  // 连发送者一起发，便于回显
+        RememberHistory(roomId, sayLine);
+        Log("MSG " + client->nick + (hall ? ": " : " [" + roomId + "]: ") + msg.rest);
+        return true;
+    }
+
+    // =======================================================================
+    // 多会话：私聊 / 群聊
+    // =======================================================================
+    // 这一整块只有声明过 rooms1 的客户端才会走到。老客户端不发这些命令，
+    // 也不会收到它们发出的任何消息（大厅那部分走的是原路径，一个字节没变）。
+
+    if (msg.command == "ROOMS") {
+        if (!RequireRoomsFeature(client)) return true;
+        SendRoomList(client);
+        return true;
+    }
+
+    // FEATURES <能力列表>：客户端声明自己支持哪些能力。
+    //
+    // 为什么除了 HELLO 的第 4 个字段还要有这么一条：HELLO 是**加密握手**，
+    // 把能力声明绑死在那里，等于"不支持加密的客户端永远用不了群聊"，
+    // 而且任何针对多会话的自动化测试都得先实现一遍 ECDH 才能开口说话。
+    // 这条命令让能力声明和加密彻底解耦。
+    //
+    // 安全上不用担心：roomsCapable 只决定服务端**多发**哪些消息给这个连接，
+    // 每一个群操作本身都会另外校验成员身份和角色，谎报能力换不到任何权限。
+    if (msg.command == "FEATURES") {
+        const std::vector<std::string> words = msg.Words();
+        if (words.empty()) {
+            client->SendLine(Timed("ERROR", "用法：FEATURES <能力列表>"));
+            return true;
+        }
+        const bool wasCapable = client->roomsCapable;
+        std::size_t start = 0;
+        const std::string& caps = words[0];
+        while (start <= caps.size()) {
+            const std::size_t comma = caps.find(',', start);
+            const std::string tag =
+                (comma == std::string::npos) ? caps.substr(start) : caps.substr(start, comma - start);
+            if (tag == "rooms1") client->roomsCapable = true;
+            if (comma == std::string::npos) break;
+            start = comma + 1;
+        }
+        if (client->roomsCapable) {
+            client->SendLine(dchat::BuildLine("FEATURES", "rooms1"));
+            // 已经登录了才补发会话列表；没登录的话，登录流程自己会发
+            if (!wasCapable && !client->nick.empty()) SendRoomList(client);
+        }
+        return true;
+    }
+
+    if (msg.command == "ROOM") {
+        if (!RequireRoomsFeature(client)) return true;
+        const std::vector<std::string> words = msg.Words();
+        if (words.size() != 1) {
+            client->SendLine(Timed("ERROR", "用法：ROOM <房间ID>"));
+            return true;
+        }
+        bool member = false;
+        {
+            std::lock_guard<std::mutex> lock(g_roomsMutex);
+            const dchat::Room* room = RoomsLocked().Find(words[0]);
+            member = room != nullptr && dchat::IsRoomMember(*room, client->nick);
+        }
+        if (!member) {
+            client->SendLine(Timed("ERROR", "你不在这个会话里：" + words[0]));
+            return true;
+        }
+        client->currentRoom = words[0];
+        SendWholeRoomTo(client, words[0]);
+        return true;
+    }
+
+    if (msg.command == "DM") {
+        const std::vector<std::string> words = msg.Words();
+        if (words.size() != 1) {
+            client->SendLine(Timed("ERROR", "用法：DM <昵称>"));
+            return true;
+        }
+        return OpenDirectMessage(client, words[0]);
+    }
+
+    if (msg.command == "GCREATE") {
+        if (!RequireRoomsFeature(client)) return true;
+        const std::vector<std::string> words = msg.Words();
+        if (words.size() != 2) {
+            client->SendLine(Timed("ERROR", "用法：GCREATE <群聊ID> <群名(Base64)>"));
+            return true;
+        }
+        dchat::RoomIdError idError = dchat::RoomIdError::None;
+        const std::string id = dchat::NormalizeGroupId(words[0], &idError);
+        if (id.empty()) {
+            client->SendLine(Timed("ERROR", dchat::RoomIdErrorText(idError)));
+            return true;
+        }
+        std::string name;
+        if (!DecodeTextArg(words[1], &name)) {
+            client->SendLine(Timed("ERROR", "群名编码不对"));
+            return true;
+        }
+        std::string nameError;
+        if (!dchat::ValidateRoomText(name, dchat::kMaxRoomNameChars, &nameError, "群名")) {
+            client->SendLine(Timed("ERROR", nameError));
+            return true;
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_roomsMutex);
+            if (RoomsLocked().Exists(id)) {
+                client->SendLine(Timed("ERROR", "群聊 ID「" + id + "」已经被占用了，换一个"));
+                return true;
+            }
+            if (!RoomsLocked().CreateGroup(id, name, client->nick)) {
+                client->SendLine(Timed("ERROR", "建群失败"));
+                return true;
+            }
+        }
+        SaveRooms();
+        client->currentRoom = id;
+        BroadcastRoomEvent(id, client->nick + " 创建了群聊「" + name + "」");
+        client->SendLine(Timed("SYS", "群聊「" + name + "」创建成功，群聊 ID 是 " + id +
+                                         "（ID 不可更改，请记好）"));
+        SendRoomList(client);  // 列表里多了一个群
+        SendWholeRoomTo(client, id);
+        Log("group created: " + id + " by " + client->nick);
+        return true;
+    }
+
+    if (msg.command == "GSEARCH") {
+        if (!RequireRoomsFeature(client)) return true;
+        const std::vector<std::string> words = msg.Words();
+        if (words.size() != 1) {
+            client->SendLine(Timed("ERROR", "用法：GSEARCH <关键词(Base64)>"));
+            return true;
+        }
+        std::string keyword;
+        if (!DecodeTextArg(words[0], &keyword)) {
+            client->SendLine(Timed("ERROR", "关键词编码不对"));
+            return true;
+        }
+        std::vector<std::string> lines;
+        {
+            std::lock_guard<std::mutex> lock(g_roomsMutex);
+            for (const dchat::Room* room : RoomsLocked().Search(keyword, 30)) {
+                lines.push_back(dchat::BuildLine(
+                    "GHIT", room->id + " " + dchat::Base64Encode(room->name) + " " +
+                                std::to_string(room->members.size()) + " " +
+                                std::to_string(room->maxMembers) + " " +
+                                dchat::JoinModeText(room->joinMode)));
+            }
+        }
+        // 搜不到时最先要问的两件事：服务端收到的关键词是什么、匹配到几条。
+        // 自动化联调里少了这行日志就只能靠猜 —— 客户端那边只看得到"0 条"。
+        Log("gsearch from " + client->nick + ": '" + keyword + "' -> " +
+            std::to_string(lines.size()) + " hit(s)");
+        for (const std::string& line : lines) client->SendLine(line);
+        client->SendLine(dchat::BuildLine("GHIT_END"));
+        return true;
+    }
+
+    if (msg.command == "GJOIN") {
+        if (!RequireRoomsFeature(client)) return true;
+        const std::vector<std::string> words = msg.Words();
+        if (words.size() != 1) {
+            client->SendLine(Timed("ERROR", "用法：GJOIN <房间ID>"));
+            return true;
+        }
+        const std::string roomId = words[0];
+        dchat::JoinResult result = dchat::JoinResult::NotJoinable;
+        {
+            std::lock_guard<std::mutex> lock(g_roomsMutex);
+            dchat::Room* room = RoomsLocked().Find(roomId);
+            if (!room) {
+                client->SendLine(Timed("ERROR", "找不到这个群：" + roomId));
+                return true;
+            }
+            result = dchat::RequestJoin(room, client->nick);
+        }
+        using dchat::JoinResult;
+        if (result == JoinResult::Joined || result == JoinResult::AutoJoined) {
+            SaveRooms();
+            client->SendLine(Timed("SYS", dchat::JoinResultText(result)));
+            BroadcastRoomEvent(roomId, client->nick + " 加入了群聊");
+            SendRoomList(client);
+            // 自动审核也要给管理员一条通知。不给的话"自动审核"和"直接添加"
+            // 在管理员眼里完全没差别，这个选项就白设了。
+            if (result == JoinResult::AutoJoined) {
+                NotifyRoomAdmins(roomId, Timed("REVENT", roomId + " " + client->nick +
+                                                             " 通过「自动审核」加入了群聊"));
+            }
+            Log("group join: " + client->nick + " -> " + roomId);
+        } else if (result == JoinResult::Queued) {
+            SaveRooms();  // 待审队列也要落盘，否则重启后申请就凭空消失了
+            client->SendLine(Timed("SYS", dchat::JoinResultText(result)));
+            client->SendLine(Timed("SYS", "已通知群管理员，通过后你会在会话列表里看到这个群"));
+            NotifyRoomAdmins(roomId,
+                             Timed("GREQ", roomId + " " + client->nick));
+        } else {
+            client->SendLine(Timed("ERROR", dchat::JoinResultText(result)));
+        }
+        return true;
+    }
+
+    if (msg.command == "GLEAVE") {
+        if (!RequireRoomsFeature(client)) return true;
+        const std::vector<std::string> words = msg.Words();
+        if (words.size() != 1) {
+            client->SendLine(Timed("ERROR", "用法：GLEAVE <房间ID>"));
+            return true;
+        }
+        const std::string roomId = words[0];
+        if (roomId == dchat::kHallId) {
+            client->SendLine(Timed("ERROR", "大厅不能退出 —— 它是所有人的公共房间"));
+            return true;
+        }
+        std::string newOwner;
+        bool left = false;
+        bool isGroup = false;
+        {
+            std::lock_guard<std::mutex> lock(g_roomsMutex);
+            dchat::Room* room = RoomsLocked().Find(roomId);
+            if (room) {
+                isGroup = room->kind == dchat::RoomKind::Group;
+                left = dchat::LeaveRoom(room, client->nick, &newOwner);
+            }
+        }
+        if (!left) {
+            client->SendLine(Timed(
+                "ERROR", isGroup ? "退群失败：你可能不在这个群里；如果你是群主而群里只剩你一个人，"
+                                   "那就没人能接手这个群，退不了"
+                                 : "这个会话不能退出（私聊只能删本地记录）"));
+            return true;
+        }
+        SaveRooms();
+        if (client->currentRoom == roomId) client->currentRoom = dchat::kHallId;
+        BroadcastRoomEvent(roomId, client->nick + " 退出了群聊");
+        if (!newOwner.empty()) {
+            BroadcastRoomEvent(roomId, "群主已自动转交给 " + newOwner);
+        }
+        client->SendLine(Timed("SYS", "已退出群聊" + (newOwner.empty()
+                                                          ? std::string()
+                                                          : "，群主已转交给 " + newOwner)));
+        SendRoomList(client);
+        // 群里**剩下的人**那边的成员数也要跟着变。原先只给退群者发了新名单，
+        // 于是留在群里的人看到的还是旧人数（自动化联调实测：bob 退群之后，
+        // alice 那边的 room1 成员数还是 2）。和"同意入群"是同一类问题。
+        // 群里剩下的人：成员**表和数**都要跟着变（正文见函数的注释）
+        NotifyRoomMembersChanged(roomId, client.get());
+        Log("group leave: " + client->nick + " <- " + roomId);
+        return true;
+    }
+
+    if (msg.command == "GSET") {
+        if (!RequireRoomsFeature(client)) return true;
+        const std::vector<std::string> words = msg.Words();
+        if (words.size() < 3) {
+            client->SendLine(Timed("ERROR", "用法：GSET <房间ID> <设置名> <值>"));
+            return true;
+        }
+        const std::string roomId = words[0];
+        dchat::RoomSettingKey key = dchat::RoomSettingKey::Name;
+        if (!dchat::ParseRoomSettingKey(words[1], &key)) {
+            std::string names;
+            for (dchat::RoomSettingKey each : dchat::AllRoomSettingKeys()) {
+                if (!names.empty()) names += " / ";
+                names += dchat::RoomSettingKeyText(each);
+            }
+            client->SendLine(Timed("ERROR", "不认识的设置项：" + words[1] + "（可用：" + names + "）"));
+            return true;
+        }
+        if (!RequireRoomAdmin(client, roomId, nullptr)) return true;
+
+        // 群名和公告可能含空格，走 Base64；其余设置项都是不含空格的纯值
+        std::string value = words[2];
+        if (key == dchat::RoomSettingKey::Name || key == dchat::RoomSettingKey::Announcement) {
+            if (!DecodeTextArg(words[2], &value)) {
+                client->SendLine(Timed("ERROR", "文本编码不对"));
+                return true;
+            }
+        }
+
+        dchat::RoomSettingChange change;
+        std::string broadcastLine;
+        {
+            std::lock_guard<std::mutex> lock(g_roomsMutex);
+            dchat::Room* room = RoomsLocked().Find(roomId);
+            if (!room) {
+                client->SendLine(Timed("ERROR", "找不到这个群：" + roomId));
+                return true;
+            }
+            change = dchat::ApplyRoomSetting(room, key, value);
+            if (change.ok && change.changed) broadcastLine = dchat::RoomSettingLine(*room, key);
+        }
+        if (!change.ok) {
+            client->SendLine(Timed("ERROR", change.text));
+            return true;
+        }
+        if (!change.changed) {
+            client->SendLine(Timed("SYS", "没有变化"));
+            return true;
+        }
+        SaveRooms();
+        // 缓存预算改了要**立刻**生效。不重算的话，管理员把 cachemaxmb 从 1GB 调到
+        // 1MB，界面显示 1MB 而磁盘占用纹丝不动 —— 那个设置项就成了摆设。
+        if (key == dchat::RoomSettingKey::CacheMaxMb) EnforceTempBudget();
+        client->SendLine(Timed("SYS", change.text));
+        if (!broadcastLine.empty()) BroadcastRoom(roomId, broadcastLine);
+        if (key == dchat::RoomSettingKey::Announcement) {
+            BroadcastRoomEvent(roomId, "群公告已更新");
+        }
+        Log("group set: " + roomId + " " + words[1] + " by " + client->nick);
+        return true;
+    }
+
+    if (msg.command == "GMEMBER") {
+        if (!RequireRoomsFeature(client)) return true;
+        const std::vector<std::string> words = msg.Words();
+        if (words.size() != 3) {
+            client->SendLine(Timed("ERROR", "用法：GMEMBER <房间ID> <昵称> <owner|admin|member>"));
+            return true;
+        }
+        const std::string roomId = words[0];
+        const std::string target = words[1];
+        dchat::RoomRole role = dchat::RoomRole::Member;
+        if (!dchat::ParseRoomRole(words[2], &role)) {
+            client->SendLine(Timed("ERROR", "角色只能是 owner / admin / member"));
+            return true;
+        }
+        dchat::RoomRole myRole = dchat::RoomRole::Member;
+        if (!RequireRoomAdmin(client, roomId, &myRole)) return true;
+        // 设/撤管理员是**群主专属**：管理员能互相任免的话，一个管理员就能把
+        // 其他人全撤掉、把群主架空
+        if (myRole != dchat::RoomRole::Owner) {
+            client->SendLine(Timed("ERROR", "只有群主能设/撤管理员"));
+            return true;
+        }
+        std::string error;
+        bool ok = false;
+        {
+            std::lock_guard<std::mutex> lock(g_roomsMutex);
+            dchat::Room* room = RoomsLocked().Find(roomId);
+            ok = room && dchat::SetMemberRole(room, target, role, &error);
+        }
+        if (!ok) {
+            client->SendLine(Timed("ERROR", error.empty() ? "设置失败" : error));
+            return true;
+        }
+        SaveRooms();
+        BroadcastRoomEvent(roomId, target + (role == dchat::RoomRole::Admin
+                                                 ? " 被设为管理员"
+                                                 : " 的管理员权限已被取消"));
+        // 角色变了：**群里所有人都要拿到新的成员表**。原先只回发给操作的管理员
+        // 自己，被改的那个人那边看不到 —— 自动化联调实测：把 bob 设为管理员之后，
+        // bob 自己界面上显示的还是"成员"。
+        NotifyRoomMembersChanged(roomId);
+        return true;
+    }
+
+    if (msg.command == "GNICK") {
+        if (!RequireRoomsFeature(client)) return true;
+        const std::vector<std::string> words = msg.Words();
+        if (words.size() != 3) {
+            client->SendLine(Timed("ERROR", "用法：GNICK <房间ID> <昵称> <群昵称(Base64)>"));
+            return true;
+        }
+        const std::string roomId = words[0];
+        const std::string target = words[1];
+        std::string display;
+        if (!DecodeTextArg(words[2], &display)) {
+            client->SendLine(Timed("ERROR", "群昵称编码不对"));
+            return true;
+        }
+        // 改自己不需要权限（这是每个成员自己的事）；改别人要管理员
+        if (target != client->nick) {
+            if (!RequireRoomAdmin(client, roomId, nullptr)) return true;
+        }
+        std::string error;
+        bool ok = false;
+        std::string displayLine;
+        {
+            std::lock_guard<std::mutex> lock(g_roomsMutex);
+            dchat::Room* room = RoomsLocked().Find(roomId);
+            if (room) {
+                ok = dchat::SetMemberDisplayName(room, target, display, &error);
+                if (ok) {
+                    const dchat::RoomMember* member = dchat::FindMember(*room, target);
+                    if (member) {
+                        displayLine = dchat::BuildLine(
+                            "RMEMBERS", roomId + " " + member->nick + " " +
+                                            dchat::RoomRoleText(member->role) + " " +
+                                            dchat::Base64Encode(member->displayName));
+                    }
+                }
+            } else {
+                error = "找不到这个群：" + roomId;
+            }
+        }
+        if (!ok) {
+            client->SendLine(Timed("ERROR", error.empty() ? "改群昵称失败" : error));
+            return true;
+        }
+        SaveRooms();
+        // 只广播这一个成员的那一行，不用把整张成员表重发一遍
+        if (!displayLine.empty()) BroadcastRoom(roomId, displayLine);
+        if (target == client->nick) client->SendLine(Timed("SYS", "群昵称已更新"));
+        return true;
+    }
+
+    if (msg.command == "GKICK") {
+        if (!RequireRoomsFeature(client)) return true;
+        const std::vector<std::string> words = msg.Words();
+        if (words.size() != 2) {
+            client->SendLine(Timed("ERROR", "用法：GKICK <房间ID> <昵称>"));
+            return true;
+        }
+        const std::string roomId = words[0];
+        const std::string target = words[1];
+        dchat::RoomRole myRole = dchat::RoomRole::Member;
+        if (!RequireRoomAdmin(client, roomId, &myRole)) return true;
+        if (target == client->nick) {
+            client->SendLine(Timed("ERROR", "不能踢自己 —— 想离开请用退出群聊"));
+            return true;
+        }
+        std::string error;
+        bool ok = false;
+        {
+            std::lock_guard<std::mutex> lock(g_roomsMutex);
+            dchat::Room* room = RoomsLocked().Find(roomId);
+            if (room) {
+                dchat::RoomRole targetRole = dchat::RoomRole::Member;
+                const bool targetIsMember = dchat::TryRoleOf(*room, target, &targetRole);
+                if (targetIsMember && dchat::RoomRoleCanAdminister(targetRole) &&
+                    myRole != dchat::RoomRole::Owner) {
+                    // 管理员之间不能互相踢：否则两个管理员可以互相踢来踢去，
+                    // 而且谁先动手谁赢
+                    error = "只有群主能踢管理员";
+                } else {
+                    ok = dchat::KickMember(room, target, &error);
+                }
+            } else {
+                error = "找不到这个群：" + roomId;
+            }
+        }
+        if (!ok) {
+            client->SendLine(Timed("ERROR", error.empty() ? "踢人失败" : error));
+            return true;
+        }
+        SaveRooms();
+        BroadcastRoomEvent(roomId, target + " 被移出了群聊");
+        client->SendLine(Timed("SYS", "已把 " + target + " 移出群聊"));
+        // 被踢的人：切回大厅 + 刷新会话列表，别让他继续对着一个已经不属于他的会话发言
+        for (const auto& other : ClientSnapshot()) {
+            if (other->nick != target || !other->roomsCapable) continue;
+            if (other->currentRoom == roomId) other->currentRoom = dchat::kHallId;
+            other->SendLine(Timed("SYS", "你已被移出群聊「" + roomId + "」"));
+            SendRoomList(other);
+        }
+        // 群里剩下的人：成员**表和数**都要跟着变（和入群 / 退群同一类问题）
+        NotifyRoomMembersChanged(roomId);
+        Log("group kick: " + target + " from " + roomId + " by " + client->nick);
+        return true;
+    }
+
+    if (msg.command == "GREQS") {
+        if (!RequireRoomsFeature(client)) return true;
+        const std::vector<std::string> words = msg.Words();
+        if (words.size() != 1) {
+            client->SendLine(Timed("ERROR", "用法：GREQS <房间ID>"));
+            return true;
+        }
+        const std::string roomId = words[0];
+        if (!RequireRoomAdmin(client, roomId, nullptr)) return true;
+        std::vector<std::string> pending;
+        {
+            std::lock_guard<std::mutex> lock(g_roomsMutex);
+            const dchat::Room* room = RoomsLocked().Find(roomId);
+            if (room) pending = room->pending;
+        }
+        if (pending.empty()) {
+            client->SendLine(Timed("SYS", "现在没有待审核的入群申请"));
+        }
+        for (const std::string& nick : pending) {
+            client->SendLine(dchat::BuildLine("GREQ", roomId + " " + nick));
+        }
+        client->SendLine(dchat::BuildLine("GREQ_END", roomId));
+        return true;
+    }
+
+    if (msg.command == "GREQ") {
+        if (!RequireRoomsFeature(client)) return true;
+        const std::vector<std::string> words = msg.Words();
+        if (words.size() != 3) {
+            client->SendLine(Timed("ERROR", "用法：GREQ <房间ID> <昵称> <ok|no>"));
+            return true;
+        }
+        const std::string roomId = words[0];
+        const std::string target = words[1];
+        const bool accept = (words[2] == "ok" || words[2] == "yes" || words[2] == "1");
+        if (!RequireRoomAdmin(client, roomId, nullptr)) return true;
+        bool handled = false;
+        {
+            std::lock_guard<std::mutex> lock(g_roomsMutex);
+            dchat::Room* room = RoomsLocked().Find(roomId);
+            if (room) handled = dchat::ResolveJoinRequest(room, target, accept);
+        }
+        if (!handled) {
+            client->SendLine(Timed("ERROR", "申请列表里没有 " + target + "（可能已经处理过了）"));
+            return true;
+        }
+        SaveRooms();
+        if (accept) {
+            BroadcastRoomEvent(roomId, target + " 加入了群聊");
+            client->SendLine(Timed("SYS", "已同意 " + target + " 入群"));
+            // 成员**表和数**都变了，群里所有人都要拿到新状态（含群主自己 ——
+            // 不然他那边成员列表里没有新成员，"设为管理员 / 踢人"根本点不到）。
+            NotifyRoomMembersChanged(roomId);
+            for (const auto& other : ClientSnapshot()) {
+                if (other->nick != target || !other->roomsCapable) continue;
+                other->SendLine(Timed("SYS", "你加入群聊的申请已通过"));
+                SendRoomList(other);
+            }
+        } else {
+            client->SendLine(Timed("SYS", "已拒绝 " + target + " 的入群申请"));
+            NotifyByName(target, "你加入群聊的申请被拒绝了");
+        }
+        return true;
+    }
+
+    if (msg.command == "GDELETE") {
+        if (!RequireRoomsFeature(client)) return true;
+        const std::vector<std::string> words = msg.Words();
+        if (words.size() != 1) {
+            client->SendLine(Timed("ERROR", "用法：GDELETE <房间ID>"));
+            return true;
+        }
+        const std::string roomId = words[0];
+        if (roomId == dchat::kHallId) {
+            client->SendLine(Timed("ERROR", "大厅不能删除"));
+            return true;
+        }
+        dchat::RoomRole myRole = dchat::RoomRole::Member;
+        if (!RequireRoomAdmin(client, roomId, &myRole)) return true;
+        if (myRole != dchat::RoomRole::Owner) {
+            client->SendLine(Timed("ERROR", "只有群主能解散群聊"));
+            return true;
+        }
+        std::string historyPath;
+        std::vector<std::string> members;
+        {
+            std::lock_guard<std::mutex> lock(g_roomsMutex);
+            const dchat::Room* room = RoomsLocked().Find(roomId);
+            if (!room) {
+                client->SendLine(Timed("ERROR", "找不到这个群：" + roomId));
+                return true;
+            }
+            for (const dchat::RoomMember& member : room->members) members.push_back(member.nick);
+            RoomsLocked().Remove(roomId, &historyPath);
+        }
+        SaveRooms();
+        // 磁盘上的东西一起清：历史文件、暂存目录、还有文件池里的登记。
+        // 不清的话，重建一个同名群会**继承上一个群的历史** —— 那是最难查的一类串会话。
+        if (!historyPath.empty()) {
+            std::error_code ec;
+            std::filesystem::remove(historyPath, ec);
+        }
+        ClearRoomFilesDir(roomId);
+        {
+            std::lock_guard<std::mutex> lock(g_filesMutex);
+            for (auto it = g_files.begin(); it != g_files.end();) {
+                if ((*it)->roomId == roomId) {
+                    it = g_files.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        for (const std::string& nick : members) {
+            for (const auto& other : ClientSnapshot()) {
+                if (other->nick != nick || !other->roomsCapable) continue;
+                if (other->currentRoom == roomId) other->currentRoom = dchat::kHallId;
+                other->SendLine(Timed("SYS", "群聊已被解散"));
+                SendRoomList(other);
+            }
+        }
+        Log("group deleted: " + roomId + " by " + client->nick);
+        return true;
+    }
+
+    // ---- 私聊黑名单 ----
+    if (msg.command == "BLOCK" || msg.command == "UNBLOCK") {
+        if (client->nick.empty()) {
+            client->SendLine(Timed("ERROR", "请先登录"));
+            return true;
+        }
+        const std::vector<std::string> words = msg.Words();
+        if (words.size() != 1) {
+            client->SendLine(Timed("ERROR", "用法：" + msg.command + " <昵称>"));
+            return true;
+        }
+        const std::string target = words[0];
+        if (target == client->nick) {
+            client->SendLine(Timed("ERROR", "不能拉黑自己"));
+            return true;
+        }
+        if (!UserExists(target, nullptr)) {
+            client->SendLine(Timed("ERROR", "没有这个账号：" + target));
+            return true;
+        }
+        if (msg.command == "BLOCK") {
+            if (AddBlock(client->nick, target)) {
+                client->SendLine(Timed("SYS", "已把 " + target +
+                                                 " 加入黑名单：你们之间的私聊双向都不通了"));
+                Log("block: " + client->nick + " -> " + target);
+            } else {
+                client->SendLine(Timed("SYS", target + " 已经在你的黑名单里了"));
+            }
+        } else {
+            if (RemoveBlock(client->nick, target)) {
+                client->SendLine(Timed("SYS", "已把 " + target + " 移出黑名单"));
+            } else {
+                client->SendLine(Timed("SYS", target + " 不在你的黑名单里"));
+            }
+        }
+        // 拉黑 / 解除之后**立刻把新的黑名单推回去**：只回一句 SYS 的话，客户端那边
+        // 的黑名单要等下次登录才更新（自动化联调实测：拉黑明明成功了，界面上还是空的）。
+        // 复用和 BLOCKS 请求完全相同的一串消息，客户端那边不用改协议。
+        const std::vector<std::string> updated = BlockListOf(client->nick);
+        for (const std::string& nick : updated) {
+            client->SendLine(dchat::BuildLine("GBLOCKS", nick));
+        }
+        client->SendLine(dchat::BuildLine("GBLOCKS_END"));
+        return true;
+    }
+
+    if (msg.command == "BLOCKS") {
+        if (client->nick.empty()) {
+            client->SendLine(Timed("ERROR", "请先登录"));
+            return true;
+        }
+        const std::vector<std::string> list = BlockListOf(client->nick);
+        if (list.empty()) {
+            client->SendLine(Timed("SYS", "你的黑名单是空的"));
+        }
+        for (const std::string& nick : list) {
+            client->SendLine(dchat::BuildLine("GBLOCKS", nick));
+        }
+        client->SendLine(dchat::BuildLine("GBLOCKS_END"));
         return true;
     }
 
@@ -1948,7 +3461,17 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
                                              : std::string("(文件名无法解析)");
             // 建临时文件开始接收：**不再把文件内容攒在内存里**。
             // 这台服务器只有 1.6GB 内存，几个大文件就能把它 OOM 掉。
-            if (!EnsureFilesDir()) {
+            // 文件按房间分目录暂存，所以这里要先确认自己在哪个会话、并且还在里面。
+            const std::string uploadRoom = client->currentRoom;
+            {
+                std::lock_guard<std::mutex> lock(g_roomsMutex);
+                const dchat::Room* room = RoomsLocked().Find(uploadRoom);
+                if (!room || !dchat::IsRoomMember(*room, client->nick)) {
+                    client->SendLine(Timed("ERROR", "你不在这个会话里，无法上传文件"));
+                    return true;
+                }
+            }
+            if (!EnsureFilesDir(uploadRoom)) {
                 client->SendLine(Timed("ERROR", "服务器无法准备暂存目录，上传取消"));
                 return true;
             }
@@ -1957,8 +3480,8 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
                 std::lock_guard<std::mutex> lock(g_filesMutex);
                 uploadSeq = ++g_uploadSeq;
             }
-            const std::string partPath =
-                g_filesDir + "/upload-" + std::to_string(uploadSeq) + kPartSuffix;
+            const std::string partPath = dchat::RoomRegistry::FilesDirFor(uploadRoom) + "/upload-" +
+                                         std::to_string(uploadSeq) + kPartSuffix;
             std::ofstream partFile(partPath, std::ios::binary | std::ios::trunc);
             if (!partFile) {
                 client->SendLine(Timed("ERROR", "服务器无法建立临时文件，上传取消"));
@@ -1967,6 +3490,7 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             }
             client->upload = std::make_shared<PendingUpload>();
             client->upload->id = words[0];
+            client->upload->roomId = uploadRoom;  // 钉死房间：中途切会话不影响这个上传
             client->upload->nameB64 = words[1];
             client->upload->declared = bytes;
             client->upload->partPath = partPath;
@@ -2085,10 +3609,19 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
                 return true;
             }
             upload->committed = true;  // 已交给 StoredFile 管，析构不要再删它
-            const std::string fileId = StoreFile(client->nick, upload->nameB64, upload->received,
-                                                 finalPath, upload->thumb);
+            // 房间的缓存预算在这里取一次（它决定这个文件能不能存下、以及要淘汰谁）。
+            // 取完就放锁：StoreFile 会拿 g_filesMutex，两把锁不嵌套。
+            unsigned long long roomBudget = 0;
+            {
+                std::lock_guard<std::mutex> lock(g_roomsMutex);
+                const dchat::Room* room = RoomsLocked().Find(upload->roomId);
+                if (room) roomBudget = EffectiveRoomBudget(*room);
+            }
+            const std::string fileId = StoreFile(upload->roomId, client->nick, upload->nameB64,
+                                                 upload->received, finalPath, upload->thumb,
+                                                 roomBudget);
             if (fileId.empty()) {
-                client->SendLine(Timed("ERROR", "服务器暂时存不下这个文件，稍后再试"));
+                client->SendLine(Timed("ERROR", "服务器暂时存不下这个文件（可能超出了这个会话的缓存上限），稍后再试"));
                 RemoveStoredFileQuiet(finalPath);  // 没登记成功，磁盘上那份不能留
                 return true;
             }
@@ -2097,24 +3630,39 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
                                              ? dchat::SanitizeFileName(std::string(
                                                    nameBytes.begin(), nameBytes.end()))
                                              : std::string("(文件名无法解析)");
+            // "还有几个人能下载"要按**同一个会话里**的在线人数算。
+            // 以前只有一个房间，数所有在线的人是对的；多会话之后那么数会告诉用户
+            // "房间里 5 位成员"，而实际上这个群只有他一个人。
             std::size_t others = 0;
-            for (const auto& other : ClientSnapshot()) {
-                if (other.get() != client.get() && !other->nick.empty()) ++others;
+            {
+                const std::vector<std::string> audience = RoomAudience(upload->roomId);
+                for (const auto& other : ClientSnapshot()) {
+                    if (other.get() == client.get() || other->nick.empty()) continue;
+                    if (std::find(audience.begin(), audience.end(), other->nick) != audience.end()) {
+                        ++others;
+                    }
+                }
             }
-            client->SendLine(Timed("SYS", others ? ("文件已上传，房间里的 " +
+            client->SendLine(Timed("SYS", others ? ("文件已上传，会话里的 " +
                                                     std::to_string(others) +
                                                     " 位成员点一下卡片就能下载")
-                                                 : "文件已上传，但房间里目前没有其他人"));
+                                                 : "文件已上传，但这个会话里目前没有其他人"));
             // 通知别人"有文件可以下载了"（上传者自己不用再下自己发的文件）
             //
             // 种类标记是**追加在末尾的第 7 位**，绝不能插到中间：老客户端按位置
             // 读到第 5 个字段就停了，插进去会让它们把标记当成字节数解析。
             // 这和 RULES 行当初的扩法一样——只追加、不重排。
-            Broadcast(Timed("FILE_OFFER", client->nick + " " + fileId + " " + upload->nameB64 + " " +
-                                             std::to_string(upload->received) + " " +
-                                             (upload->thumb.empty() ? "0" : "1") + " " +
-                                             upload->kind),
-                      client.get());
+            //
+            // 非大厅的附件多一层房间号（RFILE_OFFER）：客户端可能同时收着好几个
+            // 会话的消息，不给房间号它就不知道该把这张卡片放进哪一段对话里。
+            const std::string fileArgs = client->nick + " " + fileId + " " + upload->nameB64 + " " +
+                                         std::to_string(upload->received) + " " +
+                                         (upload->thumb.empty() ? "0" : "1") + " " + upload->kind;
+            const std::string offerLine =
+                (upload->roomId == dchat::kHallId)
+                    ? Timed("FILE_OFFER", fileArgs)
+                    : Timed("RFILE_OFFER", upload->roomId + " " + fileArgs);
+            BroadcastRoom(upload->roomId, offerLine, client.get());
             Log("file stored: id=" + fileId + " owner=" + client->nick + " " + showName + "（" +
                 dchat::FormatBytes(upload->received) + "）");
             // **也要告诉上传者它的附件 ID。**
@@ -2127,10 +3675,9 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             // 用**和广播完全相同的命令与字段顺序**，只是把接收者换成上传者：
             // 另外两端的界面本来就按"有人上传好了"处理 FILE_OFFER，
             // 显示出来正好是"文件已上传（自己传的）"，语义正确、解析零改动。
-            client->SendLine(Timed("FILE_OFFER",
-                                   client->nick + " " + fileId + " " + upload->nameB64 + " " +
-                                       std::to_string(upload->received) + " " +
-                                       (upload->thumb.empty() ? "0" : "1") + " " + upload->kind));
+            // 非大厅时同样要走 RFILE_OFFER，否则客户端会把自己传的群文件
+            // 错放进大厅那段对话里。
+            client->SendLine(offerLine);
             return true;
         }
 
@@ -2152,6 +3699,12 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             if (!thumbFile || thumbFile->thumb.empty()) {
                 client->SendLine(dchat::BuildLine("FILE_FAIL",
                                                  words[0] + " 这个文件没有缩略图"));
+                return true;
+            }
+            if (!CanAccessRoomFile(*client, thumbFile->roomId)) {
+                client->SendLine(dchat::BuildLine("FILE_FAIL",
+                                                  words[0] + " 你不在这个文件所属的会话里"));
+                Log("thumb denied (not a member): " + client->nick + " -> " + thumbFile->id);
                 return true;
             }
             Log("download thumb: " + client->nick + " " + thumbFile->id + "（" +
@@ -2189,6 +3742,14 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
             // 控制消息不带时间戳，和其他文件消息一致，客户端解析更简单
             client->SendLine(dchat::BuildLine("FILE_FAIL", words[0] + " 文件不存在或已经过期"));
             Log("download miss: " + client->nick + " -> " + words[0]);
+            return true;
+        }
+        // 下载权限：只能下自己所在会话的附件。少了这一步，猜一个文件 ID
+        // 就能把别人的私聊附件拿走。
+        if (!CanAccessRoomFile(*client, file->roomId)) {
+            client->SendLine(dchat::BuildLine("FILE_FAIL",
+                                              words[0] + " 你不在这个文件所属的会话里"));
+            Log("download denied (not a member): " + client->nick + " -> " + file->id);
             return true;
         }
         // 续传起点必须落在文件范围内。超出说明客户端手里是**旧文件**的大小
@@ -2431,8 +3992,12 @@ int main(int argc, char** argv) {
     // 而 /op 只能在控制台做（systemd 下 stdin 是 /dev/null）。
     LoadOps();
     Log("admins: " + OpList());
+    // 房间名单必须在 LoadHistory 之前读：历史是**按房间**加载的，
+    // 顺序反了的话群里和私聊的历史会因为"房间还不存在"而全部被丢掉。
+    LoadRooms();
     LoadHistory();
     LoadSeen();
+    LoadBlocks();
     Log("rules file: " + g_rulesPath + "（/chatrule 改完会自动写回）");
     if (!LoadOrCreateIdentityKey()) {
         Log("⚠ 身份密钥初始化失败：传输加密将不可用（客户端会退回明文）");

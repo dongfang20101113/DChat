@@ -19,6 +19,7 @@
 
 #include "bubble.h"
 #include "rounded.h"
+#include "ui_layout.h"  // 会话列表的几何：效果图和真界面共用同一套数字
 
 namespace {
 
@@ -502,6 +503,147 @@ void DrawCurrent(Canvas& canvas, const ChatMetrics& fonts, const Theme& theme) {
     PillButton(dc, send, L"发送", fonts.message, theme, true);
 }
 
+// 多会话（私聊 / 群聊）：菜单栏 + 左侧会话列表 + 记录区 + 输入行。
+//
+// **会话列表的几何直接用 src/ui_layout.cpp 里的真实现**（LayoutSessionList /
+// HitTestSessionList），不是照着画一遍：效果图和真界面共用同一套数字，
+// 图上看着对、做出来不对这种事才不会发生。文字、气泡、配色也照抄 client.cpp。
+void DrawRooms(Canvas& canvas, const ChatMetrics& fonts, const Theme& theme) {
+    HDC dc = canvas.dc();
+    canvas.Fill(RECT{0, 0, kWinW, kWinH}, theme.windowBg);
+    canvas.Fill(RECT{0, 0, kWinW, kTitleH}, theme.titleBar);
+    Text(dc, L"dchat 客户端", RECT{14, 0, 400, kTitleH}, fonts.message, theme.text,
+         DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    WindowButtons(dc, kWinW, theme);
+
+    const int contentTop = kTitleH + dchat::kMenuBarHeight;
+    const int statusTop = kWinH - dchat::kInputRowHeight - dchat::kStatusBarHeight;
+    const int listWidth = dchat::kSessionListWidth;
+
+    // ---- 菜单栏 ----
+    canvas.Fill(RECT{0, kTitleH, kWinW, contentTop}, theme.panel);
+    canvas.Fill(RECT{0, contentTop - 1, kWinW, contentTop}, theme.border);
+    int menuX = 6;
+    for (const wchar_t* label : {L"连接", L"设置", L"帮助"}) {
+        RECT box{menuX, kTitleH + dchat::kMenuItemsTop, menuX + 62,
+                 kTitleH + dchat::kMenuItemsTop + 28};
+        Text(dc, label, box, fonts.message, theme.text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        menuX += 62 + 8;
+    }
+
+    // ---- 左侧会话列表（真几何）----
+    std::vector<dchat::SessionRowInput> rows;
+    struct RowSeed {
+        const wchar_t* title;
+        const wchar_t* subtitle;
+        int unread;
+        bool muted;
+        bool pinned;
+    };
+    const RowSeed seeds[] = {
+        {L"公告板", L"公共大厅", 12, true, true},
+        {L"dchat 开发组", L"5 人 / 200・群主", 3, false, false},
+        {L"和 小明", L"私聊", 0, false, false},
+        {L"摸鱼群", L"28 人 / 50・管理员", 128, true, false},
+    };
+    for (const RowSeed& seed : seeds) {
+        dchat::SessionRowInput row;
+        row.title = seed.title;
+        row.subtitle = seed.subtitle;
+        row.unread = seed.unread;
+        row.muted = seed.muted;
+        row.pinned = seed.pinned;
+        rows.push_back(row);
+    }
+    const dchat::SessionListLayout layout =
+        dchat::LayoutSessionList(contentTop, statusTop - contentTop, 0, rows);
+
+    canvas.Fill(layout.panel, theme.panel);
+    canvas.Fill(RECT{layout.panel.right - 1, layout.panel.top, layout.panel.right,
+                     layout.panel.bottom},
+                theme.border);
+    Text(dc, L"会话", layout.title, fonts.small, theme.system,
+         DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    for (const dchat::SessionRowLayout& row : layout.rows) {
+        if (!row.valid) continue;
+        const bool active = (row.index == 1);  // 效果图里假装"当前在开发组"
+        if (active) canvas.Fill(row.row, theme.hover);
+        Text(dc, rows[row.index].title, row.title, fonts.message,
+             active ? theme.text : theme.text,
+             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        Text(dc, rows[row.index].subtitle, row.subtitle, fonts.small, theme.system,
+             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        if (row.badge.right > row.badge.left) {
+            if (rows[row.index].muted) {
+                // 免打扰的会话只画一个小圆点，不显示数字（和真界面一致）
+                const int dot = 8;
+                const int cy = (row.badge.top + row.badge.bottom) / 2;
+                RECT mark{row.badge.right - dot, cy - dot / 2, row.badge.right, cy + dot / 2};
+                ui::FillRoundedRect(dc, mark, dot / 2, theme.system, theme.system, 0.0f);
+            } else {
+                ui::FillRoundedRect(dc, row.badge, dchat::kSessionBadgeMin / 2, theme.accent,
+                                    theme.accent, 0.0f);
+                wchar_t count[8] = {0};
+                const int shown = rows[row.index].unread > 99 ? 99 : rows[row.index].unread;
+                wsprintfW(count, L"%d", shown);
+                Text(dc, count, row.badge, fonts.small, theme.accentText,
+                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+        }
+        // 免打扰 / 置顶标记：真界面用图标字体画，这里画成小色块，
+        // 位置和真界面**完全一致**（都是几何层算出来的矩形）
+        if (row.muteMark.right > row.muteMark.left) {
+            canvas.Fill(RECT{row.muteMark.left + 3, row.muteMark.top + 4, row.muteMark.right - 3,
+                             row.muteMark.bottom - 4},
+                        theme.system);
+        }
+        if (row.pinMark.right > row.pinMark.left) {
+            canvas.Fill(RECT{row.pinMark.left + 3, row.pinMark.top + 4, row.pinMark.right - 3,
+                             row.pinMark.bottom - 4},
+                        theme.accent);
+        }
+    }
+
+    // ---- 记录区 ----
+    const int viewLeft = listWidth + 12;
+    const int viewWidth = kWinW - viewLeft - 12;
+    canvas.Fill(RECT{viewLeft, contentTop, viewLeft + viewWidth, statusTop}, theme.windowBg);
+    int y = contentTop + 12;
+    DrawNoticeCapsule(dc, viewLeft, viewWidth, &y, L"—— 群公告：今晚八点联调，记得上线 ——", fonts,
+                      theme);
+    DrawBubble(dc, viewLeft, viewWidth, &y, L"小明", L"21:03", L"群聊和私聊都接上了吗？", false,
+               fonts, theme);
+    DrawBubble(dc, viewLeft, viewWidth, &y, L"我", L"21:04",
+               L"服务端跑通了，54 项端到端检查全过 @小明", true, fonts, theme);
+
+    // ---- 状态条 + 输入行 ----
+    canvas.Fill(RECT{0, statusTop - dchat::kStatusBarHeight, kWinW, statusTop}, theme.panel);
+    canvas.Fill(RECT{0, statusTop - dchat::kStatusBarHeight, kWinW,
+                     statusTop - dchat::kStatusBarHeight + 1},
+                theme.border);
+    Text(dc, L"已连接 192.168.1.100:5555　用户：我　会话：dchat 开发组（5 人）",
+         RECT{14, statusTop - dchat::kStatusBarHeight, kWinW - 14, statusTop}, fonts.small,
+         theme.system, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    const int inputTop = statusTop + (dchat::kInputRowHeight - dchat::kInputPillHeight) / 2;
+    RECT pill{dchat::kInputRowMargin, inputTop,
+              kWinW - dchat::kInputRowMargin - dchat::kSendWidth - dchat::kPlusSize - 16,
+              inputTop + dchat::kInputPillHeight};
+    ui::DrawRoundedControl(dc, pill, dchat::kInputPillHeight / 2, theme.windowBg,
+                           theme.bubbleOther, theme.border);
+    Text(dc, L"在「dchat 开发组」里说点什么…（回车发送）",
+         RECT{pill.left + 16, pill.top, pill.right - 16, pill.bottom}, fonts.message,
+         theme.system, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    RECT plus{pill.right + 8, inputTop, pill.right + 8 + dchat::kPlusSize,
+              inputTop + dchat::kPlusSize};
+    PillButton(dc, plus, L"＋", fonts.message, theme, false);
+    RECT send{kWinW - dchat::kInputRowMargin - dchat::kSendWidth, inputTop, kWinW - 12,
+              inputTop + dchat::kInputPillHeight};
+    PillButton(dc, send, L"发送", fonts.message, theme, true);
+}
+
 // 方案 A：菜单栏 + 状态条 + 输入行（三行，各司其职）
 void DrawProposalA(Canvas& canvas, const ChatMetrics& fonts, const Theme& theme) {
     HDC dc = canvas.dc();
@@ -762,6 +904,7 @@ int main(int argc, char** argv) {
         {L"ui-proposal-a.png", DrawProposalA},
         {L"ui-proposal-b.png", DrawProposalB},
         {L"ui-proposal-settings.png", DrawSettings},
+        {L"ui-rooms.png", DrawRooms},
     };
 
     int failures = 0;

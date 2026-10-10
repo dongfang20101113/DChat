@@ -58,6 +58,17 @@ void HistoryStore::TrimToBytes(unsigned long long maxBytes) {
     }
 }
 
+void HistoryStore::SetBudget(std::size_t maxLines, unsigned long long maxBytes) {
+    maxLines_ = (maxLines == 0 ? 1 : maxLines);
+    maxBytes_ = maxBytes;
+    // 裁剪条件必须和 Append 里的完全一致：只裁字节、不管条数的话，
+    // 管理员把缓存调到 1 MB 之后，内存里仍能靠 maxLines_ 留住一大批消息
+    while (!entries_.empty() && (entries_.size() > maxLines_ || bytes_ > maxBytes_)) {
+        bytes_ -= EntryBytes(entries_.front());
+        entries_.erase(entries_.begin());
+    }
+}
+
 std::size_t HistoryStore::LoadFromText(const std::string& text) {
     // 启动加载是唯一的"从头来"场景：这里才允许把序号归零。
     entries_.clear();
@@ -117,6 +128,13 @@ std::vector<HistoryEntry> HistoryStore::Since(unsigned long long afterSeq,
         if (out.size() >= limit) break;
     }
     return out;
+}
+
+std::vector<HistoryEntry> HistoryStore::Recent(std::size_t limit) const {
+    if (limit == 0 || entries_.empty()) return {};
+    if (entries_.size() <= limit) return entries_;
+    return std::vector<HistoryEntry>(entries_.end() - static_cast<std::ptrdiff_t>(limit),
+                                     entries_.end());
 }
 
 std::string HistoryStore::Serialize() const {

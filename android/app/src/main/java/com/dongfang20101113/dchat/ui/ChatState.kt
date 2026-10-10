@@ -1,12 +1,29 @@
 package com.dongfang20101113.dchat.ui
 
 import com.dongfang20101113.dchat.protocol.AttachmentKind
+import com.dongfang20101113.dchat.protocol.GroupHit
+import com.dongfang20101113.dchat.protocol.HALL_ID
+import com.dongfang20101113.dchat.protocol.JoinMode
 import com.dongfang20101113.dchat.protocol.NoticeInfo
+import com.dongfang20101113.dchat.protocol.RoomIdError
+import com.dongfang20101113.dchat.protocol.RoomInfo
+import com.dongfang20101113.dchat.protocol.RoomKind
+import com.dongfang20101113.dchat.protocol.RoomLine
+import com.dongfang20101113.dchat.protocol.RoomPrefs
+import com.dongfang20101113.dchat.protocol.RoomSettings
+import com.dongfang20101113.dchat.protocol.RoomState
 import com.dongfang20101113.dchat.protocol.SayInfo
 import com.dongfang20101113.dchat.protocol.ServerLine
 import com.dongfang20101113.dchat.protocol.TrustDecision
+import com.dongfang20101113.dchat.protocol.containsAllMention
 import com.dongfang20101113.dchat.protocol.countTextLines
 import com.dongfang20101113.dchat.protocol.formatBytes
+import com.dongfang20101113.dchat.protocol.mentionsAll
+import com.dongfang20101113.dchat.protocol.mentionsNick
+import com.dongfang20101113.dchat.protocol.normalizeGroupId
+import com.dongfang20101113.dchat.protocol.parseLine
+import com.dongfang20101113.dchat.protocol.sortRoomsForDisplay
+import com.dongfang20101113.dchat.protocol.takeTimePrefix
 import com.dongfang20101113.dchat.protocol.unescapeText
 import com.dongfang20101113.dchat.protocol.utf8CharCount
 
@@ -179,6 +196,38 @@ data class ChatState(
      * 宁可先显示 0:00，也不拿字节数按码率估一个数出来骗人。
      */
     val playingDurationSeconds: Int = 0,
+
+    // ---- 多会话（私聊 / 群聊）----
+    /**
+     * 服务端确认支持 `rooms1` 吗。
+     *
+     * **必须以它为准**：连的是旧版服务端时它是 false，界面要退回"只有大厅"的样子，
+     * 而不是发一堆对方看不懂的命令、然后什么都不发生 —— 那种"点了没反应"
+     * 比明确说不支持难查得多。
+     */
+    val roomsEnabled: Boolean = false,
+
+    /** 会话列表（含大厅）。顺序是服务端给的；置顶排序见 [orderedRooms]。 */
+    val rooms: List<RoomState> = emptyList(),
+
+    /**
+     * 每个会话各自的聊天记录。
+     *
+     * `items` 永远是"当前正在看的那个会话"的那一份 —— 和桌面端同一个取舍：
+     * **换内容不换壳**。这样气泡排版、滚动、文件卡片状态机那一整套逻辑
+     * 一行都不用改成"按会话实例化"（那要动十几处，而且每处都可能引入新 bug）。
+     */
+    val roomItems: Map<String, List<ChatItem>> = emptyMap(),
+
+    /** 当前正在看的会话。默认大厅：老服务器、还没收到 ROOMLIST 时都用它。 */
+    val currentRoomId: String = HALL,
+
+    /** 群搜索结果（`GHIT` 攒到 `GHIT_END` 才一次性显示）。 */
+    val groupHits: List<GroupHit> = emptyList(),
+    val groupSearching: Boolean = false,
+
+    /** 黑名单（`GBLOCKS`）。 */
+    val blockList: List<String> = emptyList(),
 ) {
     /** 聊天记录上限：和桌面端的 `kMaxItems = 400` 一致。 */
     val isFull: Boolean get() = items.size >= MAX_ITEMS
@@ -344,3 +393,268 @@ private fun ChatState.updateFile(fileId: String, transform: (ChatItem.FileItem) 
     }
     return if (changed) copy(items = list) else this
 }
+
+// ---------------------------------------------------------------------------
+// 多会话（私聊 / 群聊）的状态迁移
+// ---------------------------------------------------------------------------
+//
+// 和 [reduce] 一样是**纯函数**：收到某条房间消息之后界面该变成什么样，
+// 全部能脱离 Android 单测。多会话最容易出的错不是崩溃，而是"消息落进了错的会话"
+// 和"未读/免打扰算不对"—— 这两类只有对着状态断言才查得出来。
+
+/** 还没有 ROOMLIST 时的兜底大厅。老服务器永远停在这个会话上。 */
+const val HALL: String = HALL_ID
+
+/** 会话列表的显示顺序：置顶的排前面。 */
+val ChatState.orderedRooms: List<RoomState>
+    get() = sortRoomsForDisplay(rooms)
+
+val ChatState.currentRoom: RoomState?
+    get() = rooms.firstOrNull { it.id == currentRoomId }
+
+/** 所有会话的未读合计（窗口标题 / 应用角标用）。 */
+val ChatState.totalUnread: Int
+    get() = rooms.sumOf { it.unread }
+
+/** 有没有未读的重要消息（@我 / @全体成员）。 */
+val ChatState.hasUnreadImportant: Boolean
+    get() = rooms.any { it.unreadImportant }
+
+/** 找到某个会话；没有就用 kind 建一个占位（后续 RINFO 会填全）。 */
+private fun ChatState.withRoom(roomId: String, kind: RoomKind): ChatState {
+    if (rooms.any { it.id == roomId }) return this
+    val placeholder = RoomState(
+        info = RoomInfo(id = roomId, kind = kind),
+        prefs = RoomPrefs.default(kind),
+    )
+    return copy(rooms = rooms + placeholder)
+}
+
+/**
+ * 用一条 `ROOMLIST` / `RINFO` 更新会话。
+ *
+ * 已经在列表里的会话用 [RoomState.mergeFromListEntry] 合并（只更新它真正带来的字段），
+ * 不在的就新建 —— 新建时**带上默认的本地设置**（大厅默认免打扰等）。
+ */
+fun ChatState.upsertRoom(info: RoomInfo, fromList: Boolean): ChatState {
+    val index = rooms.indexOfFirst { it.id == info.id }
+    if (index < 0) {
+        val fresh = RoomState(info = info, prefs = RoomPrefs.default(info.kind))
+        return copy(rooms = rooms + fresh)
+    }
+    val old = rooms[index]
+    val merged = if (fromList) old.mergeFromListEntry(info) else old.copy(info = info)
+    return copy(rooms = rooms.toMutableList().also { it[index] = merged })
+}
+
+/** 改某个会话的**本地**设置（免打扰 / 置顶 / 重要提醒 / 本地缓存）。永不上传。 */
+fun ChatState.updatePrefs(roomId: String, update: (RoomPrefs) -> RoomPrefs): ChatState =
+    copy(rooms = rooms.map { if (it.id == roomId) it.withPrefs(update) else it })
+
+/**
+ * 把一条记录投递到某个会话。
+ *
+ * 是当前会话就直接进 `items`；不是就进 `roomItems` 并给那个会话加未读。
+ * 免打扰的会话**照常加未读** —— 免打扰的意思是"别打扰我"，不是"有新消息也别让我知道"；
+ * 完全不计数的话用户会以为这个群死了，而他其实只是把它静音了。
+ */
+fun ChatState.appendToRoom(roomId: String, item: ChatItem, countUnread: Boolean): ChatState {
+    // **key 在这里统一分配**，不由调用方填。Compose 的列表按 key 复用节点，
+    // 重复的 key 会让它画出错位的界面（甚至抛异常）—— 让"造条目的人"自己保证唯一，
+    // 迟早会漏一处，而症状是"两条消息看起来是同一条"。
+    val keyed = when (item) {
+        is ChatItem.SayItem -> item.copy(key = nextKey)
+        is ChatItem.NoticeItem -> item.copy(key = nextKey)
+        is ChatItem.FileItem -> item.copy(key = nextKey)
+    }
+    val next = nextKey + 1
+    if (roomId == currentRoomId) {
+        return copy(items = (items + keyed).takeLast(ChatState.MAX_ITEMS), nextKey = next)
+    }
+    val existing = roomItems[roomId].orEmpty()
+    val important = keyed is ChatItem.SayItem && keyed.info.mention
+    return copy(
+        roomItems = roomItems + (roomId to (existing + keyed).takeLast(ChatState.MAX_ITEMS)),
+        nextKey = next,
+        rooms = rooms.map {
+            if (it.id == roomId && countUnread) {
+                it.copy(unread = it.unread + 1, unreadImportant = it.unreadImportant || important)
+            } else {
+                it
+            }
+        },
+    )
+}
+
+/**
+ * 切换会话：把当前记录区和目标会话的**对调**。
+ *
+ * 为什么不是"清空再重填"：那会让每次切回来都重排一遍几千条气泡（卡顿可见），
+ * 而对调只是换两个列表的引用。
+ */
+fun ChatState.switchRoom(roomId: String): ChatState {
+    val cleared = rooms.map {
+        if (it.id == roomId) it.copy(unread = 0, unreadImportant = false) else it
+    }
+    if (roomId == currentRoomId) return copy(rooms = cleared)
+    val outgoing = items
+    val incoming = roomItems[roomId].orEmpty()
+    return copy(
+        currentRoomId = roomId,
+        items = incoming,
+        // 目标会话那一份拿走，当前会话那份存回去 —— 两边的记录都不丢
+        roomItems = (roomItems - roomId) + (currentRoomId to outgoing),
+        rooms = cleared,
+    )
+}
+
+/** 删除某个会话的**本地**聊天记录。服务端那份不动 —— 那是"群的历史"，不是"我的历史"。 */
+fun ChatState.clearRoomHistory(roomId: String): ChatState {
+    if (roomId == currentRoomId) {
+        return copy(items = emptyList(), roomItems = roomItems - roomId)
+    }
+    return copy(roomItems = roomItems - roomId)
+}
+
+/** 把一条多会话行交给状态机。 */
+fun ChatState.reduceRoom(line: RoomLine, selfNick: String): ChatState = when (line) {
+    is RoomLine.Features -> copy(roomsEnabled = line.supportsRooms)
+
+    is RoomLine.RoomListEntry -> withRoom(line.info.id, line.info.kind).upsertRoom(line.info, true)
+
+    // 列表结束：一个会话都还没有的话，至少把大厅补上，否则界面会是一片空白
+    is RoomLine.RoomListEnd -> if (rooms.isEmpty()) withRoom(HALL_ID, RoomKind.HALL) else this
+
+    is RoomLine.RoomInfoLine -> upsertRoom(line.info, false)
+
+    is RoomLine.RoomSetting -> copy(
+        rooms = rooms.map { if (it.id == line.roomId) it.applySetting(line.key, line.value) else it }
+    )
+
+    is RoomLine.RoomMemberLine -> copy(
+        rooms = rooms.map { room ->
+            if (room.id != line.roomId) return@map room
+            val existing = room.members.indexOfFirst { it.nick == line.member.nick }
+            val members = if (existing < 0) {
+                room.members + line.member
+            } else {
+                room.members.toMutableList().also { it[existing] = line.member }
+            }
+            room.copy(members = members)
+        }
+    )
+
+    is RoomLine.RoomMembersEnd -> this
+
+    // 历史回放：**不**计未读（那是"我来之前就有的"），否则一进群就满屏红点。
+    // 裹在里面的原始行原样再走一遍解析 —— 和实时消息共用同一套函数，
+    // 这样"历史里显示不对、实时是对的"这种最难的 bug 根本不会出现。
+    is RoomLine.RoomHistory -> historyItem(line.raw, selfNick)
+        ?.let { appendToRoom(line.roomId, it, countUnread = false) } ?: this
+
+    is RoomLine.RoomHistoryEnd -> this
+
+    is RoomLine.RoomMessage -> appendToRoom(
+        line.roomId,
+        ChatItem.SayItem(
+            0L,
+            SayInfo(
+                time = line.time,
+                nick = line.nick,
+                text = line.text,
+                own = selfNick.isNotEmpty() && line.nick == selfNick,
+                mention = !(selfNick.isNotEmpty() && line.nick == selfNick) &&
+                    (mentionsNick(line.text, selfNick) || mentionsAll(line.text)),
+            ),
+        ),
+        countUnread = true,
+    )
+
+    is RoomLine.RoomEvent -> appendToRoom(
+        line.roomId,
+        ChatItem.NoticeItem(0L, NoticeInfo(time = line.time, text = line.text)),
+        countUnread = false,
+    )
+
+    is RoomLine.RoomFileOffer -> appendToRoom(
+        line.roomId,
+        ChatItem.FileItem(
+            key = 0L,
+            fileId = line.offer.fileId,
+            fromNick = line.offer.nick,
+            fileName = line.offer.fileName,
+            size = line.offer.size,
+            hasThumbnail = line.offer.hasThumbnail,
+            isSticker = line.offer.isSticker,
+            kind = line.offer.kind,
+        ),
+        countUnread = true,
+    )
+
+    is RoomLine.GroupHitLine -> copy(groupHits = groupHits + line.hit)
+    is RoomLine.GroupHitEnd -> copy(groupSearching = false)
+
+    is RoomLine.GroupRequest -> copy(
+        rooms = rooms.map {
+            if (it.id == line.roomId && it.pending.none { nick -> nick == line.nick }) {
+                it.copy(pending = it.pending + line.nick)
+            } else {
+                it
+            }
+        }
+    )
+
+    is RoomLine.GroupRequestEnd -> this
+
+    is RoomLine.DmLink -> withRoom(line.roomId, RoomKind.DIRECT).let { state ->
+        state.copy(
+            rooms = state.rooms.map {
+                if (it.id == line.roomId && it.info.displayName.isEmpty()) {
+                    it.copy(info = it.info.copy(kind = RoomKind.DIRECT, displayName = line.peer))
+                } else {
+                    it
+                }
+            }
+        )
+    }
+
+    is RoomLine.BlockListLine -> copy(blockList = blockList + line.nick)
+    is RoomLine.BlockListEnd -> this
+}
+
+/**
+ * 把历史里裹着的一条**原始协议行**变成聊天记录条目；认不出来返回 null。
+ *
+ * 和服务端实时推过来的消息走的是**同一套解析**（[RoomLine.parse]），
+ * 这是"历史里显示不对、实时是对的"这类 bug 的结构性防范。
+ */
+private fun historyItem(raw: String, selfNick: String): ChatItem? =
+    when (val inner = RoomLine.parse(raw)) {
+        is RoomLine.RoomMessage -> ChatItem.SayItem(
+            key = 0L,
+            info = SayInfo(
+                time = inner.time,
+                nick = inner.nick,
+                text = inner.text,
+                own = selfNick.isNotEmpty() && inner.nick == selfNick,
+                mention = !(selfNick.isNotEmpty() && inner.nick == selfNick) &&
+                    (mentionsNick(inner.text, selfNick) || mentionsAll(inner.text)),
+            ),
+        )
+
+        is RoomLine.RoomEvent ->
+            ChatItem.NoticeItem(0L, NoticeInfo(time = inner.time, text = inner.text))
+
+        is RoomLine.RoomFileOffer -> ChatItem.FileItem(
+            key = 0L,
+            fileId = inner.offer.fileId,
+            fromNick = inner.offer.nick,
+            fileName = inner.offer.fileName,
+            size = inner.offer.size,
+            hasThumbnail = inner.offer.hasThumbnail,
+            isSticker = inner.offer.isSticker,
+            kind = inner.offer.kind,
+        )
+
+        else -> null
+    }
