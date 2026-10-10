@@ -735,6 +735,23 @@ try {
     Check ($null -ne $seen) 'A 的成员列表里 bob 的群昵称变成了「安卓小助手」（广播过去了）'
     Close-Room-Settings $seen
 
+    # ---------------------------------------------------------- 12d. 本地缓存上限
+    # 权限分两栏里"成员本地项"的最后一条。它和免打扰 / 置顶一样**只落本机的
+    # dchat-rooms.prefs**，服务端根本不知道有这个东西（第 17 节从反面验证过）。
+    Section "12d. 本地缓存上限（成员本地项，永不上传）"
+    Check (Set-Room-Text $mainA $stateA 'room1' '本地缓存上限' '512') '在设置里填了本地缓存上限 512'
+    $seen = $null
+    for ($try = 0; $try -lt 8 -and $null -eq $seen; $try++) {
+        $rs = Open-Room-Settings $mainA $stateA 'room1'
+        if ($null -ne $rs) {
+            $i = Room-RowIndex $rs '本地缓存上限'
+            if ($i -ge 0 -and $rs["dialog.roomSettings.row.$i.value"] -eq '512 MB') { $seen = $rs }
+        }
+        if ($null -eq $seen) { Close-Room-Settings $rs; Start-Sleep -Milliseconds 500 }
+    }
+    Check ($null -ne $seen) '重开设置窗，本地缓存上限显示 512 MB（说明真的存下来了）'
+    Close-Room-Settings $seen
+
     Section "13. 退群：B 退出 room1"
     Check (Click-Room-Row $mainB $stateB 'room1' '退出群聊') '点到了「退出群聊」'
     Check ($null -ne (Wait-State $stateB { param($s)

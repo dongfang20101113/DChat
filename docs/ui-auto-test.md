@@ -1,6 +1,6 @@
 # dchat 桌面端全自动联调（`tools/ui-rooms-auto.ps1`）
 
-**状态：84 项检查全绿（退出码 0）。** 跑法：
+**状态：86 项检查全绿（退出码 0）。** 跑法：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\ui-rooms-auto.ps1
@@ -20,7 +20,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\ui-rooms-auto.ps1
 
 | 项目 | 命令 | 现状 |
 |---|---|---|
-| 桌面端全自动联调 | `tools\ui-rooms-auto.ps1` | **84/84** |
+| 桌面端全自动联调 | `tools\ui-rooms-auto.ps1` | **86/86** |
 | C++ 单元测试 | `ctest --test-dir build` | **19/19** |
 | 协议端到端（**含"老客户端零影响"**） | `tools\run-rooms-e2e.ps1` | **54/54** |
 | 安卓单元测试 | `cd android && gradlew.bat testDebugUnitTest` | **385 项，0 失败** |

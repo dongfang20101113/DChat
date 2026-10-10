@@ -5281,6 +5281,26 @@ LRESULT CALLBACK RoomSettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     session.prefs.pinned = !session.prefs.pinned;
                 } else if (row.local == "alert") {
                     session.prefs.alertImportant = !session.prefs.alertImportant;
+                } else if (row.local == "cache") {
+                    // 「本地缓存上限」是**数字**不是开关，要就地开一个编辑框让用户填。
+                    // 以前这里没有这个分支、却照样在下面 return 0 —— 于是这一行
+                    // **怎么点都没反应**：提交路径（CommitRoomRowEdit 里的 row.local ==
+                    // "cache" 分支）早就写好了，缺的只是"点开编辑框"这一步，
+                    // 结果就是界面上根本改不了这一项。自动化联调抓到的，
+                    // 和 /dm、群昵称属于同一类"功能写好了却没有入口"。
+                    state->edit = CreateWindowExW(
+                        0, L"EDIT", Utf8ToWide(U64Text(session.prefs.localCacheMb)).c_str(),
+                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_NUMBER, 0, 0, 10, 10, hwnd,
+                        nullptr, GetModuleHandleW(nullptr), nullptr);
+                    if (state->edit) {
+                        state->editRow = index;
+                        SendMessageW(state->edit, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font),
+                                     TRUE);
+                        LayoutRoomSettings(state);
+                        SetFocus(state->edit);
+                        SendMessageW(state->edit, EM_SETSEL, 0, -1);
+                    }
+                    return 0;
                 }
                 SaveRoomPrefs();
                 RefreshSessionPanel();
