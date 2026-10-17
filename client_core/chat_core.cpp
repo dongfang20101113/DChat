@@ -280,6 +280,10 @@ void ChatCore::SubmitInput(const std::string& text) {
         Notice("多会话：/rooms 会话列表　/open <id> 切换　/create <id> <名> 建群　"
                "/find <关键词> 搜群　/join <id> 入群　/leave <id> 退群　"
                "/members 成员　/set <项> <值> 改群设置");
+        Notice("群管理：/audit 待审申请　/ok <昵称> 同意　/no <昵称> 拒绝　"
+               "/gkick <昵称> 踢人　/delete <id> 解散群（仅群主）");
+        Notice("私聊与黑名单：/block <昵称>　/unblock <昵称>　/blocks 看黑名单　"
+               "/nick <群昵称> 改自己在当前群的昵称");
         return;
     }
     if (name == "/chatcolor") {
@@ -449,6 +453,57 @@ void ChatCore::SubmitInput(const std::string& text) {
         const std::string encoded =
             (key == "name" || key == "announcement") ? EncodeB64(value) : value;
         SendRoom("GSET", currentRoom_ + " " + key + " " + encoded);
+        return;
+    }
+
+    if (name == "/gkick") {
+        // 为什么叫 /gkick 不叫 /kick：**/kick 是服务器管理员指令**（把人踢出服务器），
+        // 已经在服务端的指令表里。同名会把它顶掉，那是很危险的一脚。
+        if (currentRoom_.empty() || arg.empty()) {
+            Notice("用法：/gkick <昵称>（先用 /open 切到一个群里；你自己是群主或管理员）",
+                   ChatMessage::Kind::Error);
+            return;
+        }
+        SendRoom("GKICK", currentRoom_ + " " + arg);
+        return;
+    }
+    if (name == "/delete") {
+        // 解散群聊：必须显式给 id，避免手滑把当前群点没了
+        if (arg.empty()) {
+            Notice("用法：/delete <群ID>（解散不可恢复；仅群主可用）", ChatMessage::Kind::Error);
+            return;
+        }
+        SendRoom("GDELETE", arg);
+        return;
+    }
+    if (name == "/audit") {
+        if (currentRoom_.empty()) {
+            Notice("先用 /open 切到一个群里", ChatMessage::Kind::Error);
+            return;
+        }
+        pending_.clear();
+        SendRoom("GREQS", currentRoom_);
+        return;
+    }
+    if (name == "/ok" || name == "/no") {
+        if (currentRoom_.empty() || arg.empty()) {
+            Notice("用法：" + name + " <昵称>（先用 /audit 看谁在等）", ChatMessage::Kind::Error);
+            return;
+        }
+        SendRoom("GREQ", currentRoom_ + " " + arg + (name == "/ok" ? " ok" : " no"));
+        return;
+    }
+    if (name == "/block" || name == "/unblock") {
+        if (arg.empty()) {
+            Notice("用法：" + name + " <昵称>", ChatMessage::Kind::Error);
+            return;
+        }
+        connection_.SendLine(BuildLine(name == "/block" ? "BLOCK" : "UNBLOCK", arg));
+        return;
+    }
+    if (name == "/blocks") {
+        blocks_.clear();
+        connection_.SendLine(BuildLine("BLOCKS"));
         return;
     }
 
@@ -698,6 +753,42 @@ bool ChatCore::HandleRoomLine(const std::string& command, const std::vector<std:
             room.name = words[1];
             UpsertRoom(room);
             Notice("私聊已建立：" + words[1] + "（" + words[0] + "），/open " + words[0] + " 切过去");
+        }
+        return true;
+    }
+    if (command == "GREQ") {
+        // GREQ <时间> <房间ID> <昵称>（时间已被 FieldsOf 摘掉）
+        // 两个来源：GREQS 的逐行回应，以及有人申请入群时推给管理员的主动通知。
+        if (words.size() >= 2) {
+            // 去重：GREQS 的回应和"有人刚申请"的主动通知走的是同一种行，
+            // 先 /audit 再有人申请的话，同一个人会进来两次。
+            bool exists = false;
+            for (const std::string& known : pending_) {
+                if (known == words[1]) exists = true;
+            }
+            if (!exists) pending_.push_back(words[1]);
+            const RoomInfo* room = FindRoom(words[0]);
+            const std::string label =
+                (room != nullptr && !room->name.empty()) ? room->name : words[0];
+            Notice("[" + label + "] " + words[1] + " 申请入群　同意 /ok " + words[1] +
+                   "　拒绝 /no " + words[1]);
+        }
+        return true;
+    }
+    if (command == "GREQ_END") {
+        if (pending_.empty()) Notice("现在没有待审核的入群申请");
+        return true;
+    }
+    if (command == "GBLOCKS") {
+        // GBLOCKS <昵称>　注意这一条**不带时间戳**（服务端是 BuildLine 直接发的）
+        if (!words.empty()) blocks_.push_back(words[0]);
+        return true;
+    }
+    if (command == "GBLOCKS_END") {
+        if (blocks_.empty()) {
+            Notice("黑名单是空的");
+        } else {
+            for (const std::string& nick : blocks_) Notice("黑名单：" + nick);
         }
         return true;
     }

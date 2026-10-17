@@ -125,6 +125,25 @@ void TestRooms() {
         if (room.id == "dm-000001" && room.kind == "dm") foundDm = true;
     }
     check(foundDm, "GDMLINK 建出一条私聊会话");
+
+    // 入群申请：GREQ 有两个来源（GREQS 的逐行回应 + 有人申请时的主动通知），
+    // 走的是同一种行，所以必须去重 —— 否则先后到达会让同一个人出现两次
+    core.FeedLine("GREQ 09:15 devgroup carol");
+    core.FeedLine("GREQ 09:16 devgroup carol");
+    core.FeedLine("GREQ_END devgroup");
+    check(core.PendingRequests().size() == 1, "GREQ 收进一条待审申请且不会重复");
+    if (core.PendingRequests().size() == 1) {
+        check(core.PendingRequests()[0] == "carol", "待审申请里的昵称对了");
+    }
+
+    // 黑名单：GBLOCKS 这一条**不带时间戳**，绝对不能把昵称当时间摘掉
+    core.FeedLine("GBLOCKS spammer1");
+    core.FeedLine("GBLOCKS spammer2");
+    core.FeedLine("GBLOCKS_END");
+    check(core.BlockList().size() == 2, "GBLOCKS 收进两条黑名单");
+    if (core.BlockList().size() == 2) {
+        check(core.BlockList()[0] == "spammer1", "黑名单第一条没被当成时间删掉");
+    }
 }
 
 }  // namespace

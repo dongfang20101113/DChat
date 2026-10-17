@@ -157,6 +157,10 @@ public:
     const std::vector<GroupHit>& LastGroupHits() const { return groupHits_; }
     /** 服务端有没有确认 rooms1 能力。 */
     bool RoomsCapable() const { return roomsCapable_; }
+    /** 待审的入群申请（当前会话的）。`/audit` 会重新拉一次。 */
+    const std::vector<std::string>& PendingRequests() const { return pending_; }
+    /** 我的黑名单。 */
+    const std::vector<std::string>& BlockList() const { return blocks_; }
     /**
      * 切到某个会话：发 `ROOM <id>`，**之后的发言都进这个会话**。
      *
@@ -225,6 +229,8 @@ private:
     std::vector<GroupHit> groupHits_;
     std::string currentRoom_;
     bool roomsCapable_ = false;
+    std::vector<std::string> pending_;  // 待审的入群申请
+    std::vector<std::string> blocks_;   // 黑名单
 };
 
 }  // namespace dchat
