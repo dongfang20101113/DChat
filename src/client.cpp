@@ -4401,19 +4401,28 @@ void LayoutSettingsWindow(SettingsState* state) {
 }
 
 void ApplySettingsAndClose(SettingsState* state) {
-    // 端口先校验：写进去一个非法值会让"连接"点了没反应，那种问题很难查
+    // 校验失败时**不弹 MessageBox**：那是系统对话框，在深色界面里会闪一个白框，
+    // 和整套自定义配色格格不入（用户反馈过"输入框白边"，这是同一类问题的另一处）。
+    // 改成就地纠正：把合法值写回输入框，用户直接看见被改对了的内容。
     wchar_t buffer[32] = {0};
     GetWindowTextW(state->portEdit, buffer, 32);
-    const int port = _wtoi(buffer);
+    int port = _wtoi(buffer);
     if (port < 1 || port > 65535) {
-        MessageBoxW(state->dlg, L"端口要在 1 - 65535 之间", L"设置", MB_OK | MB_ICONINFORMATION);
+        // 空/0/乱输 → 回到默认 5555；太大 → 夹到 65535。写回去让他看见。
+        port = (port < 1) ? 5555 : 65535;
+        const std::wstring fixed = std::to_wstring(port);
+        SetWindowTextW(state->portEdit, fixed.c_str());
+        SendMessageW(state->portEdit, EM_SETSEL, 0, -1);
         SetFocus(state->portEdit);
         return;
     }
     wchar_t host[256] = {0};
     GetWindowTextW(state->hostEdit, host, 256);
     if (host[0] == L'\0') {
-        MessageBoxW(state->dlg, L"服务器地址不能为空", L"设置", MB_OK | MB_ICONINFORMATION);
+        // 地址为空就退回上一次能用的那个（g_host 不会为空：启动时给过默认值）
+        const std::wstring fallback = Utf8ToWide(g_host);
+        SetWindowTextW(state->hostEdit, fallback.c_str());
+        SendMessageW(state->hostEdit, EM_SETSEL, 0, -1);
         SetFocus(state->hostEdit);
         return;
     }
