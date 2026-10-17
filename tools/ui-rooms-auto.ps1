@@ -47,7 +47,37 @@ Add-Type -Namespace Api -Name W -MemberDefinition @'
 public delegate bool EnumProc(IntPtr h, IntPtr l);
 [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
 [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr p, EnumProc cb, IntPtr l);
+[StructLayout(LayoutKind.Sequential)] public struct RECTL { public int Left, Top, Right, Bottom; }
+[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECTL r);
+[DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
 '@
+
+# 把一个窗口抓成 PNG。
+#
+# 用 PrintWindow 而不是屏幕截图：屏幕抓图在 DWM 下会拿到**旧内容**（实测），
+# 而且窗口被遮挡就废了。PrintWindow 是让窗口把自己画到一块内存 DC 上，
+# 不受遮挡影响。PW_RENDERFULLCONTENT = 0x2，Win8.1+ 才支持，正是 DWM 下能拿到
+# 真实内容的那一档。
+#
+# 用途：界面是画出来的，光看代码改没改对不算数 —— 改完要看一眼。
+function Save-WindowShot([IntPtr]$hwnd, [string]$path) {
+    if ($hwnd -eq [IntPtr]::Zero) { return $false }
+    $r = New-Object Api.W+RECTL
+    if (-not [Api.W]::GetWindowRect($hwnd, [ref]$r)) { return $false }
+    $w = $r.Right - $r.Left
+    $h = $r.Bottom - $r.Top
+    if ($w -le 0 -or $h -le 0) { return $false }
+    Add-Type -AssemblyName System.Drawing
+    $bmp = New-Object System.Drawing.Bitmap($w, $h)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $hdc = $g.GetHdc()
+    [void][Api.W]::PrintWindow($hwnd, $hdc, 2)
+    $g.ReleaseHdc($hdc)
+    $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+    $g.Dispose()
+    $bmp.Dispose()
+    return $true
+}
 
 # ---------------------------------------------------------------- 基础工具
 
@@ -473,6 +503,13 @@ try {
     [void](Click-Rect $mainA $sA['sessionList.new'] 0)
     $gA = Wait-State $stateA { param($s) $s['dialog.group.open'] -eq '1' } 5000
     Check ($null -ne $gA) '群聊窗口已弹出'
+    # 抓一张图留证：输入框的白边是画出来的，改没改对只能看
+    if ($null -ne $gA) {
+        $shot = Join-Path $OutDir 'group-window.png'
+        if (Save-WindowShot ([IntPtr][long]$gA['dialog.group.hwnd']) $shot) {
+            Write-Host "  已截图：$shot" -ForegroundColor DarkGray
+        }
+    }
     $created = $null
     if ($null -ne $gA) {
         Set-Edit ([IntPtr][long]$gA['dialog.group.edit.id']) 'room1'

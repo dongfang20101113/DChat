@@ -5712,6 +5712,21 @@ LRESULT CALLBACK GroupWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             DT_LEFT | DT_VCENTER | DT_SINGLELINE);
                 TextOutUtf8(dc, L"群聊名称", RECT{18, 102, 108, 128}, ui.font, g_palette->text,
                             DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                // 三个输入框的边框由这里画 —— EDIT 上已经没有 WS_EX_CLIENTEDGE 了，
+                // 那个是系统用浅色 COLOR_3DHIGHLIGHT 画的 3D 边，深色主题下就是白框。
+                //
+                // 画在 EDIT **外面**一圈：画在它自己的矩形里会被 EDIT 重绘时盖掉。
+                // 位置直接向 EDIT 要（GetWindowRect 再转成客户坐标），不在这里重算 ——
+                // 布局的唯一真相是 LayoutGroupWindow，两边各算一次迟早错位。
+                HBRUSH editFrame = CreateSolidBrush(g_palette->border);
+                for (HWND editBox : {state->idEdit, state->nameEdit, state->keywordEdit}) {
+                    RECT box{};
+                    if (editBox == nullptr || !GetWindowRect(editBox, &box)) continue;
+                    MapWindowPoints(HWND_DESKTOP, hwnd, reinterpret_cast<LPPOINT>(&box), 2);
+                    InflateRect(&box, 1, 1);
+                    FrameRect(dc, &box, editFrame);
+                }
+                DeleteObject(editFrame);
                 ui::DrawRoundedControl(dc, state->createButton, 6, g_palette->panel,
                                        g_palette->accent, g_palette->accent);
                 TextOutUtf8(dc, L"创建群聊", state->createButton, ui.font, g_palette->accentText,
@@ -5913,11 +5928,18 @@ void OpenGroupWindow(HWND parent) {
 
     // 三个输入框：ID / 名称 / 搜索关键词。用系统 EDIT，中文输入法才能正常工作
     // （自绘的输入控件要自己处理 IME 组合串，那是另一个量级的活）。
+    //
+    // ⚠️ **不要加 WS_EX_CLIENTEDGE**：那是系统画的 3D 边框，用的是
+    // COLOR_3DHIGHLIGHT（浅色），而 WM_CTLCOLOREDIT 只改背景、改不了边框 ——
+    // 深色主题下就成了三个刺眼的白框（用户截图反馈的"白边"就是这个）。
+    // 边框改由父窗口在 WM_PAINT 里按 g_palette->border 自己描一圈。
     auto makeEdit = [&](const wchar_t* initial) {
-        HWND edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initial,
+        HWND edit = CreateWindowExW(0, L"EDIT", initial,
                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 10,
                                     10, dlg, nullptr, GetModuleHandleW(nullptr), nullptr);
         SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(ui.font), TRUE);
+        // 没有边框了，文字会贴着边缘；左右各留 8px，看起来才像一个输入框
+        SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(8, 8));
         return edit;
     };
     state.idEdit = makeEdit(L"");
