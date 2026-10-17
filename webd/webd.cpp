@@ -493,48 +493,83 @@ const char* kDownloadHtml = R"HTML(<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>下载 dchat</title>
 <style>
+  :root { color-scheme: dark; }
   body { margin:0; font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
          background:#1b1b1f; color:#e6e6e6; }
-  .wrap { max-width:760px; margin:0 auto; padding:40px 20px; }
+  .wrap { max-width:820px; margin:0 auto; padding:40px 20px; }
   h1 { font-size:26px; margin:0 0 6px; }
   p.sub { color:#8a8a94; margin:0 0 28px; }
   .card { background:#232329; border:1px solid #33333a; border-radius:12px; padding:18px 20px;
           margin-bottom:14px; }
   .card h2 { font-size:16px; margin:0 0 6px; }
-  .meta { color:#8a8a94; font-size:13px; margin-bottom:10px; }
+  .meta { color:#8a8a94; font-size:13px; margin-bottom:12px; }
   a.btn { display:inline-block; padding:9px 16px; border-radius:8px; background:#2f6fed;
           color:#fff; text-decoration:none; font-size:14px; }
   a.btn.alt { background:#2f2f37; }
-  code { background:#2a2a31; padding:2px 6px; border-radius:5px; font-size:13px; }
+  code { background:#2a2a31; padding:2px 6px; border-radius:5px; font-size:12.5px;
+         word-break:break-all; }
+  .sum { color:#6f6f78; font-size:12px; margin-top:10px; }
   .foot { color:#666; font-size:12px; margin-top:26px; }
 </style></head><body><div class="wrap">
 <h1>dchat</h1>
-<p class="sub">选一个端开始用。都是同一台服务器：<code>dchat.xin:5555</code></p>
+<p class="sub">三个端任选其一，连的是同一台服务器：<code>dchat.xin:5555</code></p>
 <div id="list"></div>
-<div class="foot">网页版就在你现在这个页面：<a href="/">打开</a>　·　
-  源码 <a href="https://github.com/dongfang20101113/DChat">GitHub</a></div>
+<div class="card">
+  <h2>源码</h2>
+  <div class="meta">自己编译或者想改都行。</div>
+  <a class="btn alt" href="https://github.com/dongfang20101113/DChat">GitHub 仓库</a>
+</div>
+<div class="foot">
+  网页版就在这个站里：<a href="/">打开聊天</a><br>
+  校验值来自 <a href="/dl/SHA256SUMS">SHA256SUMS</a>，可以下载后自己核：
+  <code>sha256sum 文件名</code>（Windows 用 <code>certutil -hashfile 文件名 SHA256</code>）
+</div>
 </div>
 <script>
 const items = [
   { t:'Windows 桌面版', d:'解压即用，不用安装。群聊 / 私聊 / 语音 / 文件都在这里。',
     f:'dchat-windows-x64.zip' },
-  { t:'Android 版', d:'APK，直接装。', f:'dchat-android.apk' },
-  { t:'Linux 服务端', d:'自己搭一台服务器用。解压后 ./dchat_server --port 5555', f:'dchat-linux-x86_64.tar.gz' },
+  { t:'Android 版', d:'APK，下载后直接装。',
+    f:'dchat-android.apk' },
+  { t:'Linux 服务端', d:'自己搭一台。包里是 dchat_server（服务端）、dchat_client_linux（终端客户端）、dchat_webd（网页版网关）。',
+    f:'dchat-linux-x86_64.tar.gz' },
 ];
-const list = document.getElementById('list');
-for (const it of items) {
-  const card = document.createElement('div');
-  card.className = 'card';
-  card.innerHTML = '<h2></h2><div class="meta"></div>';
-  card.querySelector('h2').textContent = it.t;
-  card.querySelector('.meta').textContent = it.d;
-  const a = document.createElement('a');
-  a.className = 'btn';
-  a.href = '/dl/' + it.f;
-  a.textContent = '下载';
-  card.appendChild(a);
-  list.appendChild(card);
+
+// 校验值不写死在页面里：从 /dl/SHA256SUMS 读。这样换安装包不用重编网关。
+async function loadSums() {
+  try {
+    const r = await fetch('/dl/SHA256SUMS');
+    if (!r.ok) return {};
+    const out = {};
+    for (const line of (await r.text()).split('\n')) {
+      const m = line.trim().split(/\s+/);
+      if (m.length >= 2) out[m[1]] = m[0];
+    }
+    return out;
+  } catch (e) { return {}; }
 }
+
+(async () => {
+  const sums = await loadSums();
+  const list = document.getElementById('list');
+  for (const it of items) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    const h = document.createElement('h2'); h.textContent = it.t;
+    const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = it.d;
+    const a = document.createElement('a');
+    a.className = 'btn'; a.href = '/dl/' + encodeURIComponent(it.f);
+    a.textContent = '下载 ' + it.f;
+    card.append(h, meta, a);
+    if (sums[it.f]) {
+      const s = document.createElement('div');
+      s.className = 'sum';
+      s.innerHTML = 'SHA-256 <code>' + sums[it.f] + '</code>';
+      card.appendChild(s);
+    }
+    list.appendChild(card);
+  }
+})();
 </script></body></html>
 )HTML";
 
