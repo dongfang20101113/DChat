@@ -137,7 +137,27 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    const dchat::sock::Address address = dchat::sock::MakeAddress(host, port);
+    // 解析主机名 —— **不能只用 MakeAddress**。
+    //
+    // MakeAddress 内部是 inet_addr / inet_pton，只认 IPv4 字面量：传域名它会算出一个
+    // 非法地址，connect 报 10049（WSAEADDRNOTAVAIL）。那个错误码看起来像"连不上"，
+    // 其实是"压根没解析"，第一次用 dchat.xin 测就被它绕了一下。
+    // 真实客户端（桌面端 client.cpp、Linux 端 net.cpp）走的都是 getaddrinfo，探针也得跟上。
+    dchat::sock::Address address{};
+    {
+        struct addrinfo hints{};
+        hints.ai_family = AF_INET;  // 服务端只监听 IPv4
+        hints.ai_socktype = SOCK_STREAM;
+        struct addrinfo* result = nullptr;
+        const std::string portText = std::to_string(port);
+        if (::getaddrinfo(host.c_str(), portText.c_str(), &hints, &result) != 0 ||
+            result == nullptr) {
+            std::fprintf(stderr, "无法解析主机 %s\n", host.c_str());
+            return 2;
+        }
+        std::memcpy(&address, result->ai_addr, sizeof(address));
+        ::freeaddrinfo(result);
+    }
     g_sock = dchat::sock::CreateTcp();
     if (g_sock == dchat::sock::kInvalid) {
         std::fprintf(stderr, "建 socket 失败\n");
