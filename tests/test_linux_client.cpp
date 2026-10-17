@@ -124,6 +124,17 @@ void TestRooms() {
         check(core.LastGroupHits()[0].joinMode == "approval", "搜索结果的加群方式对了");
     }
 
+    // 房间历史回放：RHIST 的内层是**原始协议行**，必须重新解析而不是原样显示
+    delegate.messages.clear();
+    core.FeedLine("RHIST devgroup 7 SAY bob 很早以前说的话");
+    core.FeedLine("RHIST_END devgroup");
+    bool foundHistory = false;
+    for (const ChatMessage& m : delegate.messages) {
+        if (m.nick == "bob" && m.text.find("很早以前说的话") != std::string::npos) foundHistory = true;
+    }
+    check(foundHistory, "RHIST 里的历史消息被正确解析成聊天（不是原样显示协议行）");
+
+    // GDMLINK
     core.FeedLine("GDMLINK dm-000001 alice");
     bool foundDm = false;
     for (const RoomInfo& room : core.Rooms()) {

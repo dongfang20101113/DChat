@@ -830,6 +830,22 @@ bool ChatCore::HandleRoomLine(const std::string& command, const std::vector<std:
         }
         return true;
     }
+    if (command == "RHIST") {
+        // RHIST <房间ID> <序号> <原始协议行>　切进房间时服务端把历史一条条补发
+        //
+        // 处理方式是把**内层那一行**重新走一遍普通解析，而不是原样显示 ——
+        // 不处理的话这些原始协议行会直接漏进聊天区（第一版就是这样：
+        // 屏幕上会出现 "webgroup 1 REVENT 07:53 ..." 这种机器码）。
+        // FieldsOf 不会剥这里的"时间"（第二个字段是序号），所以从 words[2] 开始才是正文。
+        if (words.size() > 2) {
+            HandleLine(JoinWords(words, 2));
+        }
+        return true;
+    }
+    if (command == "RHIST_END") {
+        Notice("—— 以上是历史消息 ——");
+        return true;
+    }
     return false;
 }
 

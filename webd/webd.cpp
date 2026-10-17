@@ -651,8 +651,7 @@ void ServeConnection(dchat::sock::Handle handle) {
             if (got <= 0) {
                 // 一定要记下来：这个循环退出等于浏览器被踢，而"为什么退出"
                 // 光看现象（浏览器那头连接断）是分不清的。
-                std::fprintf(stderr, "[ws] 接收结束 got=%ld err=%d?\n",
-                             static_cast<long>(got));
+                std::fprintf(stderr, "[ws] 接收结束 got=%ld\n", static_cast<long>(got));
                 std::fflush(stderr);
                 break;
             }
