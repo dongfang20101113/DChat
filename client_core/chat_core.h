@@ -54,6 +54,7 @@ struct RoomInfo {
     std::string myRole;    // owner / admin / member
     std::string joinMode;  // open / approval / auto
     bool listed = false;   // 是否向公众展示（可被搜到）
+    std::string announcement;  // 群公告（RSET announcement，Base64 解出来的明文）
 };
 
 /** 一个群成员（RMEMBERS）。 */

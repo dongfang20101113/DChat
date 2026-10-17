@@ -282,6 +282,7 @@ void ChatCore::SubmitInput(const std::string& text) {
                "/members 成员　/set <项> <值> 改群设置");
         Notice("群管理：/audit 待审申请　/ok <昵称> 同意　/no <昵称> 拒绝　"
                "/gkick <昵称> 踢人　/delete <id> 解散群（仅群主）");
+        Notice("　　　　/role <昵称> <admin|member> 改角色　/announce [内容] 看/设群公告");
         Notice("私聊与黑名单：/block <昵称>　/unblock <昵称>　/blocks 看黑名单　"
                "/nick <群昵称> 改自己在当前群的昵称");
         return;
@@ -493,6 +494,41 @@ void ChatCore::SubmitInput(const std::string& text) {
         SendRoom("GREQ", currentRoom_ + " " + arg + (name == "/ok" ? " ok" : " no"));
         return;
     }
+    if (name == "/announce") {
+        // 不带参数 = 看当前群的公告；带参数 = 设公告（要管理员）
+        if (currentRoom_.empty()) {
+            Notice("先用 /open 切到一个群里", ChatMessage::Kind::Error);
+            return;
+        }
+        const RoomInfo* room = FindRoom(currentRoom_);
+        if (arg.empty()) {
+            if (room != nullptr && !room->announcement.empty()) {
+                Notice("群公告：" + room->announcement);
+            } else {
+                Notice("这个群没有公告　（要设的话：/announce <内容>）");
+            }
+            return;
+        }
+        SendRoom("GSET", currentRoom_ + " announcement " + EncodeB64(arg));
+        return;
+    }
+    if (name == "/role") {
+        // /role <昵称> <owner|admin|member>：改成员角色（群主或管理员）
+        const std::size_t split = arg.find(' ');
+        if (currentRoom_.empty() || split == std::string::npos) {
+            Notice("用法：/role <昵称> <admin|member>（群主可以把别人设为管理员）",
+                   ChatMessage::Kind::Error);
+            return;
+        }
+        const std::string target = arg.substr(0, split);
+        const std::string role = arg.substr(split + 1);
+        if (role != "owner" && role != "admin" && role != "member") {
+            Notice("角色只能是 owner / admin / member", ChatMessage::Kind::Error);
+            return;
+        }
+        SendRoom("GMEMBER", currentRoom_ + " " + target + " " + role);
+        return;
+    }
     if (name == "/block" || name == "/unblock") {
         if (arg.empty()) {
             Notice("用法：" + name + " <昵称>", ChatMessage::Kind::Error);
@@ -668,6 +704,8 @@ bool ChatCore::HandleRoomLine(const std::string& command, const std::vector<std:
                     room->joinMode = value;
                 } else if (key == "listed") {
                     room->listed = (value == "1");
+                } else if (key == "announcement") {
+                    room->announcement = DecodeB64(value);
                 }
             }
         }

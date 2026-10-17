@@ -88,6 +88,11 @@ void TestRooms() {
     if (core.Rooms().size() == 2) {
         check(core.Rooms()[1].name == "新名字", "RSET name 更新了群名");
     }
+    // 公告也走 Base64；CLI 的 /announce 就是靠这个值显示的
+    core.FeedLine("RSET devgroup announcement " + Base64Encode(std::string("本周六晚上八点开黑")));
+    if (core.Rooms().size() == 2) {
+        check(core.Rooms()[1].announcement == "本周六晚上八点开黑", "RSET announcement 解出来了");
+    }
 
     core.FeedLine("RMEMBERS devgroup alice owner");
     core.FeedLine("RMEMBERS devgroup bob member " + Base64Encode(std::string("小助手")));
