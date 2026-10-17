@@ -180,6 +180,14 @@ if(NOT WIN32)
     target_link_libraries(dchat_client_linux PRIVATE dchat_client_core)
     target_include_directories(dchat_client_linux PRIVATE linux/client)
 
+    # 网页版网关：一边 HTTP/WebSocket 对浏览器，一边用真实 dchat 协议连服务器。
+    # 它**复用 client_core**（ChatCore + ClientConnection），所以网页版天然具备
+    # 群聊/私聊/文件等全部能力，而且协议只在 client_core 里实现一份。
+    # 只在这里构建（client_core 依赖 POSIX：voice.cpp 要 fork/exec arecord）。
+    add_executable(dchat_webd webd/webd.cpp)
+    target_link_libraries(dchat_webd PRIVATE dchat_client_core)
+    target_include_directories(dchat_webd PRIVATE client_core)
+
     # 终端渲染层单独建一个库，好让 test_cli_render 直接链它。
     # 渲染错了不报错、只是"显示不对"，所以必须能单测。
     add_library(dchat_cli_render STATIC client_core/cli_render.cpp)
