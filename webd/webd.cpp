@@ -177,6 +177,8 @@ public:
     Session(dchat::sock::Handle handle, const std::string& serverHost, int serverPort)
         : handle_(handle), serverHost_(serverHost), serverPort_(serverPort) {}
     ~Session() override {
+        std::fprintf(stderr, "[session] 销毁（dchat 连接随之关闭）\n");
+        std::fflush(stderr);
         if (core_) core_->Disconnect();
         if (handle_ != dchat::sock::kInvalid) dchat::sock::Close(handle_);
     }
@@ -186,6 +188,8 @@ public:
 
     /** 处理浏览器发来的一行（见文件头的协议说明）。 */
     void OnBrowserLine(const std::string& line) {
+        std::fprintf(stderr, "[ws] 浏览器输入: %s\n", line.c_str());
+        std::fflush(stderr);
         const std::size_t tab = line.find('\t');
         const std::string command = Lower(Trim(tab == std::string::npos ? line : line.substr(0, tab)));
         const std::string rest = (tab == std::string::npos) ? std::string() : line.substr(tab + 1);
@@ -644,7 +648,14 @@ void ServeConnection(dchat::sock::Handle handle) {
         char buffer[4096];
         while (!session->closed()) {
             const std::ptrdiff_t got = dchat::sock::Receive(handle, buffer, sizeof(buffer));
-            if (got <= 0) break;
+            if (got <= 0) {
+                // 一定要记下来：这个循环退出等于浏览器被踢，而"为什么退出"
+                // 光看现象（浏览器那头连接断）是分不清的。
+                std::fprintf(stderr, "[ws] 接收结束 got=%ld err=%d?\n",
+                             static_cast<long>(got));
+                std::fflush(stderr);
+                break;
+            }
             pending.append(buffer, static_cast<std::size_t>(got));
             while (pending.size() >= 2) {
                 const unsigned char b0 = static_cast<unsigned char>(pending[0]);
@@ -688,8 +699,7 @@ void ServeConnection(dchat::sock::Handle handle) {
                     SendAll(handle, pong.data(), pong.size());
                     continue;
                 }
-                if (opcode == 0x1 || opcode == 0x0) session->OnBrowserLine(payload);
-            }
+                if (opcode == 0x1 || opcode == 0x0) session->OnBrowserLine(payload);            }
         }
         session->Close();
         {
