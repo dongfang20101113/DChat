@@ -186,17 +186,16 @@ if(NOT WIN32)
     target_link_libraries(dchat_cli_render PUBLIC dchat_protocol)
     target_include_directories(dchat_cli_render PUBLIC client_core)
 
-    # 客户端核心的纯逻辑测试（色码解析 / TOFU / 附件解析 / 语音判定）。
-    # 这几块错了不会报错，只会"显示不对"或"安全判定悄悄错"，所以单独钉住。
-    # voice.cpp 里的判定函数是纯逻辑，所以一起链进来；它 fork 子进程的那部分
-    # 在测试里不会被调用（只链接、不执行）。
-    add_executable(test_linux_client
-        tests/test_linux_client.cpp
-        client_core/chat_color.cpp
-        client_core/trust.cpp
-        client_core/files_parse.cpp
-        client_core/voice.cpp)
-    target_link_libraries(test_linux_client PRIVATE dchat_protocol)
+    # 客户端核心的纯逻辑测试（色码解析 / TOFU / 附件解析 / 语音判定 / 多会话解析）。
+    # 这几块错了不会报错，只会"显示不对"、"安全判定悄悄错"或者"群列表一片空白"，
+    # 所以单独钉住。
+    #
+    # **直接链 dchat_client_core**，不再手工挑源文件：多会话那部分测试要构造
+    # ChatCore（它在 chat_core.cpp 里），手工挑的话每加一个依赖就得改一次
+    # 这个列表，漏一个就是一堆 undefined reference（第一次加房间测试就踩了）。
+    # voice.cpp 里 fork 子进程的那部分在测试里不会被调用（只链接、不执行）。
+    add_executable(test_linux_client tests/test_linux_client.cpp)
+    target_link_libraries(test_linux_client PRIVATE dchat_client_core)
     target_include_directories(test_linux_client PRIVATE client_core)
 
     # 终端渲染层的测试：折行不能截断 ANSI、@我 高亮、色码按段上色、
