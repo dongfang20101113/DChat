@@ -632,19 +632,23 @@ bool ChatCore::HandleRoomLine(const std::string& command, const std::vector<std:
     if (command == "RMEMBERS_END") return true;
     if (command == "RMSG") {
         // RMSG <时间> <房间ID> <昵称> <文本>　非大厅消息
-        if (words.size() >= 3) {
+        //
+        // ⚠️ 注意索引：FieldsOf() 已经把 hh:mm 摘掉了，所以这里是
+        // words[0]=房间、words[1]=昵称、words[2..]=正文 —— **不是**协议原文里的
+        // 第 2/3/4 个字段。（第一版就是照原文编号写的，昵称和正文全错位。)
+        if (words.size() >= 2) {
             ChatMessage line;
             line.valid = true;
-            const bool own = (words[2] == selfNick_);
+            const bool own = (words[1] == selfNick_);
             line.kind = own ? ChatMessage::Kind::Own : ChatMessage::Kind::Say;
-            line.nick = words[2];
+            line.nick = words[1];
             line.time = time;
-            line.text = JoinWords(words, 3);
+            line.text = JoinWords(words, 2);
             // 不在当前会话里就标上房间 —— 终端是一条流，不标就分不清是哪条线来的
-            if (words[1] != currentRoom_) {
-                const RoomInfo* room = FindRoom(words[1]);
+            if (words[0] != currentRoom_) {
+                const RoomInfo* room = FindRoom(words[0]);
                 const std::string label =
-                    (room != nullptr && !room->name.empty()) ? room->name : words[1];
+                    (room != nullptr && !room->name.empty()) ? room->name : words[0];
                 line.text = "[" + label + "] " + line.text;
             }
             Push(line);
@@ -652,12 +656,12 @@ bool ChatCore::HandleRoomLine(const std::string& command, const std::vector<std:
         return true;
     }
     if (command == "REVENT") {
-        // REVENT <时间> <房间ID> <文本>
-        if (words.size() >= 2) {
-            const RoomInfo* room = FindRoom(words[1]);
+        // REVENT <时间> <房间ID> <文本>　（同样：时间已被 FieldsOf 摘掉）
+        if (!words.empty()) {
+            const RoomInfo* room = FindRoom(words[0]);
             const std::string label =
-                (room != nullptr && !room->name.empty()) ? room->name : words[1];
-            Notice("[" + label + "] " + JoinWords(words, 2));
+                (room != nullptr && !room->name.empty()) ? room->name : words[0];
+            Notice("[" + label + "] " + JoinWords(words, 1));
         }
         return true;
     }
