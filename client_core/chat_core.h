@@ -43,6 +43,35 @@ struct ChatMessage {
     bool valid = false;           // 解析成功（无效的不要显示）
 };
 
+/** 一个多会话房间（大厅 / 群聊 / 私聊）。字段来自 ROOMLIST / RINFO / RSET。 */
+struct RoomInfo {
+    std::string id;
+    std::string kind;      // hall / group / dm
+    std::string name;      // 显示名（RSET name 更新；空 = 还没拿到）
+    std::string owner;     // 群主昵称
+    int members = 0;
+    int maxMembers = 0;
+    std::string myRole;    // owner / admin / member
+    std::string joinMode;  // open / approval / auto
+    bool listed = false;   // 是否向公众展示（可被搜到）
+};
+
+/** 一个群成员（RMEMBERS）。 */
+struct MemberInfo {
+    std::string nick;
+    std::string role;     // owner / admin / member
+    std::string display;  // 群昵称，空 = 用账号名
+};
+
+/** `/find` 搜到的一个群（GHIT）。 */
+struct GroupHit {
+    std::string id;
+    std::string name;
+    int members = 0;
+    int maxMembers = 0;
+    std::string joinMode;
+};
+
 /** 界面要实现的回调。全都在接收线程上触发。 */
 class ChatCoreDelegate {
 public:
@@ -114,6 +143,38 @@ public:
     /** Tab 补全（复用协议层的补全器，和另外两端同一套候选逻辑）。 */
     CompletionResult Complete(const std::string& text);
 
+    // ---- 多会话（群聊 / 私聊）----
+    //
+    // 和桌面端、安卓端走**同一套协议**（docs/rooms-protocol.md）。区别只在形态：
+    // 那两端是窗口和列表，这里是 `/rooms` 打一张表 + `/open` 切换。
+    /** 我的会话列表（大厅 + 群 + 私聊），顺序同服务端 ROOMLIST 给的顺序。 */
+    const std::vector<RoomInfo>& Rooms() const { return rooms_; }
+    /** 当前会话 id；空 = 还没拿到房间列表（或在跟老服务端说话）。 */
+    const std::string& CurrentRoom() const { return currentRoom_; }
+    /** 当前会话的成员表，切房间时由 RMEMBERS 重新填。 */
+    const std::vector<MemberInfo>& CurrentMembers() const { return members_; }
+    /** 最后一次 `/find` 的结果。 */
+    const std::vector<GroupHit>& LastGroupHits() const { return groupHits_; }
+    /** 服务端有没有确认 rooms1 能力。 */
+    bool RoomsCapable() const { return roomsCapable_; }
+    /**
+     * 切到某个会话：发 `ROOM <id>`，**之后的发言都进这个会话**。
+     *
+     * 协议就是这么设计的：服务端记住"这个人当前在哪个房间"，`MSG` 按那个路由。
+     * 所以这里必须真的发出去，不能只在本地改个变量 —— 否则话还是说进大厅。
+     */
+    bool SwitchRoom(const std::string& id);
+
+    /**
+     * 喂一行"收到的服务端消息"（就是接收线程拿到的那一行）。
+     *
+     * 公开出来是为了**可测**：多会话那套解析（ROOMLIST / RINFO / RSET / RMEMBERS）
+     * 全是纯逻辑，不该非得连上一台真服务器才能验。批处理模式也走这里。
+     * 注意：发请求的那几个方法（SwitchRoom / /create …）在没连接时会失败，
+     * 那是预期行为，测试只验"解析出来的状态对不对"。
+     */
+    void FeedLine(const std::string& line) { HandleLine(line); }
+
     const std::string& SelfNick() const { return selfNick_; }
     const std::vector<std::string>& OnlineNicks() const { return onlineNicks_; }
     bool ColorEnabled() const { return colorEnabled_; }
@@ -128,6 +189,17 @@ public:
 private:
     void HandleLine(const std::string& line);
     void HandleSay(const std::string& line);
+    /** 多会话那几条命令（ROOMLIST / RINFO / RSET / RMSG / GHIT …）。认领了返回 true。 */
+    bool HandleRoomLine(const std::string& command, const std::vector<std::string>& words,
+                        const std::string& time);
+    RoomInfo* FindRoom(const std::string& id);
+    const RoomInfo* FindRoom(const std::string& id) const;
+    /** 用服务端给的信息更新一条房间；没有就新增。 */
+    void UpsertRoom(const RoomInfo& incoming);
+    /** `/rooms` 的实际输出。 */
+    void ShowRooms();
+    /** 发一条多会话协议命令（GCREATE / GSET …）。 */
+    bool SendRoom(const std::string& command, const std::string& rest);
     void Push(ChatMessage message);
     void Notice(const std::string& text, ChatMessage::Kind kind = ChatMessage::Kind::Notice);
 
@@ -147,6 +219,12 @@ private:
     std::string pendingUser_;
     std::string pendingPassword_;
     bool pendingRegister_ = false;
+    // ---- 多会话状态 ----
+    std::vector<RoomInfo> rooms_;
+    std::vector<MemberInfo> members_;
+    std::vector<GroupHit> groupHits_;
+    std::string currentRoom_;
+    bool roomsCapable_ = false;
 };
 
 }  // namespace dchat

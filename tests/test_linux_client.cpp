@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "chat_color.h"
+#include "chat_core.h"
 #include "file_transfer.h"
 #include "files_parse.h"
 #include "voice.h"
@@ -31,6 +32,98 @@ std::string Join(const std::vector<dchat::ColorSegment>& segments) {
     std::string out;
     for (const dchat::ColorSegment& segment : segments) out += segment.text;
     return out;
+}
+
+// ---------------------------------------------------------------- 多会话解析
+//
+// 这几条命令的字段顺序**错了不会崩**，只会"什么都不显示"或者显示错位 ——
+// 所以在没有服务器的情况下也要逐字段钉死（协议见 docs/rooms-protocol.md）。
+
+class CaptureDelegate : public dchat::ChatCoreDelegate {
+public:
+    std::vector<dchat::ChatMessage> messages;
+    void OnChatMessage(const dchat::ChatMessage& message) override { messages.push_back(message); }
+    void OnConnected(bool, const std::string&, const dchat::TrustDecision&) override {}
+    void OnLoggedIn(const std::string&) override {}
+    void OnDisconnected(const std::string&) override {}
+    void OnOnlineNicks(const std::vector<std::string>&) override {}
+    void OnTransferProgress(const std::string&) override {}
+    void OnColorSettingChanged(bool, const std::string&) override {}
+    void OnVoiceCommand(const std::string&) override {}
+};
+
+void TestRooms() {
+    using namespace dchat;
+    std::printf("[11] 多会话解析（群聊 / 私聊）\n");
+    CaptureDelegate delegate;
+    ChatCore core(&delegate);
+    const std::string hall = Base64Encode(std::string("大厅"));
+    const std::string devName = Base64Encode(std::string("开发组"));
+
+    core.FeedLine("FEATURES rooms1");
+    check(core.RoomsCapable(), "FEATURES rooms1 -> 认定服务端支持多会话");
+
+    core.FeedLine("ROOMLIST hall hall " + hall + " 1 0 member");
+    core.FeedLine("ROOMLIST devgroup group " + devName + " 5 200 admin");
+    core.FeedLine("ROOMLIST_END");
+    check(core.Rooms().size() == 2, "ROOMLIST 建出两条会话");
+    if (core.Rooms().size() == 2) {
+        check(core.Rooms()[0].id == "hall", "第一条是大厅");
+        check(core.Rooms()[1].name == "开发组", "群名从 Base64 解出来了");
+        check(core.Rooms()[1].myRole == "admin", "我的角色是 admin");
+        check(core.Rooms()[1].members == 5 && core.Rooms()[1].maxMembers == 200, "成员数/上限对了");
+    }
+
+    // RINFO 补上 ROOMLIST 没有的字段，**且不能把已有的清掉**
+    core.FeedLine("RINFO devgroup group " + devName + " alice 5 200 admin approval 1");
+    if (core.Rooms().size() == 2) {
+        const RoomInfo& room = core.Rooms()[1];
+        check(room.owner == "alice", "RINFO 补上了群主");
+        check(room.joinMode == "approval", "RINFO 补上了加群方式");
+        check(room.listed, "RINFO 说明了群是公开的");
+        check(room.name == "开发组", "RINFO 不会把 ROOMLIST 给的群名清掉");
+    }
+
+    core.FeedLine("RSET devgroup name " + Base64Encode(std::string("新名字")));
+    if (core.Rooms().size() == 2) {
+        check(core.Rooms()[1].name == "新名字", "RSET name 更新了群名");
+    }
+
+    core.FeedLine("RMEMBERS devgroup alice owner");
+    core.FeedLine("RMEMBERS devgroup bob member " + Base64Encode(std::string("小助手")));
+    core.FeedLine("RMEMBERS_END devgroup");
+    check(core.CurrentMembers().size() == 2, "RMEMBERS 收进来两个成员");
+    if (core.CurrentMembers().size() == 2) {
+        check(core.CurrentMembers()[0].role == "owner", "第一个成员是群主");
+        check(core.CurrentMembers()[1].display == "小助手", "群昵称解出来了");
+    }
+
+    delegate.messages.clear();
+    core.FeedLine("RMSG 10:30 devgroup bob 群里说的话");
+    check(delegate.messages.size() == 1, "RMSG 变成一条要显示的消息");
+    if (delegate.messages.size() == 1) {
+        check(delegate.messages[0].nick == "bob", "RMSG 的发送者解析对了");
+        check(delegate.messages[0].text.find("群里说的话") != std::string::npos, "RMSG 正文解析对了");
+        // 当前不在这个会话，正文前面要标出房间，否则终端一条流里分不清
+        check(delegate.messages[0].text.find("开发组") != std::string::npos ||
+                  delegate.messages[0].text.find("devgroup") != std::string::npos,
+              "不在当前会话时给消息标了房间");
+    }
+
+    core.FeedLine("GHIT devgroup " + devName + " 5 200 approval");
+    core.FeedLine("GHIT_END");
+    check(core.LastGroupHits().size() == 1, "GHIT 收进一条搜索结果");
+    if (core.LastGroupHits().size() == 1) {
+        check(core.LastGroupHits()[0].id == "devgroup", "搜索结果的群 ID 对了");
+        check(core.LastGroupHits()[0].joinMode == "approval", "搜索结果的加群方式对了");
+    }
+
+    core.FeedLine("GDMLINK dm-000001 alice");
+    bool foundDm = false;
+    for (const RoomInfo& room : core.Rooms()) {
+        if (room.id == "dm-000001" && room.kind == "dm") foundDm = true;
+    }
+    check(foundDm, "GDMLINK 建出一条私聊会话");
 }
 
 }  // namespace
@@ -231,6 +324,7 @@ int main() {
         check(dchat::FormatDuration(60) == "1:00", "60 秒 -> 1:00");
         check(dchat::FormatDuration(-3) == "0:00", "负数夹成 0:00");
     }
+    TestRooms();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

@@ -2,11 +2,13 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <thread>
 
 #include "chat_color.h"  // ChatColorEnabledFromRules：服务器可以关掉彩色聊天
+#include "file_transfer.h"  // Base64Encode / Base64Decode（群名、公告都走 Base64）
 #include "protocol.h"
 #include "render.h"
 
@@ -43,6 +45,20 @@ std::string JoinWords(const std::vector<std::string>& words, std::size_t from) {
         out += words[i];
     }
     return out;
+}
+
+/**
+ * 群名 / 群公告 / 群昵称在协议里都是 Base64（它们可能含空格，而协议是按空格分字段的）。
+ * 解不出来就返回空串 —— 显示成空总比显示成一串乱码强。
+ */
+std::string DecodeB64(const std::string& text) {
+    std::vector<unsigned char> bytes;
+    if (!Base64Decode(text, &bytes)) return std::string();
+    return std::string(bytes.begin(), bytes.end());
+}
+
+std::string EncodeB64(const std::string& text) {
+    return Base64Encode(text);
 }
 
 }  // namespace
@@ -169,6 +185,9 @@ void ChatCore::HandleLine(const std::string& line) {
     }
     if (message.command == "LOGGEDIN") {
         if (!words.empty()) selfNick_ = words[0];
+        // 声明多会话能力。服务端收到这条才会发 ROOMLIST / RINFO 这些；
+        // 不声明就一直是"只有大厅"的老样子 —— **这也正是老客户端零影响的由来**。
+        connection_.SendLine(BuildLine("FEATURES", "rooms1"));
         if (delegate_) delegate_->OnLoggedIn(selfNick_);
         return;
     }
@@ -219,6 +238,9 @@ void ChatCore::HandleLine(const std::string& line) {
         Notice("附件下载失败：" + body, ChatMessage::Kind::Error);
         return;
     }
+    // 多会话那几条命令（ROOMLIST / RINFO / RSET / RMSG / GHIT …）认领掉
+    if (HandleRoomLine(message.command, words, time)) return;
+
     if (!body.empty()) Notice(body);
 }
 
@@ -255,6 +277,9 @@ void ChatCore::SubmitInput(const std::string& text) {
         Notice(list);
         Notice("本地指令：/send <路径> 发文件　/get <id> 下载　/voice 录音　/play <id> 放音　"
                "/chatcolor on|off　/quit 退出");
+        Notice("多会话：/rooms 会话列表　/open <id> 切换　/create <id> <名> 建群　"
+               "/find <关键词> 搜群　/join <id> 入群　/leave <id> 退群　"
+               "/members 成员　/set <项> <值> 改群设置");
         return;
     }
     if (name == "/chatcolor") {
@@ -341,10 +366,338 @@ void ChatCore::SubmitInput(const std::string& text) {
         return;
     }
 
+    // ---- 多会话 ----
+    //
+    // 这几条是**本地指令**：它们翻译成协议命令发出去（GCREATE / GSET …），
+    // 而不是像别的 /foo 那样原样丢给服务器 —— 因为服务端只认协议命令，
+    // 你在聊天框里敲 `/gcreate ...` 它是不认识的。
+    if (name == "/rooms") {
+        ShowRooms();
+        return;
+    }
+    if (name == "/open") {
+        SwitchRoom(arg);
+        return;
+    }
+    if (name == "/create") {
+        const std::size_t split = arg.find(' ');
+        if (split == std::string::npos) {
+            Notice("用法：/create <群ID> <群名>（ID 只能用 3-16 位小写字母/数字/下划线/减号）",
+                   ChatMessage::Kind::Error);
+            return;
+        }
+        const std::string id = arg.substr(0, split);
+        const std::string display = arg.substr(split + 1);
+        if (SendRoom("GCREATE", id + " " + EncodeB64(display))) {
+            Notice("正在建群「" + display + "」（id=" + id + "）…");
+        } else {
+            Notice("建群失败：连接可能已断开", ChatMessage::Kind::Error);
+        }
+        return;
+    }
+    if (name == "/find") {
+        if (arg.empty()) {
+            Notice("用法：/find <关键词>", ChatMessage::Kind::Error);
+            return;
+        }
+        groupHits_.clear();
+        SendRoom("GSEARCH", EncodeB64(arg));
+        return;
+    }
+    if (name == "/join") {
+        if (arg.empty()) {
+            Notice("用法：/join <群ID>", ChatMessage::Kind::Error);
+            return;
+        }
+        SendRoom("GJOIN", arg);
+        return;
+    }
+    if (name == "/leave") {
+        if (arg.empty()) {
+            Notice("用法：/leave <群ID>（大厅不能退）", ChatMessage::Kind::Error);
+            return;
+        }
+        SendRoom("GLEAVE", arg);
+        return;
+    }
+    if (name == "/members") {
+        if (currentRoom_.empty()) {
+            Notice("还没进任何会话", ChatMessage::Kind::Error);
+            return;
+        }
+        if (members_.empty()) {
+            Notice("成员表还没拉下来（或这个会话没有成员概念，比如大厅）");
+            return;
+        }
+        for (const MemberInfo& member : members_) {
+            std::string line = member.nick + "  " + member.role;
+            if (!member.display.empty()) line += "  群昵称：" + member.display;
+            Notice(line);
+        }
+        return;
+    }
+    if (name == "/set") {
+        // /set <设置名> <值>：作用于**当前会话**，走 GSET（服务端会校验我是不是管理员）
+        const std::size_t split = arg.find(' ');
+        if (currentRoom_.empty() || split == std::string::npos) {
+            Notice("用法：/set <设置名> <值>（先用 /open 切到一个群里）", ChatMessage::Kind::Error);
+            return;
+        }
+        const std::string key = arg.substr(0, split);
+        const std::string value = arg.substr(split + 1);
+        // 群名和公告可能含空格，协议要求走 Base64；其余是纯值
+        const std::string encoded =
+            (key == "name" || key == "announcement") ? EncodeB64(value) : value;
+        SendRoom("GSET", currentRoom_ + " " + key + " " + encoded);
+        return;
+    }
+
     // 其余指令原样发给服务器（和另外两端一样）
     if (!connection_.SendLine(text)) {
         Notice("指令发不出去：连接可能已断开", ChatMessage::Kind::Error);
     }
+}
+
+// ---------------------------------------------------------------- 多会话
+
+bool ChatCore::SendRoom(const std::string& command, const std::string& rest) {
+    return connection_.SendLine(BuildLine(command, rest));
+}
+
+RoomInfo* ChatCore::FindRoom(const std::string& id) {
+    for (RoomInfo& room : rooms_) {
+        if (room.id == id) return &room;
+    }
+    return nullptr;
+}
+
+const RoomInfo* ChatCore::FindRoom(const std::string& id) const {
+    for (const RoomInfo& room : rooms_) {
+        if (room.id == id) return &room;
+    }
+    return nullptr;
+}
+
+void ChatCore::UpsertRoom(const RoomInfo& incoming) {
+    RoomInfo* existing = FindRoom(incoming.id);
+    if (existing == nullptr) {
+        rooms_.push_back(incoming);
+        return;
+    }
+    // **只覆盖服务端确实给了值的字段**。ROOMLIST 和 RINFO 带的信息量不一样
+    // （ROOMLIST 没有群主/加群方式/是否公开），谁后到不能把已有字段清成空 ——
+    // 否则会出现"群主一会儿有一会儿没有"这种看起来像服务端抽风的怪现象。
+    if (!incoming.name.empty()) existing->name = incoming.name;
+    if (!incoming.kind.empty()) existing->kind = incoming.kind;
+    if (!incoming.owner.empty()) existing->owner = incoming.owner;
+    if (incoming.members > 0) existing->members = incoming.members;
+    if (incoming.maxMembers > 0) existing->maxMembers = incoming.maxMembers;
+    if (!incoming.myRole.empty()) existing->myRole = incoming.myRole;
+    if (!incoming.joinMode.empty()) existing->joinMode = incoming.joinMode;
+    existing->listed = incoming.listed;
+}
+
+bool ChatCore::SwitchRoom(const std::string& id) {
+    if (id.empty()) {
+        Notice("用法：/open <会话ID>（先 /rooms 看有哪些）", ChatMessage::Kind::Error);
+        return false;
+    }
+    const RoomInfo* room = FindRoom(id);
+    if (room == nullptr) {
+        Notice("没有这个会话：" + id + "（先 /rooms 看看）", ChatMessage::Kind::Error);
+        return false;
+    }
+    // **必须真的发出去**：服务端记住"这个人当前在哪个房间"，MSG 按那个路由。
+    // 只在本地改个变量的话，话还是说进原来那个房间（大厅）。
+    if (!connection_.SendLine(BuildLine("ROOM", id))) {
+        Notice("切换失败：连接可能已断开", ChatMessage::Kind::Error);
+        return false;
+    }
+    currentRoom_ = id;
+    members_.clear();  // 成员表按房间来，切了就等新的 RMEMBERS 填
+    Notice("已切换到「" + (room->name.empty() ? id : room->name) + "」，之后的发言都发到这里");
+    return true;
+}
+
+void ChatCore::ShowRooms() {
+    if (rooms_.empty()) {
+        Notice(roomsCapable_ ? "还没有会话（服务端没下发房间列表）"
+                             : "连的是老服务端，只有大厅");
+        return;
+    }
+    for (const RoomInfo& room : rooms_) {
+        std::string line = (room.id == currentRoom_) ? "* " : "  ";
+        line += room.name.empty() ? room.id : room.name;
+        line += " (" + room.id + ")";
+        if (room.kind == "group") {
+            line += "  " + std::to_string(room.members) + "/" + std::to_string(room.maxMembers) + "人";
+            if (!room.myRole.empty()) line += " " + room.myRole;
+            line += room.listed ? " 公开" : " 未公开";
+        } else if (room.kind == "dm") {
+            line += "  私聊";
+        }
+        Notice(line);
+    }
+    Notice("切会话：/open <id>　建群：/create <id> <名称>　搜群：/find <关键词>");
+}
+
+bool ChatCore::HandleRoomLine(const std::string& command, const std::vector<std::string>& words,
+                              const std::string& time) {
+    if (command == "FEATURES") {
+        // FEATURES <能力列表>：服务端确认支持哪些能力
+        roomsCapable_ = false;
+        for (const std::string& word : words) {
+            if (word == "rooms1") roomsCapable_ = true;
+        }
+        if (roomsCapable_) {
+            Notice("服务端支持群聊 / 私聊：/rooms 看会话，/help 看多会话指令");
+        } else {
+            Notice("服务端不支持多会话，只能在大厅聊天");
+        }
+        return true;
+    }
+    if (command == "ROOMLIST") {
+        // ROOMLIST <房间ID> <kind> <显示名B64> <成员数> <最大人数> <我的角色>
+        if (words.size() >= 6) {
+            RoomInfo room;
+            room.id = words[0];
+            room.kind = words[1];
+            room.name = DecodeB64(words[2]);
+            room.members = std::atoi(words[3].c_str());
+            room.maxMembers = std::atoi(words[4].c_str());
+            room.myRole = words[5];
+            UpsertRoom(room);
+        }
+        return true;
+    }
+    if (command == "ROOMLIST_END") {
+        // 列表发完了。第一次登录时落到大厅，别让用户对着空会话发呆。
+        if (currentRoom_.empty() && !rooms_.empty()) {
+            SwitchRoom(rooms_.front().id);
+        } else {
+            Notice("会话列表已更新，/rooms 查看");
+        }
+        return true;
+    }
+    if (command == "RINFO") {
+        // RINFO <房间ID> <kind> <显示名B64> <群主> <成员数> <最大人数> <我的角色> <加群方式> <listed>
+        if (words.size() >= 9) {
+            RoomInfo room;
+            room.id = words[0];
+            room.kind = words[1];
+            room.name = DecodeB64(words[2]);
+            room.owner = words[3];
+            room.members = std::atoi(words[4].c_str());
+            room.maxMembers = std::atoi(words[5].c_str());
+            room.myRole = words[6];
+            room.joinMode = words[7];
+            room.listed = (words[8] == "1");
+            UpsertRoom(room);
+            if (room.id == currentRoom_) members_.clear();  // 紧跟着就是新的成员表
+        }
+        return true;
+    }
+    if (command == "RSET") {
+        // RSET <房间ID> <设置名> <值>
+        if (words.size() >= 3) {
+            RoomInfo* room = FindRoom(words[0]);
+            if (room != nullptr) {
+                const std::string& key = words[1];
+                const std::string value = JoinWords(words, 2);
+                if (key == "name") {
+                    const std::string decoded = DecodeB64(value);
+                    if (!decoded.empty()) room->name = decoded;
+                } else if (key == "maxmembers") {
+                    room->maxMembers = std::atoi(value.c_str());
+                } else if (key == "joinmode") {
+                    room->joinMode = value;
+                } else if (key == "listed") {
+                    room->listed = (value == "1");
+                }
+            }
+        }
+        return true;
+    }
+    if (command == "RMEMBERS") {
+        // RMEMBERS <房间ID> <昵称> <角色> <群昵称B64>
+        if (words.size() >= 3) {
+            MemberInfo member;
+            member.nick = words[1];
+            member.role = words[2];
+            if (words.size() > 3) member.display = DecodeB64(words[3]);
+            members_.push_back(member);
+        }
+        return true;
+    }
+    if (command == "RMEMBERS_END") return true;
+    if (command == "RMSG") {
+        // RMSG <时间> <房间ID> <昵称> <文本>　非大厅消息
+        if (words.size() >= 3) {
+            ChatMessage line;
+            line.valid = true;
+            const bool own = (words[2] == selfNick_);
+            line.kind = own ? ChatMessage::Kind::Own : ChatMessage::Kind::Say;
+            line.nick = words[2];
+            line.time = time;
+            line.text = JoinWords(words, 3);
+            // 不在当前会话里就标上房间 —— 终端是一条流，不标就分不清是哪条线来的
+            if (words[1] != currentRoom_) {
+                const RoomInfo* room = FindRoom(words[1]);
+                const std::string label =
+                    (room != nullptr && !room->name.empty()) ? room->name : words[1];
+                line.text = "[" + label + "] " + line.text;
+            }
+            Push(line);
+        }
+        return true;
+    }
+    if (command == "REVENT") {
+        // REVENT <时间> <房间ID> <文本>
+        if (words.size() >= 2) {
+            const RoomInfo* room = FindRoom(words[1]);
+            const std::string label =
+                (room != nullptr && !room->name.empty()) ? room->name : words[1];
+            Notice("[" + label + "] " + JoinWords(words, 2));
+        }
+        return true;
+    }
+    if (command == "GHIT") {
+        // GHIT <房间ID> <群名B64> <成员数> <最大人数> <加群方式>
+        if (words.size() >= 5) {
+            GroupHit hit;
+            hit.id = words[0];
+            hit.name = DecodeB64(words[1]);
+            hit.members = std::atoi(words[2].c_str());
+            hit.maxMembers = std::atoi(words[3].c_str());
+            hit.joinMode = words[4];
+            groupHits_.push_back(hit);
+            Notice("搜到：" + (hit.name.empty() ? hit.id : hit.name) + " (" + hit.id + ")  " +
+                   std::to_string(hit.members) + "/" + std::to_string(hit.maxMembers) + "人  " +
+                   hit.joinMode);
+        }
+        return true;
+    }
+    if (command == "GHIT_END") {
+        if (groupHits_.empty()) {
+            Notice("没搜到群（群必须由管理员勾选「向公众展示」才会出现在搜索里）");
+        } else {
+            Notice("加入：/join <id>");
+        }
+        return true;
+    }
+    if (command == "GDMLINK") {
+        // GDMLINK <房间ID> <对方昵称>：私聊已经建好
+        if (words.size() >= 2) {
+            RoomInfo room;
+            room.id = words[0];
+            room.kind = "dm";
+            room.name = words[1];
+            UpsertRoom(room);
+            Notice("私聊已建立：" + words[1] + "（" + words[0] + "），/open " + words[0] + " 切过去");
+        }
+        return true;
+    }
+    return false;
 }
 
 }  // namespace dchat
