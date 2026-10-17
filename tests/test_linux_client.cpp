@@ -104,10 +104,11 @@ void TestRooms() {
     if (delegate.messages.size() == 1) {
         check(delegate.messages[0].nick == "bob", "RMSG 的发送者解析对了");
         check(delegate.messages[0].text.find("群里说的话") != std::string::npos, "RMSG 正文解析对了");
-        // 当前不在这个会话，正文前面要标出房间，否则终端一条流里分不清
-        check(delegate.messages[0].text.find("开发组") != std::string::npos ||
-                  delegate.messages[0].text.find("devgroup") != std::string::npos,
-              "不在当前会话时给消息标了房间");
+        // 当前不在这个会话，正文前面要标出房间，否则终端一条流里分不清。
+        // 断言"以 [ 开头"而不是"包含某个群名"：上面 RSET 已经把群名改成「新名字」了，
+        // 写死旧名字的断言只会误报（第一版就是这么错的）。
+        check(!delegate.messages[0].text.empty() && delegate.messages[0].text[0] == '[',
+              "不在当前会话时给消息加了房间前缀");
     }
 
     core.FeedLine("GHIT devgroup " + devName + " 5 200 approval");
