@@ -98,44 +98,37 @@ struct PkeyHandle {
 
 /** 从 PKEY 里导出裸的 X||Y（各 32 字节大端）。 */
 bool PublicKeyXY(EVP_PKEY* key, std::vector<unsigned char>* out) {
-    // 优先用"拆开的坐标"参数，拿到的就是纯 X||Y；
-    // 拿不到再退回未压缩点格式（0x04 || X || Y）自己剥掉头。
-    std::size_t length = 0;
-    if (EVP_PKEY_get_octet_string_param(key, OSSL_PKEY_PARAM_EC_PUB_X, nullptr, 0, &length) == 1 &&
-        length == kCoordinateBytes) {
-        std::vector<unsigned char> x(length);
-        std::vector<unsigned char> y(length);
-        std::size_t xLen = length, yLen = length;
-        if (EVP_PKEY_get_octet_string_param(key, OSSL_PKEY_PARAM_EC_PUB_X, x.data(), x.size(),
-                                            &xLen) == 1 &&
-            EVP_PKEY_get_octet_string_param(key, OSSL_PKEY_PARAM_EC_PUB_Y, y.data(), y.size(),
-                                            &yLen) == 1 &&
-            xLen == kCoordinateBytes && yLen == kCoordinateBytes) {
-            out->clear();
-            out->insert(out->end(), x.begin(), x.end());
-            out->insert(out->end(), y.begin(), y.end());
-            return true;
-        }
-    }
-
-    if (EVP_PKEY_get_octet_string_param(key, OSSL_PKEY_PARAM_PUB_KEY, nullptr, 0, &length) != 1) {
+    // 用 BN 分别取 X / Y，再各自左补零成 32 字节大端。
+    //
+    // **这是唯一与"点的编码格式"无关的做法**。原来走的是
+    // EVP_PKEY_get_octet_string_param(OSSL_PKEY_PARAM_PUB_KEY)，只认 64 字节
+    // （纯坐标）或 65 字节（0x04 || X || Y，未压缩点）两种。但 **OpenSSL 3.0.2
+    // （Ubuntu 22.04）对同一个参数返回的是压缩点**：33 字节、首字节 0x02/0x03，
+    // 于是两个分支都不匹配 → 函数返回 false → 对外表现成"生成 ECDH 密钥对失败"。
+    //
+    // 为什么一直没被发现：这个后端只在非 Windows 平台编译（Windows 用 CNG），
+    // 而 macOS 那条线只做过交叉编译、从没真跑过。第一次在 Ubuntu 上执行
+    // crypto_tests 就暴露了（HKDF 和 AES-GCM 都过，只有 ECDH 挂）。
+    BIGNUM* x = nullptr;
+    BIGNUM* y = nullptr;
+    const bool gotThem = EVP_PKEY_get_bn_param(key, OSSL_PKEY_PARAM_EC_PUB_X, &x) == 1 &&
+                         EVP_PKEY_get_bn_param(key, OSSL_PKEY_PARAM_EC_PUB_Y, &y) == 1;
+    if (!gotThem || x == nullptr || y == nullptr) {
+        BN_free(x);
+        BN_free(y);
         return false;
     }
-    std::vector<unsigned char> point(length);
-    if (EVP_PKEY_get_octet_string_param(key, OSSL_PKEY_PARAM_PUB_KEY, point.data(), point.size(),
-                                        &length) != 1) {
-        return false;
-    }
-    // 未压缩点格式：0x04 || X(32) || Y(32)
-    if (point.size() == kPublicKeyBytes) {
-        out->assign(point.begin(), point.end());
-        return true;
-    }
-    if (point.size() == 1 + kPublicKeyBytes && point[0] == 0x04) {
-        out->assign(point.begin() + 1, point.end());
-        return true;
-    }
-    return false;
+    std::vector<unsigned char> xy(2 * kCoordinateBytes, 0);
+    // BN_bn2binpad：不足 kCoordinateBytes 就左补零，超过就返回 -1（同一个返回值
+    // 既表示失败也表示"坐标比 32 字节还长"，两种情况都该拒绝）。
+    const bool wroteX = BN_bn2binpad(x, xy.data(), kCoordinateBytes) == kCoordinateBytes;
+    const bool wroteY =
+        BN_bn2binpad(y, xy.data() + kCoordinateBytes, kCoordinateBytes) == kCoordinateBytes;
+    BN_free(x);
+    BN_free(y);
+    if (!wroteX || !wroteY) return false;
+    out->assign(xy.begin(), xy.end());
+    return true;
 }
 
 /** 把裸 X||Y 还原成未压缩点格式（导入用）。 */
