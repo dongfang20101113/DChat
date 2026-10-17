@@ -132,6 +132,40 @@ std::string Lower(std::string text) {
     return text;
 }
 
+/**
+ * URL 里的 %XX 解码。
+ *
+ * 必须做：前端传 `?server=127.0.0.1%3A5611`，那个 `%3A` 就是冒号。不解码的话
+ * 整个串会被当成主机名去解析，然后连不上 —— 而错误码看起来又像"服务器没开"，
+ * 很难查（第一次就是卡在这：测试服务端日志里一条连接都没有）。
+ */
+std::string PercentDecode(const std::string& text) {
+    std::string out;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '%' && i + 2 < text.size()) {
+            auto hex = [](char ch) -> int {
+                if (ch >= '0' && ch <= '9') return ch - '0';
+                if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+                if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+                return -1;
+            };
+            const int hi = hex(text[i + 1]);
+            const int lo = hex(text[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out.push_back(static_cast<char>((hi << 4) | lo));
+                i += 2;
+                continue;
+            }
+        }
+        if (text[i] == '+') {
+            out.push_back(' ');
+            continue;
+        }
+        out.push_back(text[i]);
+    }
+    return out;
+}
+
 bool SendAll(dchat::sock::Handle handle, const void* data, std::size_t length) {
     return dchat::sock::SendAll(handle, data, length);
 }
@@ -269,6 +303,8 @@ private:
         SendLine(std::string("STATE\t连接中\t正在连 ") + serverHost_ + ":" +
                  std::to_string(serverPort_));
         if (!core_->Connect(options, &error)) {
+            std::fprintf(stderr, "[session] 登录失败：%s\n", error.c_str());
+            std::fflush(stderr);
             SendLine("ERROR\t连接失败：" + error);
             SendLine(std::string("STATE\t未连接\t连接失败"));
             core_.reset();
@@ -583,6 +619,7 @@ void ServeConnection(dchat::sock::Handle handle) {
             std::string value = path.substr(q + 7);
             const std::size_t andAt = value.find('&');
             if (andAt != std::string::npos) value = value.substr(0, andAt);
+            value = PercentDecode(value);  // 前端会把冒号编成 %3A
             const std::size_t colon = value.rfind(':');
             if (colon != std::string::npos) {
                 host = value.substr(0, colon);
@@ -592,6 +629,8 @@ void ServeConnection(dchat::sock::Handle handle) {
                 host = value;
             }
         }
+        std::fprintf(stderr, "[session] 上游 %s:%d\n", host.c_str(), port);
+        std::fflush(stderr);
 
         auto session = std::make_shared<Session>(handle, host, port);
         {
