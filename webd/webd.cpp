@@ -255,6 +255,51 @@ public:
             core_->SubmitInput(rest);
             return;
         }
+        if (command == "upload") {
+            // 浏览器选的文件：UPLOAD \t <文件名> \t <Base64 内容>
+            //
+            // 落地方式：解码写进网关本机的临时文件，再走正常的 /send 上传流程。
+            // 这样浏览器侧不用关心 dchat 的分块协议，核心层也一行不改。
+            if (!core_ || !core_->LoggedIn()) {
+                SendLine(std::string("ERROR\t还没登录"));
+                return;
+            }
+            const std::size_t tab2 = rest.find('\t');
+            if (tab2 == std::string::npos) {
+                SendLine(std::string("ERROR\t上传格式不对"));
+                return;
+            }
+            std::string name = rest.substr(0, tab2);
+            // 只保留最后一段文件名，挡掉 ../ 和路径分隔符
+            const std::size_t slash = name.find_last_of("/\\");
+            if (slash != std::string::npos) name = name.substr(slash + 1);
+            if (name.empty()) name = "file";
+            const std::string b64 = Trim(rest.substr(tab2 + 1));
+            std::vector<unsigned char> bytes;
+            if (!dchat::Base64Decode(b64, &bytes) || bytes.empty()) {
+                SendLine(std::string("ERROR\t上传内容解码失败"));
+                return;
+            }
+            // 网页版走的是"一帧把整个文件塞进 WebSocket"，太大的文件不现实。
+            // 桌面端没有这个限制（它直接读盘分块发）。
+            if (bytes.size() > 8ull * 1024 * 1024) {
+                SendLine(std::string("ERROR\t网页版上传上限 8 MB，更大的文件请用桌面客户端"));
+                return;
+            }
+            ++uploadSerial_;
+            const std::string path =
+                "webd-upload-" + std::to_string(uploadSerial_) + "-" + name;
+            FILE* file = std::fopen(path.c_str(), "wb");
+            if (file == nullptr) {
+                SendLine(std::string("ERROR\t网关写不了临时文件"));
+                return;
+            }
+            std::fwrite(bytes.data(), 1, bytes.size(), file);
+            std::fclose(file);
+            SendLine("INFO\t正在上传 " + name + "（" + std::to_string(bytes.size()) + " 字节）…");
+            core_->SubmitInput("/send " + path);
+            return;
+        }
         if (command == "quit") {
             Close();
             return;
@@ -396,6 +441,7 @@ private:
     int serverPort_ = 5555;
     std::unique_ptr<dchat::ChatCore> core_;
     std::mutex sendMutex_;
+    unsigned long long uploadSerial_ = 0;
     bool closed_ = false;
 };
 
@@ -479,8 +525,10 @@ const char* kIndexHtml = R"HTML(<!doctype html>
 <main><div id="log"></div></main>
 <footer>
   <input id="input" placeholder="说点什么…（/help 看指令，/rooms 看会话，/get <id> 下载文件）" disabled>
+  <button class="ghost" id="pick" disabled title="发文件（上限 8 MB）">📎</button>
   <button id="send" disabled>发送</button>
 </footer>
+<input type="file" id="file" style="display:none">
 <div id="login"><form id="loginForm">
   <b style="font-size:16px">登录 dchat</b>
   <input id="user" placeholder="昵称" autocomplete="username">
@@ -559,11 +607,11 @@ document.getElementById('loginForm').addEventListener('submit', (e) => {
       }
       case 'STATE':
         setState(f[1] + (f[2] ? '　' + f[2] : ''), f[1] === '已登录');
-        if (f[1] === '已登录') { inputEl.disabled = false; sendEl.disabled = false; inputEl.focus(); }
+        if (f[1] === '已登录') { inputEl.disabled = false; sendEl.disabled = false; pickEl.disabled = false; inputEl.focus(); }
         break;
     }
   };
-  ws.onclose = () => { setState('已断开', false); inputEl.disabled = true; sendEl.disabled = true; };
+  ws.onclose = () => { setState('已断开', false); inputEl.disabled = true; sendEl.disabled = true; pickEl.disabled = true; };
   ws.onerror = () => add('err', '连接出错');
 });
 
@@ -575,6 +623,30 @@ function submit() {
 }
 sendEl.addEventListener('click', submit);
 inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+
+// 发文件：读成 Base64 一帧发过去。网关那边解码写临时文件再走 /send。
+// 上限 8 MB —— 网页版是把整个文件塞进一帧 WebSocket，再大就不合适了
+// （桌面端没这个限制，它直接读盘分块发）。
+const pickEl = document.getElementById('pick');
+const fileEl = document.getElementById('file');
+pickEl.addEventListener('click', () => fileEl.click());
+fileEl.addEventListener('change', () => {
+  const f = fileEl.files[0];
+  if (!f) return;
+  if (f.size > 8 * 1024 * 1024) {
+    add('err', '网页版上传上限 8 MB，更大的文件请用桌面客户端');
+    fileEl.value = '';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const b64 = String(reader.result).split(',')[1] || '';
+    send('UPLOAD\t' + f.name + '\t' + b64);
+    add('sys', '正在上传 ' + f.name + ' …');
+  };
+  reader.readAsDataURL(f);
+  fileEl.value = '';
+});
 </script></body></html>
 )HTML";
 
