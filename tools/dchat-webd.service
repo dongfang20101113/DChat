@@ -1,0 +1,30 @@
+[Unit]
+# dchat 网页版网关：一边 HTTP/WebSocket 对浏览器，一边用真实 dchat 协议连 5555。
+# 详细说明见 docs/webd-deploy.md。
+Description=dchat web gateway (dchat-webd)
+After=network-online.target dchat.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dchat
+Group=dchat
+WorkingDirectory=/srv/dchat-downloads
+
+# --server 指向本机 5555：网关和 dchat 服务同机，走回环，不占公网带宽。
+# --dl 是安装包目录；网页和下载页都内嵌在二进制里，不需要额外的页面目录。
+ExecStart=/opt/dchat/dchat_webd --port 8080 --server 127.0.0.1:5555 --dl /srv/dchat-downloads
+
+Restart=always
+RestartSec=3
+
+# 和 dchat.service 同一套收紧：只放开下载目录的读、以及/var/lib/dchat 不需要写。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/srv/dchat-downloads
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
