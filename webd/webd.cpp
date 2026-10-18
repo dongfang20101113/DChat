@@ -39,6 +39,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <sys/stat.h>  // mkdir：网页版上传的临时目录
 #include <thread>
 #include <vector>
 
@@ -287,8 +288,16 @@ public:
                 return;
             }
             ++uploadSerial_;
-            const std::string path =
-                "webd-upload-" + std::to_string(uploadSerial_) + "-" + name;
+            // 临时文件放进 webd-uploads/<序号>/<原名> 这样的子目录。
+            //
+            // **为什么要绕这一下**：dchat 上传时拿路径的 basename 当显示名，
+            // 如果把文件直接命名为 webd-upload-1-xxx.txt，接收方看到的就是那个
+            // 带前缀的丑名字。放进子目录后 basename 仍然是原名。
+            const std::string base = "webd-uploads";
+            ::mkdir(base.c_str(), 0755);  // 已存在会返回 -1，无害
+            const std::string dir = base + "/" + std::to_string(uploadSerial_);
+            ::mkdir(dir.c_str(), 0755);
+            const std::string path = dir + "/" + name;
             FILE* file = std::fopen(path.c_str(), "wb");
             if (file == nullptr) {
                 SendLine(std::string("ERROR\t网关写不了临时文件"));
