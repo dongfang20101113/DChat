@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -170,6 +171,29 @@ bool SendAll(dchat::sock::Handle handle, const void* data, std::size_t length) {
     return dchat::sock::SendAll(handle, data, length);
 }
 
+// 附件 ID → 网关本机上的落地路径。
+//
+// 浏览器下载文件是走 **HTTP**（GET /file/<id>），而下载动作发生在某个 WebSocket
+// 会话的 FileTransfers 里。两边的对象不是同一个，所以用这张表把"文件已经在哪"
+// 传出去。
+//
+// ⚠️ 这是**全局**的，不分会话：同一台网关上多人同时用、附件 id 又恰好撞上时，
+// 理论上会串。但附件 id 是服务器按全局序号分配的（F1、F2…），不会撞；
+// 真要多人隔离，得在 id 前面再加会话标识。
+std::mutex g_filesMutex;
+std::map<std::string, std::string> g_downloadedFiles;
+
+void RememberDownloaded(const std::string& id, const std::string& path) {
+    std::lock_guard<std::mutex> lock(g_filesMutex);
+    g_downloadedFiles[id] = path;
+}
+
+std::string DownloadedPath(const std::string& id) {
+    std::lock_guard<std::mutex> lock(g_filesMutex);
+    const auto it = g_downloadedFiles.find(id);
+    return (it == g_downloadedFiles.end()) ? std::string() : it->second;
+}
+
 // ---------------------------------------------------------------- 一个浏览器会话
 class Session : public dchat::ChatCoreDelegate,
                 public std::enable_shared_from_this<Session> {
@@ -217,6 +241,15 @@ public:
         if (command == "input") {
             if (!core_ || !core_->LoggedIn()) {
                 SendLine(std::string("ERROR\t还没登录"));
+                return;
+            }
+            // `/get <附件id>` 特殊处理：把它变成"网关先下到本地，再让浏览器来取"。
+            //
+            // 为什么不能直接 SubmitInput：ChatCore 的下载接口是把内容写进**本机磁盘**，
+            // 浏览器拿不到字节。所以这里下载完成后登记到全局表，
+            // 再告诉浏览器去 GET /file/<id>（那个路由会流式把文件吐给浏览器）。
+            if (rest.rfind("/get ", 0) == 0) {
+                StartBrowserDownload(Trim(rest.substr(5)));
                 return;
             }
             core_->SubmitInput(rest);
@@ -291,6 +324,49 @@ public:
     dchat::sock::Handle handle() const { return handle_; }
 
 private:
+    /**
+     * 浏览器点了 `/get <附件id>`：先让网关把文件下到本机，再告诉浏览器来取。
+     *
+     * 下载是**异步**的（服务器一块块推过来），所以这里起一个线程轮询
+     * FileTransfers::LocalPathFor()：拿到路径就登记 + 通知浏览器。
+     * 不能阻塞在 WS 线程上等 —— 那条线程还要收浏览器的其他消息。
+     */
+    void StartBrowserDownload(const std::string& id) {
+        if (id.empty() || !core_) {
+            SendLine(std::string("ERROR\t用法：/get <附件id>"));
+            return;
+        }
+        dchat::FileTransfers& files = core_->Files();
+        const std::string ready = files.LocalPathFor(id);
+        if (!ready.empty()) {
+            RememberDownloaded(id, ready);
+            SendLine("FILE\t" + id + "\t" + ready);
+            return;
+        }
+        std::string error;
+        if (!files.RequestDownload(id, &error)) {
+            SendLine("ERROR\t下载失败：" + error);
+            return;
+        }
+        SendLine("INFO\t正在从服务器取 " + id + " …");
+        std::weak_ptr<Session> weak = shared_from_this();
+        std::thread([weak, id]() {
+            for (int i = 0; i < 600; ++i) {  // 最多等 60 秒
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                auto self = weak.lock();
+                if (!self) return;
+                if (!self->core_) return;
+                const std::string path = self->core_->Files().LocalPathFor(id);
+                if (path.empty()) continue;
+                RememberDownloaded(id, path);
+                self->SendLine("FILE\t" + id + "\t" + path);
+                return;
+            }
+            auto self = weak.lock();
+            if (self) self->SendLine("ERROR\t下载超时：" + id);
+        }).detach();
+    }
+
     void DoLogin(const std::string& user, const std::string& password, bool wantRegister) {
         if (core_) {
             core_->Disconnect();
@@ -470,6 +546,17 @@ document.getElementById('loginForm').addEventListener('submit', (e) => {
       case 'SYS':   add('sys', f[1]); break;
       case 'ERROR': add('err', f[1]); break;
       case 'INFO':  add('sys', f[1]); break;
+      case 'FILE': {
+        // 网关已经把附件下到本机了，给一条可以直接点的下载链接
+        const d = document.createElement('div');
+        d.className = 'row sys';
+        const a = document.createElement('a');
+        a.href = '/file/' + encodeURIComponent(f[1]);
+        a.textContent = '⬇ 点这里下载 ' + f[1];
+        d.appendChild(a);
+        logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
+        break;
+      }
       case 'STATE':
         setState(f[1] + (f[2] ? '　' + f[2] : ''), f[1] === '已登录');
         if (f[1] === '已登录') { inputEl.disabled = false; sendEl.disabled = false; inputEl.focus(); }
@@ -797,6 +884,38 @@ void ServeConnection(dchat::sock::Handle handle) {
                 }
                 std::fclose(file);
             }
+        }
+    } else if (path.rfind("/file/", 0) == 0) {
+        // 浏览器取一个已经从 dchat 服务器下载到网关本机的附件。
+        // 文件名用附件 ID（不是原始文件名），避免中文/空格在头里出问题。
+        std::string id = path.substr(6);
+        const std::size_t q = id.find('?');
+        if (q != std::string::npos) id = id.substr(0, q);
+        const std::string full = DownloadedPath(id);
+        FILE* file = (id.empty() || full.empty()) ? nullptr : std::fopen(full.c_str(), "rb");
+        if (file == nullptr) {
+            reply("404 Not Found", "text/plain; charset=utf-8",
+                  "这个附件还没下载到网关（先在聊天框发 /get " + id + "）");
+        } else {
+            std::fseek(file, 0, SEEK_END);
+            const long size = std::ftell(file);
+            std::fseek(file, 0, SEEK_SET);
+            const std::string head = "HTTP/1.1 200 OK\r\n"
+                                     "Content-Type: application/octet-stream\r\n"
+                                     "Content-Disposition: attachment; filename=\"" + id +
+                                     "\"\r\nContent-Length: " + std::to_string(size) +
+                                     "\r\nConnection: close\r\n\r\n";
+            SendAll(handle, head.data(), head.size());
+            char chunk[65536];
+            std::size_t left = static_cast<std::size_t>(size);
+            while (left > 0) {
+                const std::size_t want = std::min(left, sizeof(chunk));
+                const std::size_t got = std::fread(chunk, 1, want, file);
+                if (got == 0) break;
+                if (!SendAll(handle, chunk, got)) break;
+                left -= got;
+            }
+            std::fclose(file);
         }
     } else {
         reply("404 Not Found", "text/plain; charset=utf-8", "not found");
