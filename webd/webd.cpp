@@ -380,10 +380,12 @@ const char* kIndexHtml = R"HTML(<!doctype html>
   .own .nick { color:#4caf7d; }
   .sys { color:#8a8a94; font-size:13px; }
   .err { color:#ff6b6b; }
-  #login { position:fixed; inset:0; background:#1b1b1fee; display:flex; align-items:center;
+  #login { position:fixed; inset:0; background:#1b1b1f; display:flex; align-items:center;
            justify-content:center; }
   #login form { background:#232329; padding:24px; border-radius:12px; width:320px;
                 display:flex; flex-direction:column; gap:10px; border:1px solid #33333a; }
+  .other { text-align:center; font-size:13px; color:#8a8a94; }
+  .other a { color:#7aa7ff; }
   input { padding:9px 11px; border-radius:8px; border:1px solid #3a3a42;
           background:#2a2a31; color:#e6e6e6; font:inherit; }
   button { padding:9px 14px; border-radius:8px; border:0; background:#2f6fed; color:#fff;
@@ -412,6 +414,7 @@ const char* kIndexHtml = R"HTML(<!doctype html>
     <input type="checkbox" id="reg" style="width:auto"> 没有账号，注册一个新的
   </label>
   <button type="submit">连接</button>
+  <div class="other">想装客户端？<a href="/download">下载 Windows / Android / Linux 版</a></div>
 </form></div>
 <script>
 const logEl = document.getElementById('log');
