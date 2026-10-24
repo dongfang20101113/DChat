@@ -189,6 +189,24 @@ class RoomStateReducerTest {
     }
 
     @Test
+    fun `重放过的历史不会重复显示`() {
+        // 服务端每次收到 ROOM 都会把历史重放一遍。不去重的话，切进切出几次
+        // 屏幕上就会堆出好几份历史（用户报的"切房后还有上个房间的记录"就是这个）。
+        val raw = "RMSG 21:00 devgroup bob 以前说过的话"
+        val s = state().withTwoRooms()
+            .reduceRoom(RoomLine.RoomHistory("devgroup", 1L, raw), "me")
+            .reduceRoom(RoomLine.RoomHistory("devgroup", 2L, raw), "me")
+            .reduceRoom(RoomLine.RoomHistoryEnd("devgroup"), "me")
+            // 切走再切回来，服务端把同样的历史又发了一遍
+            .reduceRoom(RoomLine.RoomHistory("devgroup", 1L, raw), "me")
+            .reduceRoom(RoomLine.RoomHistory("devgroup", 2L, raw), "me")
+            .reduceRoom(RoomLine.RoomHistoryEnd("devgroup"), "me")
+            // 这次真的多了一条新的
+            .reduceRoom(RoomLine.RoomHistory("devgroup", 3L, raw), "me")
+        assertEquals(3, s.roomItems.getValue("devgroup").size)
+    }
+
+    @Test
     fun `历史回放不计未读`() {
         // 否则一进群就是满屏红点，而用户根本没离开过
         val raw = "RMSG 21:00 devgroup bob 以前说过的话"

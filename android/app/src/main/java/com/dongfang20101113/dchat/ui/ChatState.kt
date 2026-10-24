@@ -222,6 +222,15 @@ data class ChatState(
     /** 当前正在看的会话。默认大厅：老服务器、还没收到 ROOMLIST 时都用它。 */
     val currentRoomId: String = HALL,
 
+    /**
+     * 每个房间的历史已经显示到第几条（`RHIST` 的序号）。
+     *
+     * 服务端每次收到 `ROOM` 都会把历史重放一遍，**不去重就会越切越长**：
+     * 同一个房间切进切出几次，屏幕上就堆出好几份历史、好几个「以上是历史消息」。
+     * 序号在同一房间内单调递增，所以"序号 <= 已经显示过的"一定是见过的。
+     */
+    val lastHistorySeq: Map<String, Long> = emptyMap(),
+
     /** 群搜索结果（`GHIT` 攒到 `GHIT_END` 才一次性显示）。 */
     val groupHits: List<GroupHit> = emptyList(),
     val groupSearching: Boolean = false,
@@ -549,8 +558,18 @@ fun ChatState.reduceRoom(line: RoomLine, selfNick: String): ChatState = when (li
     // 历史回放：**不**计未读（那是"我来之前就有的"），否则一进群就满屏红点。
     // 裹在里面的原始行原样再走一遍解析 —— 和实时消息共用同一套函数，
     // 这样"历史里显示不对、实时是对的"这种最难的 bug 根本不会出现。
-    is RoomLine.RoomHistory -> historyItem(line.raw, selfNick)
-        ?.let { appendToRoom(line.roomId, it, countUnread = false) } ?: this
+    //
+    // **按序号去重**：服务端每次 ROOM 都会重放历史，不去重就会切成几份叠加。
+    is RoomLine.RoomHistory -> {
+        val seen = lastHistorySeq[line.roomId]
+        if (seen != null && line.seq <= seen) {
+            this
+        } else {
+            val item = historyItem(line.raw, selfNick)
+            val updated = copy(lastHistorySeq = lastHistorySeq + (line.roomId to line.seq))
+            if (item == null) updated else updated.appendToRoom(line.roomId, item, countUnread = false)
+        }
+    }
 
     is RoomLine.RoomHistoryEnd -> this
 
