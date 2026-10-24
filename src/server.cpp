@@ -3923,6 +3923,201 @@ void ClientLoop(std::shared_ptr<Client> client) {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// 管理端口：给网页管理员页面用的**本机**通道
+//
+// **为什么需要它**：/chatrule 是"仅控制台"指令，协议里没有任何对应命令。网页要能改
+// 规则，服务器就必须认一条新通道。三条设计原则，缺一条就不安全：
+//
+//   1. **只绑 127.0.0.1** —— 外网物理上连不上，就算端口出现在公网扫描里也连不通；
+//   2. **要求随机口令** —— 同机的其他用户/进程不知道口令照样进不来；
+//   3. **复用控制台那条路径** —— 请求翻译成 `/chatrule ...` 交给 HandleServerCommand，
+//      校验、写盘（dchat-rules.txt）、广播 RulesLineForClient、maxservertemp 触发立即
+//      清理……全都和控制台完全一致，不会出现"页面改了但没生效/没存盘"的两套逻辑。
+//
+// 不要在客户端协议里加一条 ADMIN 命令来代替它：那等于把服务器规则的写权限
+// 暴露给网络上任何一个连上来的人。
+// ---------------------------------------------------------------------------
+
+#include <random>      // 管理口令的随机字节
+#include <thread>      // 管理端口的监听线程
+#ifndef _WIN32
+#include <sys/stat.h>  // chmod：把口令文件收成 0600
+#endif
+
+std::string g_adminToken;
+
+/** 恒定时间比较：别让人靠"响应快慢"一位一位猜口令。 */
+bool SlowTokenEquals(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    unsigned char diff = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        diff = static_cast<unsigned char>(diff | (static_cast<unsigned char>(a[i] ^ b[i])));
+    }
+    return diff == 0;
+}
+
+/** 读已有口令；没有就生成一个 48 位十六进制并写成 0600（只有服务账号能读）。 */
+std::string LoadOrCreateAdminToken(const std::string& path) {
+    FILE* file = std::fopen(path.c_str(), "rb");
+    if (file != nullptr) {
+        char buffer[256] = {0};
+        const std::size_t got = std::fread(buffer, 1, sizeof(buffer) - 1, file);
+        std::fclose(file);
+        std::string token(buffer, got);
+        while (!token.empty() && (token.back() == '\n' || token.back() == '\r' ||
+                                  token.back() == ' ')) {
+            token.pop_back();
+        }
+        if (!token.empty()) return token;
+    }
+    std::random_device device;
+    const char* kHex = "0123456789abcdef";
+    std::string token;
+    token.reserve(48);
+    for (int i = 0; i < 48; ++i) token.push_back(kHex[device() & 0x0F]);
+    file = std::fopen(path.c_str(), "wb");
+    if (file != nullptr) {
+        std::fwrite(token.data(), 1, token.size(), file);
+        std::fclose(file);
+#ifndef _WIN32
+        ::chmod(path.c_str(), 0600);  // 别让同机其他用户读到
+#endif
+        Log("已生成管理口令：" + path + "（网页管理员页面要用它登录）");
+    } else {
+        Log("！管理口令写入失败：" + path + "（管理端口将无法登录）");
+    }
+    return token;
+}
+
+/** 处理一条已认证的管理请求，回一行结果。 */
+std::string HandleAdminRequest(const std::string& line) {
+    if (line == "LIST") {
+        std::string out = "RULES_BEGIN\n";
+        std::vector<std::pair<std::string, std::string>> values;
+        {
+            std::lock_guard<std::mutex> lock(g_rulesMutex);
+            values = dchat::RuleValues(g_rules);
+        }
+        for (const auto& item : values) {
+            out += item.first + "\t" + item.second + "\n";
+        }
+        out += "RULES_END\n";
+        return out;
+    }
+    if (line.rfind("SET ", 0) == 0) {
+        const std::string rest = line.substr(4);
+        const std::size_t space = rest.find(' ');
+        if (space == std::string::npos) return "ERR 格式应为 SET <规则> <值>\n";
+        const std::string name = rest.substr(0, space);
+        std::string value = rest.substr(space + 1);
+        // 就地去掉首尾空白。刻意不叫 TrimAscii：不想和别处的同名函数撞上。
+        while (!value.empty() && (value.back() == ' ' || value.back() == '\t' ||
+                                  value.back() == '\r')) {
+            value.pop_back();
+        }
+        while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
+            value.erase(value.begin());
+        }
+        if (!dchat::IsKnownRule(name)) return "ERR 没有这条规则：" + name + "\n";
+        // 数值规则只收整数（布尔规则收 true/false），先挡一道再交给控制台解析
+        if (dchat::IsBoolRule(name)) {
+            if (value != "true" && value != "false") return "ERR 这条规则只能是 true / false\n";
+            HandleServerCommand("/chatrule " + name + " " + value);
+        } else {
+            bool numeric = !value.empty();
+            for (std::size_t i = 0; i < value.size(); ++i) {
+                const char ch = value[i];
+                if (!(ch >= '0' && ch <= '9') && !(i == 0 && ch == '-')) numeric = false;
+            }
+            if (!numeric) return "ERR 这条规则只收整数\n";
+            HandleServerCommand("/chatrule " + name + " set " + value);
+        }
+        // 回读一次当前值：HandleServerCommand 可能把越界的值夹到范围内，
+        // 所以要报"改完到底是多少"，不能回显用户输入的那个数。
+        std::string now;
+        {
+            std::lock_guard<std::mutex> lock(g_rulesMutex);
+            for (const auto& item : dchat::RuleValues(g_rules)) {
+                if (item.first == name) now = item.second;
+            }
+        }
+        return "OK " + name + "=" + now + "\n";
+    }
+    return "ERR 不认识的请求（只支持 LIST 和 SET）\n";
+}
+
+/** 管理端口的一个连接：先认证，再逐行处理请求。 */
+void AdminServeClient(dchat::sock::Handle sock) {
+    dchat::sock::SetNoSigpipe(sock);
+    dchat::sock::SetReceiveTimeout(sock, 30000);
+    bool authed = false;
+    std::string pending;
+    char buffer[4096];
+    while (true) {
+        const std::ptrdiff_t got = dchat::sock::Receive(sock, buffer, sizeof(buffer));
+        if (got <= 0) break;
+        pending.append(buffer, static_cast<std::size_t>(got));
+        std::size_t newline = 0;
+        bool stop = false;
+        while ((newline = pending.find('\n')) != std::string::npos) {
+            std::string line = pending.substr(0, newline);
+            pending.erase(0, newline + 1);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty()) continue;
+            if (!authed) {
+                if (line.rfind("ADMIN ", 0) == 0 && SlowTokenEquals(line.substr(6), g_adminToken)) {
+                    authed = true;
+                    const std::string ok = "OK 已认证\n";
+                    dchat::sock::SendAll(sock, ok.data(), ok.size());
+                } else {
+                    Log("管理端口：口令错误，断开连接");
+                    const std::string bad = "ERR 口令错误\n";
+                    dchat::sock::SendAll(sock, bad.data(), bad.size());
+                    stop = true;
+                }
+                continue;
+            }
+            const std::string reply = HandleAdminRequest(line);
+            Log("管理端口：[" + line + "] -> " + reply.substr(0, 60));
+            dchat::sock::SendAll(sock, reply.data(), reply.size());
+        }
+        if (stop) break;
+    }
+    dchat::sock::Close(sock);
+}
+
+/** 起管理端口的监听线程（端口 0 = 不启用）。 */
+void StartAdminChannel(int adminPort, const std::string& token) {
+    if (adminPort <= 0 || adminPort > 65535) return;
+    const dchat::sock::Handle listener = dchat::sock::CreateTcp();
+    if (listener == dchat::sock::kInvalid) {
+        Log("！管理端口建 socket 失败");
+        return;
+    }
+    dchat::sock::SetReuseAddress(listener);
+    dchat::sock::Address address{};
+    address.sin_family = AF_INET;
+    // **只绑回环**：这是整个方案安全性的地基，不能改成 INADDR_ANY。
+    ::inet_pton(AF_INET, "127.0.0.1", &address.sin_addr);
+    address.sin_port = htons(static_cast<unsigned short>(adminPort));
+    if (!dchat::sock::Bind(listener, address) || !dchat::sock::Listen(listener, 8)) {
+        Log("！管理端口绑定 127.0.0.1:" + std::to_string(adminPort) + " 失败");
+        dchat::sock::Close(listener);
+        return;
+    }
+    (void)token;
+    std::thread([listener]() {
+        while (true) {
+            dchat::sock::Address peer{};
+            const dchat::sock::Handle client = dchat::sock::Accept(listener, &peer);
+            if (client == dchat::sock::kInvalid) continue;
+            std::thread([client]() { AdminServeClient(client); }).detach();
+        }
+    }).detach();
+    Log("管理端口已启动：127.0.0.1:" + std::to_string(adminPort) + "（仅本机，供网页管理员页面用）");
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
     // Windows 控制台默认不是 UTF-8，不设的话中文日志和中文昵称都会乱码。
@@ -3933,12 +4128,17 @@ int main(int argc, char** argv) {
 
     int port = dchat::kDefaultPort;
     std::string bindAddress;  // 空 = 监听所有网卡
+    int adminPort = 0;        // 0 = 不启用管理端口
+    std::string adminTokenPath = "dchat-admin-token.txt";
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if ((arg == "--port" || arg == "-p") && i + 1 < argc) port = std::atoi(argv[++i]);
         if ((arg == "--users" || arg == "-u") && i + 1 < argc) g_usersPath = argv[++i];
         if ((arg == "--bind" || arg == "-b") && i + 1 < argc) bindAddress = argv[++i];
         if ((arg == "--rules" || arg == "-r") && i + 1 < argc) g_rulesPath = argv[++i];
+        // 管理端口默认**不开**：不想要网页管理就不加这个参数，攻击面为零。
+        if (arg == "--admin-port" && i + 1 < argc) adminPort = std::atoi(argv[++i]);
+        if (arg == "--admin-token" && i + 1 < argc) adminTokenPath = argv[++i];
     }
     if (port <= 0 || port > 65535) {
         std::printf("invalid port: %d\n", port);
@@ -3984,6 +4184,11 @@ int main(int argc, char** argv) {
     }
 
     Log("dchat server listening on port " + std::to_string(port) + " (Ctrl+C to stop)");
+    // 管理端口（网页管理员页面用）。没加 --admin-port 就完全不启用。
+    if (adminPort > 0) {
+        g_adminToken = LoadOrCreateAdminToken(adminTokenPath);
+        StartAdminChannel(adminPort, g_adminToken);
+    }
     LoadUsers();
     Log("accounts file: " + g_usersPath + "（密码以加盐哈希保存，不存明文）");
     LoadRules();

@@ -150,6 +150,15 @@ std::string DescribeRule(const ServerRules& rules, const std::string& name);
 // 所有规则的多行说明
 std::string DescribeAllRules(const ServerRules& rules);
 
+/**
+ * 机器可读的规则取值（网页管理员页面用）。
+ *
+ * 为什么不复用 DescribeAllRules：那是**给人看的**一段话（"chatinterval = 500 ms（两条消息
+ * 之间最少间隔）"），页面要的是 name/value 两列。在这里集中一次映射，页面就不必去解析
+ * 中文字符串 —— 那种做法一改说明文字就坏。
+ */
+std::vector<std::pair<std::string, std::string>> RuleValues(const ServerRules& rules);
+
 // 应用一次修改。value 用于数值规则，boolValue 用于布尔规则
 RuleChange ApplyRule(ServerRules* rules, const std::string& name, RuleAction action, long long value,
                      bool boolValue);

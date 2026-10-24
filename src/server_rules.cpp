@@ -112,6 +112,49 @@ std::string RuleRangeText(const std::string& name) {
            range->unit;
 }
 
+std::vector<std::pair<std::string, std::string>> RuleValues(const ServerRules& rules) {
+    std::vector<std::pair<std::string, std::string>> out;
+    for (const RuleInfo& info : AllRuleInfos()) {
+        const std::string name = info.name;
+        std::string value;
+        if (name == "chatinterval") {
+            value = std::to_string(rules.chatIntervalMs);
+        } else if (name == "documentsize") {
+            value = std::to_string(rules.documentSizeMb);
+        } else if (name == "keepchathistory") {
+            value = rules.keepChatHistory ? "true" : "false";
+        } else if (name == "chatcolor") {
+            value = rules.chatColor ? "true" : "false";
+        } else if (name == "maxservertemp") {
+            value = std::to_string(rules.maxServerTempMb);
+        } else if (name == "uploadrate") {
+            value = std::to_string(rules.uploadRateKbps);
+        } else if (name == "downloadrate") {
+            value = std::to_string(rules.downloadRateKbps);
+        } else if (name == "maxtextlen") {
+            value = std::to_string(rules.maxTextLength);
+        } else if (name == "maxtextlines") {
+            value = std::to_string(rules.maxTextLines);
+        } else if (name == "maxconns") {
+            value = std::to_string(rules.maxConnections);
+        } else if (name == "maxconnsperip") {
+            value = std::to_string(rules.maxConnectionsPerIp);
+        } else if (name == "loginfails") {
+            value = std::to_string(rules.loginFailLimit);
+        } else if (name == "handshaketimeout") {
+            value = std::to_string(rules.handshakeTimeoutSec);
+        } else if (name == "registerinterval") {
+            value = std::to_string(rules.registerIntervalSec);
+        } else if (name == "maxaccounts") {
+            value = std::to_string(rules.maxAccounts);
+        } else if (name == "offlinemessages") {
+            value = std::to_string(rules.offlineMessages);
+        }
+        if (!value.empty()) out.emplace_back(name, value);
+    }
+    return out;
+}
+
 std::string DescribeRule(const ServerRules& rules, const std::string& name) {
     const std::string lower = ToLowerAscii(name);
     if (lower == "chatinterval") {
