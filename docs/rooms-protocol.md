@@ -209,6 +209,22 @@ RHIST_END <房间ID>                       历史结束
 > `RSET` 里 `name` 和 `announcement` 的值是 **Base64**（可能含空格），其余是明文。
 > 设置名是固定集合，客户端不会猜错。
 
+> **`RHIST` 的序号必须用来去重（三端统一约定）。**
+>
+> 服务端**每次**收到 `ROOM <id>` 都会把该房间历史重放一遍。客户端如果无脑追加，
+> 切进切出几次屏幕上就会堆出好几份历史、好几个「以上是历史消息」。
+>
+> 序号在同一个房间内**单调递增**，所以规则很简单：
+> **序号 <= 本房间已显示过的最大序号 → 跳过**。
+>
+> 三端的实现位置：`client_core/chat_core.cpp`（网页版/CLI）、
+> `src/client.cpp`（Win32，`Session::lastHistorySeq`）、
+> `android/.../ui/ChatState.kt`（`lastHistorySeq`）。
+>
+> 网页版还多一步：切房时浏览器会清屏，所以网关在发 `ROOM` 之前要调
+> `ChatCore::ForgetDisplayedHistory(房间)`，让重放的历史能重新显示出来——
+> **只清屏不遗忘的话，页面会是一片空白**。
+
 ### 3.2 会话列表
 
 ```
