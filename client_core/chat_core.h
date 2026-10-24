@@ -191,6 +191,15 @@ public:
     /** 换个目录存 TOFU 指纹备忘（终端版用当前目录，Cocoa 版用 ~/Library/...）。 */
     void SetKnownServersPath(const std::string& path) { knownServersPath_ = path; }
 
+    /**
+     * 忘掉某个房间"历史已经显示到第几条"的记录。
+     *
+     * 给网页版用：浏览器切房时会把消息区**清空**，清空之后必须让服务端重放的历史
+     * 能重新显示出来，否则会看到一片空白。桌面端和 CLI 不调它 —— 它们保留自己的
+     * 滚动记录，靠按序号去重来防止重复。
+     */
+    void ForgetDisplayedHistory(const std::string& roomId) { lastHistorySeq_.erase(roomId); }
+
 private:
     void HandleLine(const std::string& line);
     void HandleSay(const std::string& line);
@@ -230,6 +239,10 @@ private:
     std::vector<GroupHit> groupHits_;
     std::string currentRoom_;
     bool roomsCapable_ = false;
+    // 每个房间已经显示到第几条历史。用来给 RHIST 去重：
+    // 每次切进一个房间服务端都会把历史重放一遍，**不去重就会越切越长**
+    // （同一段历史被追加多次，屏幕上出现好几个「以上是历史消息」）。
+    std::map<std::string, unsigned long long> lastHistorySeq_;
     std::vector<std::string> pending_;  // 待审的入群申请
     std::vector<std::string> blocks_;   // 黑名单
 };

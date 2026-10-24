@@ -254,6 +254,18 @@ public:
             // 为什么不能直接 SubmitInput：ChatCore 的下载接口是把内容写进**本机磁盘**，
             // 浏览器拿不到字节。所以这里下载完成后登记到全局表，
             // 再告诉浏览器去 GET /file/<id>（那个路由会流式把文件吐给浏览器）。
+            // 切房：先让浏览器清屏，并忘掉该房间的历史位置。
+            //
+            // 两件事必须一起做：清屏是为了不把上一个房间的消息留在屏幕上
+            // （用户报的"切房后还有上个房间的聊天记录"）；忘掉历史位置是因为
+            // 清屏之后服务端重放的历史还得能重新显示出来，否则是空白。
+            if (rest.rfind("/open ", 0) == 0) {
+                const std::string target = Trim(rest.substr(6));
+                if (!target.empty()) core_->ForgetDisplayedHistory(target);
+                SendLine(std::string("CLEAR"));
+                core_->SubmitInput(rest);
+                return;
+            }
             if (rest.rfind("/get ", 0) == 0) {
                 StartBrowserDownload(Trim(rest.substr(5)));
                 return;
@@ -380,6 +392,20 @@ public:
     void SendLine(const std::string& text);
 
     /**
+     * 发一个 WebSocket ping 帧。
+     *
+     * 两个作用：①让中间设备（家用路由器、运营商 NAT）看到双向流量，别把连接
+     * 当空闲掐掉；②浏览器收到 ping 会自动回 pong，那条回包能让我们的接收循环
+     * 确认对端还活着。
+     */
+    void SendPing() {
+        std::lock_guard<std::mutex> lock(sendMutex_);
+        if (handle_ == dchat::sock::kInvalid) return;
+        const char frame[2] = {static_cast<char>(0x89), 0};  // FIN + opcode=9 + 长度 0
+        SendAll(handle_, frame, sizeof(frame));
+    }
+
+    /**
      * 会话列表变了就推一份结构化的给浏览器（左侧选择器用）。
      *
      * **为什么是轮询而不是回调**：ChatCore 没有"房间列表变了"的通知，而列表会因
@@ -390,10 +416,13 @@ public:
         std::weak_ptr<Session> weak = shared_from_this();
         std::thread([weak]() {
             std::string last;
+            int ticks = 0;
             while (true) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1000));
                 auto self = weak.lock();
                 if (!self) return;
+                // 每 25 秒一个 ping：保活 + 让浏览器回 pong（回包证明它还活着）
+                if (++ticks % 25 == 0) self->SendPing();
                 if (!self->core_ || !self->core_->LoggedIn()) continue;
                 const auto& rooms = self->core_->Rooms();
                 const std::string current = self->core_->CurrentRoom();
@@ -616,6 +645,9 @@ const char* kIndexHtml = R"HTML(<!doctype html>
   <label style="font-size:13px;color:#8a8a94">
     <input type="checkbox" id="reg" style="width:auto"> 没有账号，注册一个新的
   </label>
+  <label style="font-size:13px;color:#8a8a94">
+    <input type="checkbox" id="remember" style="width:auto"> 记住账号，下次自动登录
+  </label>
   <button type="submit">连接</button>
   <div class="other">想装客户端？<a href="/download">下载 Windows / Android / Linux 版</a></div>
 </form></div>
@@ -641,21 +673,19 @@ function setState(text, on) {
 }
 function send(line) { if (ws && ws.readyState === 1) ws.send(line); }
 
-document.getElementById('loginForm').addEventListener('submit', (e) => {
-  e.preventDefault();
-  const hostEl = document.getElementById('host');
-  const parts = hostEl.value.split(':');
-  // 服务器地址交给网关：网关按自己的默认值连，这里只把 host:port 透传过去
+// ---- 连接：手动登录和自动登录共用这一个函数 ----
+let credentials = null;      // 有值 = 断开后要自动重连
+let reconnectDelay = 2000;
+
+function connect(host, user, pass, reg) {
   document.getElementById('login').style.display = 'none';
   setState('连接中…', false);
-  add('sys', '正在连接 ' + hostEl.value + ' …');
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-  ws = new WebSocket(proto + location.host + '/ws?server=' + encodeURIComponent(hostEl.value));
+  ws = new WebSocket(proto + location.host + '/ws?server=' + encodeURIComponent(host));
   ws.onopen = () => {
+    reconnectDelay = 2000;  // 连上了就把退避重置
     setState('已连接', true);
-    const reg = document.getElementById('reg').checked ? '1' : '0';
-    send('LOGIN\t' + document.getElementById('user').value + '\t' +
-         document.getElementById('pass').value + '\t' + reg);
+    send('LOGIN\t' + user + '\t' + pass + '\t' + (reg ? '1' : '0'));
   };
   ws.onmessage = (ev) => {
     const f = ev.data.split('\t');
@@ -665,7 +695,7 @@ document.getElementById('loginForm').addEventListener('submit', (e) => {
         const d = document.createElement('div');
         d.className = 'row' + (own ? ' own' : '');
         d.innerHTML = '';
-        const n = document.createElement('span'); n.className = 'nick'; n.textContent = f[1]; 
+        const n = document.createElement('span'); n.className = 'nick'; n.textContent = f[1];
         const t = document.createElement('span'); t.className = 'time'; t.textContent = f[2];
         const x = document.createElement('span'); x.textContent = f[3];
         d.appendChild(n); d.appendChild(t); d.appendChild(x);
@@ -676,11 +706,12 @@ document.getElementById('loginForm').addEventListener('submit', (e) => {
       case 'ROOMS':   roomBuf = []; currentRoom = f[2] || ''; break;
       case 'ROOM':    roomBuf.push(f); break;
       case 'ROOMS_END': renderRooms(); break;
+      // 切房清屏：网关在 /open 时发这个，避免上一个房间的消息留在屏幕上
+      case 'CLEAR':   logEl.innerHTML = ''; break;
       case 'SYS':   add('sys', f[1]); break;
       case 'ERROR': add('err', f[1]); break;
       case 'INFO':  add('sys', f[1]); break;
       case 'FILE': {
-        // 网关已经把附件下到本机了，给一条可以直接点的下载链接
         const d = document.createElement('div');
         d.className = 'row sys';
         const a = document.createElement('a');
@@ -696,9 +727,55 @@ document.getElementById('loginForm').addEventListener('submit', (e) => {
         break;
     }
   };
-  ws.onclose = () => { setState('已断开', false); inputEl.disabled = true; sendEl.disabled = true; pickEl.disabled = true; };
+  ws.onclose = () => {
+    setState('已断开', false);
+    inputEl.disabled = true; sendEl.disabled = true; pickEl.disabled = true;
+    // **自动重连**：只要还留着账号就退避重试（2s→4s→8s…最多 30s）。
+    // 以前没有这一步，网络一抖就得手动刷新页面。
+    if (credentials) {
+      const seconds = Math.round(reconnectDelay / 1000);
+      add('sys', '连接断开，' + seconds + ' 秒后自动重连…');
+      setTimeout(() => connect(credentials.host, credentials.user, credentials.pass, false),
+                 reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    }
+  };
   ws.onerror = () => add('err', '连接出错');
+}
+
+document.getElementById('loginForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const host = document.getElementById('host').value.trim() || 'dchat.xin:5555';
+  const user = document.getElementById('user').value;
+  const pass = document.getElementById('pass').value;
+  const reg = document.getElementById('reg').checked;
+  credentials = {host: host, user: user, pass: pass, reg: false};
+  // 记住账号：**明文存在这台浏览器的 localStorage 里**。
+  // 页面上写明了这一点 —— 公共电脑上别勾。
+  try {
+    if (document.getElementById('remember').checked) {
+      localStorage.setItem('dchat_login', JSON.stringify({host, user, pass}));
+    } else {
+      localStorage.removeItem('dchat_login');
+    }
+  } catch (err) { /* 隐私模式下 localStorage 会抛异常，忽略即可 */ }
+  add('sys', '正在连接 ' + host + ' …');
+  connect(host, user, pass, reg);
 });
+
+// 打开页面时若存过账号，自动填好并直接连
+(function autoLogin() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem('dchat_login') || 'null'); } catch (e) { saved = null; }
+  if (!saved || !saved.user) return;
+  document.getElementById('host').value = saved.host || 'dchat.xin:5555';
+  document.getElementById('user').value = saved.user;
+  document.getElementById('pass').value = saved.pass || '';
+  document.getElementById('remember').checked = true;
+  credentials = {host: saved.host, user: saved.user, pass: saved.pass, reg: false};
+  add('sys', '已用记住的账号自动登录…');
+  connect(saved.host, saved.user, saved.pass, false);
+})();
 
 function submit() {
   const text = inputEl.value.trim();
@@ -992,15 +1069,28 @@ void ServeConnection(dchat::sock::Handle handle) {
         // ---- WebSocket 帧循环：浏览器发来的帧一律带掩码（RFC 6455 要求） ----
         std::string pending;
         char buffer[4096];
+        int idleTimeouts = 0;
         while (!session->closed()) {
             const std::ptrdiff_t got = dchat::sock::Receive(handle, buffer, sizeof(buffer));
-            if (got <= 0) {
-                // 一定要记下来：这个循环退出等于浏览器被踢，而"为什么退出"
-                // 光看现象（浏览器那头连接断）是分不清的。
-                std::fprintf(stderr, "[ws] 接收结束 got=%ld\n", static_cast<long>(got));
+            if (got == 0) {
+                std::fprintf(stderr, "[ws] 对端关闭连接\n");
                 std::fflush(stderr);
                 break;
             }
+            if (got < 0) {
+                // **超时不是断开**。这里以前写成 `got <= 0 -> break`，等于给浏览器
+                // 加了个"30 秒不说话就踢掉"的规则——用户看到的"自动断联"就是它。
+                //
+                // 现在：超时就继续等，只数着次数。连续 120 次（30 秒 × 120 = 1 小时）
+                // 一次数据都没有，才认为连接是死的，免得线程永远挂着。
+                if (++idleTimeouts >= 120) {
+                    std::fprintf(stderr, "[ws] 连续 1 小时无数据，判定为死连接\n");
+                    std::fflush(stderr);
+                    break;
+                }
+                continue;
+            }
+            idleTimeouts = 0;
             pending.append(buffer, static_cast<std::size_t>(got));
             while (pending.size() >= 2) {
                 const unsigned char b0 = static_cast<unsigned char>(pending[0]);

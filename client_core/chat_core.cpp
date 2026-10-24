@@ -838,6 +838,28 @@ bool ChatCore::HandleRoomLine(const std::string& command, const std::vector<std:
         // 屏幕上会出现 "webgroup 1 REVENT 07:53 ..." 这种机器码）。
         // FieldsOf 不会剥这里的"时间"（第二个字段是序号），所以从 words[2] 开始才是正文。
         if (words.size() > 2) {
+            // **按序号去重**：服务端每次收到 ROOM 都会把历史重放一遍。
+            // 不去重的话，切进切出几次屏幕上就会堆出好几份历史 + 好几个
+            // 「以上是历史消息」（用户报的"切房后还有上个房间的记录"就是这个）。
+            // 序号在同一房间内单调递增，所以"序号 <= 已经显示过的"一定见过。
+            const std::string room = words[0];
+            unsigned long long seq = 0;
+            bool numeric = !words[1].empty();
+            for (char ch : words[1]) {
+                if (ch < '0' || ch > '9') numeric = false;
+            }
+            if (numeric) {
+                try {
+                    seq = std::stoull(words[1]);
+                } catch (...) {
+                    seq = 0;
+                }
+            }
+            if (seq != 0) {
+                const auto it = lastHistorySeq_.find(room);
+                if (it != lastHistorySeq_.end() && seq <= it->second) return true;  // 见过，跳过
+                lastHistorySeq_[room] = seq;
+            }
             HandleLine(JoinWords(words, 2));
         }
         return true;

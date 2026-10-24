@@ -172,6 +172,11 @@ struct Session {
     bool importantNotice = true;
     std::vector<SessionMember> memberList;
 
+    // 这个会话的历史已经显示到第几条（RHIST 的序号）。
+    // 服务端每次收到 ROOM 都会把历史重放一遍，**不去重就会越切越长** ——
+    // 屏幕上会堆出好几份历史、好几个「以上是历史消息」。
+    unsigned long long lastHistorySeq = 0;
+
     // ---- 本地设置：**永不上传** ----
     // 这一行是"管理员设置"和"成员设置"的分界线。服务端一行都不会读到它。
     dchat::RoomPrefs prefs;
@@ -6891,8 +6896,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     const dchat::Message outer = dchat::ParseLine(raw.rest);
                     const std::vector<std::string> fields = outer.Words();
                     if (fields.size() >= 3) {
-                        std::size_t offset = fields[0].size() + 1 + fields[1].size() + 1;
-                        if (offset <= raw.rest.size()) RenderChatLine(raw.rest.substr(offset));
+                        // **按序号去重**（见 Session::lastHistorySeq）。
+                        // 服务端每次收到 ROOM 都会重放历史，不去重的话切一次多一份。
+                        unsigned long long seq = 0;
+                        bool numeric = !fields[1].empty();
+                        for (char ch : fields[1]) {
+                            if (ch < '0' || ch > '9') numeric = false;
+                        }
+                        if (numeric) seq = std::strtoull(fields[1].c_str(), nullptr, 10);
+                        const int index = FindSession(fields[0]);
+                        bool seen = false;
+                        if (index >= 0) {
+                            Session& target = g_sessions[static_cast<std::size_t>(index)];
+                            seen = (seq != 0 && seq <= target.lastHistorySeq);
+                            if (seq > target.lastHistorySeq) target.lastHistorySeq = seq;
+                        }
+                        if (!seen) {
+                            std::size_t offset = fields[0].size() + 1 + fields[1].size() + 1;
+                            if (offset <= raw.rest.size()) RenderChatLine(raw.rest.substr(offset));
+                        }
                     }
                     delete payload;
                     return 0;

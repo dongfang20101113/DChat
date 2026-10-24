@@ -134,6 +134,33 @@ void TestRooms() {
     }
     check(foundHistory, "RHIST 里的历史消息被正确解析成聊天（不是原样显示协议行）");
 
+    // ---- 历史回放去重 ----
+    //
+    // 服务端每次收到 ROOM 都会把历史重放一遍。客户端如果无脑追加，切进切出几次
+    // 屏幕上就会堆出好几份历史 + 好几个「以上是历史消息」——
+    // 用户报的"切房后还有上个房间的记录"就是这个。
+    {
+        delegate.messages.clear();
+        core.FeedLine("RHIST rehist 1 SAY bob 第一条");
+        core.FeedLine("RHIST rehist 2 SAY bob 第二条");
+        core.FeedLine("RHIST_END rehist");
+        core.FeedLine("RHIST rehist 1 SAY bob 第一条");  // 切回来，服务端重放
+        core.FeedLine("RHIST rehist 2 SAY bob 第二条");
+        core.FeedLine("RHIST rehist 3 SAY bob 第三条");  // 这条是新的
+        core.FeedLine("RHIST_END rehist");
+        int first = 0;
+        int second = 0;
+        int third = 0;
+        for (const ChatMessage& m : delegate.messages) {
+            if (m.text.find("第一条") != std::string::npos) ++first;
+            if (m.text.find("第二条") != std::string::npos) ++second;
+            if (m.text.find("第三条") != std::string::npos) ++third;
+        }
+        check(first == 1, "重放过的历史只显示一次（第 1 条）");
+        check(second == 1, "重放过的历史只显示一次（第 2 条）");
+        check(third == 1, "重放时新增的那条正常显示（第 3 条）");
+    }
+
     // GDMLINK
     core.FeedLine("GDMLINK dm-000001 alice");
     bool foundDm = false;
