@@ -198,6 +198,19 @@ std::string DownloadedPath(const std::string& id) {
 }
 
 // ---------------------------------------------------------------- 一个浏览器会话
+//
+// 下面这几个是「op 管理会话」，定义在文件后部的管理员页面那一节，
+// 但 Session 登录成功时要调，所以先声明。
+//
+// 为什么管理权限不放在 HTTP 登录里、而挂在**已经登录的聊天会话**上：
+// 需求是"登录后这个人如果是 op，就记住他，只有他能进 /admin"。
+// 聊天登录本来就走真实的 dchat 认证（账号+密码，服务器校验），
+// 所以 op 身份直接从这个会话里取，不用再让他在管理页输一遍口令。
+bool IsOpNick(const std::string& nick);
+std::string MintOpSession(const std::string& nick);
+bool OpSessionNick(const std::string& id, std::string* nick);
+std::string RandomHex(int bytes);
+
 class Session : public dchat::ChatCoreDelegate,
                 public std::enable_shared_from_this<Session> {
 public:
@@ -375,6 +388,19 @@ public:
     }
     void OnLoggedIn(const std::string& nick) override {
         SendLine("STATE\t已登录\t" + nick);
+        // ---- 登录成功才判 op ----
+        //
+        // 「有且仅有该用户能访问 /admin」就落在这一段：
+        //   1. 只有登录成功（服务器认了这个账号密码）才会走到这里；
+        //   2. 昵称在 dchat-admins.txt 里才算 op；
+        //   3. op 才发一个随机会话号，浏览器把它存进 Cookie 才能进 /admin。
+        // 非 op 拿到的永远是 ADMINSTATE 0，什么号都没有，也就进不去。
+        if (IsOpNick(nick)) {
+            const std::string id = MintOpSession(nick);
+            SendLine("ADMINSTATE\t1\t" + id);
+        } else {
+            SendLine(std::string("ADMINSTATE\t0"));
+        }
     }
     void OnDisconnected(const std::string& reason) override {
         SendLine("STATE\t未连接\t" + reason);
@@ -663,6 +689,7 @@ const char* kIndexHtml = R"HTML(<!doctype html>
   <button id="menu" title="会话列表">☰</button>
   <b>dchat</b><span id="state">未连接</span><span id="where"></span>
   <span style="flex:1"></span>
+  <a id="adminlink" href="/admin" style="display:none;font-size:13px">管理</a>
   <a id="rset" href="#" style="display:none;font-size:13px">房间设置</a>
   <a href="/download" style="font-size:13px">下载客户端</a>
 </header>
@@ -787,6 +814,17 @@ function connect(host, user, pass, reg) {
       case 'ROOMS_END': renderRooms(); break;
       // 切房清屏：网关在 /open 时发这个，避免上一个房间的消息留在屏幕上
       case 'CLEAR':   logEl.innerHTML = ''; break;
+      // 登录成功时网关已经判过 op 了：op 才会带会话号（f[2]）。
+      // 把号存进 Cookie，/admin 就是靠它鉴权的 —— 没有号的人进不去。
+      case 'ADMINSTATE':
+        if (f[1] === '1' && f[2]) {
+          try { document.cookie = 'dchat_op=' + f[2] + '; path=/admin; SameSite=Strict'; } catch (e) {}
+          document.getElementById('adminlink').style.display = '';
+        } else {
+          try { document.cookie = 'dchat_op=; path=/admin; Max-Age=0'; } catch (e) {}
+          document.getElementById('adminlink').style.display = 'none';
+        }
+        break;
       case 'SYS':   add('sys', f[1]); break;
       case 'ERROR': add('err', f[1]); break;
       case 'INFO':  add('sys', f[1]); break;
@@ -1281,6 +1319,12 @@ struct Config {
     std::string adminHost = "127.0.0.1";
     int adminPort = 0;
     std::string adminTokenFile = "/var/lib/dchat/dchat-admin-token.txt";
+    // op 名单（服务器工作目录里的 dchat-admins.txt）。
+    //
+    // 网页管理页的**唯一**权限依据就是它：昵称在名单里 = op = 能进 /admin。
+    // 注意这是「读文件」而不是问服务器——服务器那边 IsOp() 用的是内存表，
+    // 但 /op 和 /deop **改完立刻落盘**，所以读文件拿到的就是当前名单。
+    std::string adminsFile = "dchat-admins.txt";
 };
 
 // 定义在文件后半部分（ServeConnection 之后）；这里先声明，路由那边要用。
@@ -1696,14 +1740,6 @@ const AdminRuleMeta kAdminRules[] = {
     {"offlinemessages", false, "登录时最多补发多少条离线消息，0 = 不补发"},
 };
 
-std::mutex g_adminMutex;
-std::map<std::string, std::time_t> g_adminSessions;
-std::map<std::string, std::pair<int, std::time_t>> g_adminFails;
-
-constexpr int kAdminSessionSec = 3600;
-constexpr int kAdminFailLimit = 5;
-constexpr int kAdminFailWindowSec = 300;
-
 std::string RandomHex(int bytes) {
     static std::atomic<unsigned long long> counter{0};
     unsigned long long seed = static_cast<unsigned long long>(std::time(nullptr)) ^
@@ -1719,16 +1755,104 @@ std::string RandomHex(int bytes) {
     return out;
 }
 
-bool SlowEqualsStr(const std::string& a, const std::string& b) {
-    if (a.size() != b.size()) return false;
-    unsigned char diff = 0;
-    for (std::size_t i = 0; i < a.size(); ++i) {
-        diff = static_cast<unsigned char>(diff | (static_cast<unsigned char>(a[i] ^ b[i])));
+// ---------------------------------------------------------------------------
+// op 管理会话
+//
+// 一条规则：**能不能进 /admin 只看这里**。
+//   登录成功（服务器认证过账号密码）+ 昵称在 dchat-admins.txt 里 → 发号
+//   其余情况 → 不发号；浏览器手上没有有效号就进不去
+//
+// 号是"我这次登录是 op"的凭据，绑昵称、12 小时过期。
+// 它**不是共享口令**：每个人登录拿到的是自己的号，没有号的人拿不到别人的。
+// ---------------------------------------------------------------------------
+
+struct OpSession {
+    std::string nick;
+    std::time_t expires = 0;
+};
+
+std::mutex g_opMutex;
+std::map<std::string, OpSession> g_opSessions;
+constexpr int kOpSessionSec = 12 * 3600;
+
+/** 读 op 名单文件。一行一个昵称，# 开头是注释（和服务端 dchat-admins.txt 同格式）。 */
+bool IsOpNick(const std::string& nick) {
+    if (nick.empty()) return false;
+    FILE* file = std::fopen(g_config.adminsFile.c_str(), "rb");
+    // 读不到名单就当谁都不是 op —— 失败时关闭，不是失败时放行
+    if (file == nullptr) return false;
+    std::string text;
+    char chunk[1024];
+    std::size_t got = 0;
+    while ((got = std::fread(chunk, 1, sizeof(chunk), file)) > 0) text.append(chunk, got);
+    std::fclose(file);
+    std::size_t from = 0;
+    while (from <= text.size()) {
+        const std::size_t end = text.find('\n', from);
+        std::string line =
+            text.substr(from, end == std::string::npos ? std::string::npos : end - from);
+        from = (end == std::string::npos) ? text.size() + 1 : end + 1;
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        if (line == nick) return true;
     }
-    return diff == 0;
+    return false;
 }
 
-/** 每次现读：改口令不用重启网关，也少一份内存副本。 */
+/** 24 字节强随机 → 48 位十六进制。用 /dev/urandom，不用 LCG。 */
+std::string RandomSessionId() {
+    unsigned char bytes[24];
+    FILE* urandom = std::fopen("/dev/urandom", "rb");
+    if (urandom != nullptr) {
+        const std::size_t got = std::fread(bytes, 1, sizeof(bytes), urandom);
+        std::fclose(urandom);
+        if (got == sizeof(bytes)) {
+            static const char* kHex = "0123456789abcdef";
+            std::string out;
+            for (unsigned char byte : bytes) {
+                out.push_back(kHex[byte >> 4]);
+                out.push_back(kHex[byte & 0x0F]);
+            }
+            return out;
+        }
+    }
+    return RandomHex(24);  // 极端情况（没有 /dev/urandom）退回老办法，至少不会崩
+}
+
+/** 发一个 op 会话号，顺手清掉已经过期的。 */
+std::string MintOpSession(const std::string& nick) {
+    const std::string id = RandomSessionId();
+    const std::time_t now = std::time(nullptr);
+    std::lock_guard<std::mutex> lock(g_opMutex);
+    for (auto it = g_opSessions.begin(); it != g_opSessions.end();) {
+        if (it->second.expires < now) {
+            it = g_opSessions.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    g_opSessions[id] = OpSession{nick, now + kOpSessionSec};
+    return id;
+}
+
+/** 校验会话号；有效就把它对应的昵称写进 nick。 */
+bool OpSessionNick(const std::string& id, std::string* nick) {
+    if (id.empty()) return false;
+    std::lock_guard<std::mutex> lock(g_opMutex);
+    const auto it = g_opSessions.find(id);
+    if (it == g_opSessions.end()) return false;
+    if (it->second.expires < std::time(nullptr)) {
+        g_opSessions.erase(it);
+        return false;
+    }
+    if (nick != nullptr) *nick = it->second.nick;
+    return true;
+}
+
+// 原来这里有个 SlowEqualsStr，是用来比对共享管理口令的。
+// 口令登录已经整个删掉（改成 op 账号鉴权），它也就没用了，删掉免得留个死函数。
+
+/** 每次现读：换口令不用重启网关，也少一份内存副本。 */
 std::string AdminToken() {
     FILE* file = std::fopen(g_config.adminTokenFile.c_str(), "rb");
     if (file == nullptr) return std::string();
@@ -1778,33 +1902,37 @@ std::string AdminCall(const std::string& request) {
     return reply;
 }
 
-std::string SessionFromCookie(const std::string& headLower, const std::string& head) {
+/** 从 Cookie 头里取某个名字的值。 */
+std::string CookieValue(const std::string& headLower, const std::string& head,
+                        const std::string& name) {
     const std::size_t at = headLower.find("cookie:");
     if (at == std::string::npos) return std::string();
     const std::size_t end = headLower.find("\r\n", at);
     const std::string line =
         head.substr(at, end == std::string::npos ? std::string::npos : end - at);
-    const std::size_t named = line.find("dchat_admin=");
+    const std::string needle = name + "=";
+    const std::size_t named = line.find(needle);
     if (named == std::string::npos) return std::string();
-    const std::size_t begin = named + 12;
+    const std::size_t begin = named + needle.size();
     std::size_t stop = line.find(';', begin);
     if (stop == std::string::npos) stop = line.size();
     return Trim(line.substr(begin, stop - begin));
 }
 
-bool SessionValid(const std::string& id) {
-    if (id.empty()) return false;
-    std::lock_guard<std::mutex> lock(g_adminMutex);
-    const auto it = g_adminSessions.find(id);
-    if (it == g_adminSessions.end()) return false;
-    if (it->second < std::time(nullptr)) {
-        g_adminSessions.erase(it);
-        return false;
-    }
-    return true;
+/** 管理页的 op 会话 Cookie 名。由聊天页登录成功后写进浏览器。 */
+const char* const kOpCookieName = "dchat_op";
+
+std::string OpSessionFromRequest(const std::string& headLower, const std::string& head) {
+    return CookieValue(headLower, head, kOpCookieName);
 }
 
-std::string AdminLoginPage(const std::string& message) {
+/**
+ * 没权限时看到的页面。
+ *
+ * 这里**故意不放任何输入框**：管理权限只来自"已经用 op 账号登录了聊天"，
+ * 不能再给一条旁路（那又变回共享口令了）。
+ */
+std::string AdminNeedOpPage(const std::string& why) {
     std::string html =
         "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
@@ -1812,24 +1940,22 @@ std::string AdminLoginPage(const std::string& message) {
         ":root{color-scheme:dark}body{margin:0;background:#1b1b1f;color:#e6e6e6;"
         "font:15px/1.6 -apple-system,\"Segoe UI\",\"Microsoft YaHei\",sans-serif;"
         "display:flex;align-items:center;justify-content:center;height:100vh;padding:0 16px}"
-        "form{background:#232329;border:1px solid #33333a;border-radius:12px;padding:24px;"
-        "width:320px;max-width:100%;display:flex;flex-direction:column;gap:12px}"
-        "input{box-sizing:border-box;width:100%;padding:10px 12px;border-radius:8px;"
-        "border:1px solid #3a3a42;background:#2a2a31;color:#e6e6e6;font:inherit}"
-        "button{padding:10px;border:0;border-radius:8px;background:#2f6fed;color:#fff;"
-        "font:inherit;cursor:pointer}.msg{color:#ff6b6b;font-size:13px}"
-        "</style></head><body><form method=\"post\" action=\"/admin/login\">"
-        "<b style=\"font-size:16px\">dchat 管理员</b>"
-        "<div style=\"color:#8a8a94;font-size:13px\">输入服务器上的管理口令"
-        "（<code>dchat-admin-token.txt</code>）</div>";
-    if (!message.empty()) html += "<div class=\"msg\">" + message + "</div>";
-    html +=
-        "<input type=\"password\" name=\"t\" placeholder=\"管理口令\" autofocus>"
-        "<button type=\"submit\">登录</button></form></body></html>";
+        ".box{background:#232329;border:1px solid #33333a;border-radius:12px;padding:24px;"
+        "width:420px;max-width:100%}.msg{color:#ff9b9b;font-size:13px;margin-top:10px}"
+        "a{color:#7aa7ff}p{color:#8a8a94;font-size:13px;margin:8px 0 0}"
+        "</style></head><body><div class=\"box\">"
+        "<b style=\"font-size:16px\">需要 op 权限</b>"
+        "<p>管理页只对 <b>服务器管理员（op）</b> 开放。</p>"
+        "<p>请先用你的 dchat 账号到聊天页登录；如果这个账号在 "
+        "<code>dchat-admins.txt</code> 里，登录后这里就能进。</p>"
+        "<p><a href=\"/\">← 去聊天页登录</a></p>";
+    if (!why.empty()) html += "<div class=\"msg\">" + why + "</div>";
+    html += "</div></body></html>";
     return html;
 }
 
-std::string AdminPage(const std::string& sessionId, const std::string& message) {
+std::string AdminPage(const std::string& sessionId, const std::string& nick,
+                      const std::string& message) {
     const std::string listing = AdminCall("LIST");
     std::map<std::string, std::string> values;
     std::size_t from = 0;
@@ -1842,7 +1968,7 @@ std::string AdminPage(const std::string& sessionId, const std::string& message) 
         if (tab != std::string::npos) values[line.substr(0, tab)] = line.substr(tab + 1);
     }
     if (values.empty()) {
-        return AdminLoginPage("读不到规则列表：" + Trim(listing).substr(0, 200));
+        return AdminNeedOpPage("读不到规则列表：" + Trim(listing).substr(0, 200));
     }
 
     std::string html =
@@ -1870,7 +1996,9 @@ std::string AdminPage(const std::string& sessionId, const std::string& message) 
         "</style></head><body><div class=\"wrap\">"
         "<h1>服务器规则</h1>"
         "<p class=\"sub\">改完点最下面保存。这里的修改与服务端控制台的 "
-        "<code>/chatrule</code> 完全等价——走同一条路径，会立刻写盘并广播给在线客户端。</p>";
+        "<code>/chatrule</code> 完全等价——走同一条路径，会立刻写盘并广播给在线客户端。</p>"
+        "<p class=\"sub\">当前身份：<b>" + nick + "</b>（op）　"
+        "<a href=\"/\" style=\"color:#7aa7ff\">回聊天</a></p>";
     if (!message.empty()) {
         const bool bad = (message.rfind("✗", 0) == 0);
         html += "<div class=\"" + std::string(bad ? "bad" : "ok") + "\">" + message + "</div>";
@@ -1951,54 +2079,20 @@ void ServeAdmin(dchat::sock::Handle handle, const std::string& rawRequest) {
         return std::string();
     };
 
-    // 网关和服务器在同一台机器，登录限流按这一个桶算
-    const std::string peerIp = "127.0.0.1";
-
-    if (route == "/admin/login") {
-        if (method != "POST") {
-            redirect("/admin", "");
-            return;
-        }
-        {
-            std::lock_guard<std::mutex> lock(g_adminMutex);
-            auto it = g_adminFails.find(peerIp);
-            if (it != g_adminFails.end()) {
-                if (it->second.second + kAdminFailWindowSec < std::time(nullptr)) {
-                    g_adminFails.erase(it);
-                } else if (it->second.first >= kAdminFailLimit) {
-                    send("429 Too Many Requests", "", AdminLoginPage("尝试次数太多，请 5 分钟后再试"));
-                    return;
-                }
-            }
-        }
-        const std::string token = AdminToken();
-        if (token.empty()) {
-            send("500 Internal Server Error", "", AdminLoginPage("服务器上没有管理口令文件"));
-            return;
-        }
-        if (SlowEqualsStr(field("t"), token)) {
-            std::lock_guard<std::mutex> lock(g_adminMutex);
-            g_adminFails.erase(peerIp);
-            const std::string id = RandomHex(24);
-            g_adminSessions[id] = std::time(nullptr) + kAdminSessionSec;
-            redirect("/admin", "Set-Cookie: dchat_admin=" + id +
-                                   "; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=" +
-                                   std::to_string(kAdminSessionSec) + "\r\n");
-            return;
-        }
-        {
-            std::lock_guard<std::mutex> lock(g_adminMutex);
-            auto& fail = g_adminFails[peerIp];
-            if (fail.second == 0) fail.second = std::time(nullptr);
-            ++fail.first;
-        }
-        send("401 Unauthorized", "", AdminLoginPage("口令不对"));
-        return;
-    }
-
-    const std::string sessionId = SessionFromCookie(headLower, head);
-    if (!SessionValid(sessionId)) {
-        send("200 OK", "", AdminLoginPage(""));
+    // ---- 鉴权：只认"已用 op 账号登录过聊天"这件事 ----
+    //
+    // 没有口令登录这一步了。能进 /admin 的唯一途径：
+    //   1. 在聊天页用 dchat 账号密码登录成功（服务器认证）
+    //   2. 那个昵称在 dchat-admins.txt 里 → 登录时网关发了一个 op 会话号
+    //   3. 浏览器把号存进 Cookie（由聊天页写），这里校验
+    // 三条缺一不可。别人就算知道这个页面存在，也拿不到号。
+    const std::string sessionId = OpSessionFromRequest(headLower, head);
+    std::string opNick;
+    if (!OpSessionNick(sessionId, &opNick)) {
+        // /admin/login 这种老地址也不再提供口令表单，直接给"需要 op 权限"
+        send("403 Forbidden", "", AdminNeedOpPage(sessionId.empty()
+                                                       ? std::string()
+                                                       : std::string("会话已过期，请回聊天页重新登录")));
         return;
     }
 
@@ -2008,7 +2102,7 @@ void ServeAdmin(dchat::sock::Handle handle, const std::string& rawRequest) {
             return;
         }
         if (field("csrf") != sessionId) {
-            send("403 Forbidden", "", AdminLoginPage("会话校验失败，请重新登录"));
+            send("403 Forbidden", "", AdminNeedOpPage("会话校验失败，请回聊天页重新登录"));
             return;
         }
         int changed = 0;
@@ -2057,7 +2151,7 @@ void ServeAdmin(dchat::sock::Handle handle, const std::string& rawRequest) {
     std::string message;
     const std::size_t m = query.find("m=");
     if (m != std::string::npos) message = PercentDecode(query.substr(m + 2));
-    send("200 OK", "", AdminPage(sessionId, message));
+    send("200 OK", "", AdminPage(sessionId, opNick, message));
 }
 
 }  // namespace
@@ -2091,8 +2185,14 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--admin-token") {
             g_config.adminTokenFile = next();
+        } else if (arg == "--admins") {
+            // op 名单文件（服务端工作目录里的 dchat-admins.txt）。
+            // 管理页的权限判定读它：昵称在里面 = op = 登录后能进 /admin。
+            g_config.adminsFile = next();
         } else if (arg == "--help" || arg == "-h") {
-            std::printf("用法：dchat-webd [--port 8080] [--server 127.0.0.1:5555] [--dl 目录]\n");
+            std::printf("用法：dchat-webd [--port 8080] [--server 127.0.0.1:5555] [--dl 目录]\n"
+                        "                 [--admin 127.0.0.1:5556] [--admin-token 口令文件]\n"
+                        "                 [--admins dchat-admins.txt]\n");
             return 0;
         }
     }

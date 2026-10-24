@@ -14,6 +14,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include "crypto.h"
 #include "socket_util.h"
@@ -58,10 +59,21 @@ private:
     bool DoHandshake(std::string* error);
     bool ReadLineWithTimeout(std::string* out, int timeoutMs);
 
+private:
+
     sock::Handle socket_ = sock::kInvalid;
     std::mutex sendMutex_;  // SendLine 可能被界面线程和接收线程同时调用
     std::atomic<bool> running_{false};
     std::atomic<bool> peerClosed_{false};
+    // 接收线程**必须能被 join**。
+    //
+    // 以前这里是 detach()，Close() 关掉 socket 就直接返回了 —— 于是这个对象
+    // （连同下面的 crypto_）会在接收线程还在解密数据的时候被析构，
+    // 结果是 use-after-free 段错误。网页版每个浏览器连接都新建/销毁一次
+    // ChatCore，所以那边一关标签页就可能把整个网关打崩（ASan 抓到过）。
+    std::thread recvThread_;
+    std::atomic<bool> recvStarted_{false};
+    std::atomic<bool> recvJoined_{false};
     CryptoSession crypto_;
     std::vector<unsigned char> serverPublicKey_;
     std::string readBuffer_;  // 接收线程自己的缓冲，不用加锁

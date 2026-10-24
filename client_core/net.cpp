@@ -208,7 +208,9 @@ void ClientConnection::StartReceiveLoop(std::function<void(const std::string&)> 
     }
     leftover_.clear();
 
-    std::thread([this, onLine] {
+    if (recvStarted_.load()) return;  // 只允许起一条
+    recvStarted_ = true;
+    recvThread_ = std::thread([this, onLine] {
         std::string buffer;
         char chunk[4096];
         while (running_.load()) {
@@ -254,13 +256,30 @@ void ClientConnection::StartReceiveLoop(std::function<void(const std::string&)> 
         }
         peerClosed_ = true;
         running_ = false;
-    }).detach();
+    });
 }
 
 void ClientConnection::Close() {
     running_ = false;
+    // 顺序很重要：先 shutdown 把**阻塞在 recv 里的接收线程唤醒**，再 join 等它
+    // 真的退出，最后才关 fd、让成员被析构。
+    //
+    // 少了 join（以前就是）对象会在线程还在用 crypto_ 的时候被析构 → use-after-free。
+    // ShutdownWrite 只关写方向、唤不醒 recv，所以这里用 SHUT_RDWR。
+    if (socket_ != sock::kInvalid) ::shutdown(socket_, SHUT_RDWR);
+
+    if (recvStarted_.load()) {
+        if (recvThread_.get_id() == std::this_thread::get_id()) {
+            // 接收线程自己调进来的（比如收到断线回调里 Disconnect）：
+            // join 自己会死锁，直接返回，让持有它的线程稍后收尾。
+            return;
+        }
+        // exchange 保证只 join 一次：两个线程同时 Close 时第二个直接跳过
+        if (!recvJoined_.exchange(true)) recvThread_.join();
+        recvStarted_ = false;
+    }
+
     if (socket_ != sock::kInvalid) {
-        sock::ShutdownWrite(socket_);
         sock::Close(socket_);
         socket_ = sock::kInvalid;
     }
