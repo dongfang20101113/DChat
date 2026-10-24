@@ -467,6 +467,10 @@ bool g_heartbeatPending = false; // 刚发过心跳 PING（对应的 PONG 不显
 int g_maxFileMb = 64;            // 服务器当前的单文件上限（由服务器发的 RULES 行更新）
 int g_port = dchat::kDefaultPort;
 
+// 刚提交的账号密码。登录成功后写进 dchat-login.dat（DPAPI 加密），下次自动登录。
+std::string g_pendingUser;
+std::string g_pendingPassword;
+
 // ---------------- 自动化测试的状态导出 ----------------
 //
 // 为什么要有它：这台机器上**屏幕抓图在 DWM 下会拿到旧内容**（实测），所以
@@ -4163,6 +4167,8 @@ LRESULT CALLBACK AuthDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                 }
                 state->user = normalizedUser;
+                g_pendingUser = normalizedUser;  // 登录成功后据此写"记住账号"
+                g_pendingPassword = passwordText;
                 state->prefillUser = user;
                 state->prefillPassword = password;
                 state->prefillConfirm = confirm;
@@ -4250,6 +4256,98 @@ void SwitchAuthWindow(AuthDialogState* state, bool toRegister) {
     SendDlgItemMessageW(dlg, IDD_USER, EM_SETSEL, 0, -1);
 }
 
+#include <dpapi.h>  // CryptProtectData / DATA_BLOB：自动登录加密保存密码
+
+// ---------------------------------------------------------------------------
+// 记住账号（自动登录）
+//
+// **密码绝不明文落盘**。用 Windows 的 DPAPI（CryptProtectData）：
+//   - 密文只有**同一个 Windows 账户**能解开，换个用户或拷到别的机器都无效；
+//   - 密钥由系统托管，我们不用管它存在哪、也不用自己发明加密方式。
+// 这比自己搞个异或/Base64 强得多，也比"明文存一个 txt"安全得多。
+//
+// 文件在当前目录的 dchat-login.dat，格式：
+//   第一行：host \t port \t user
+//   之后：DPAPI 密文的原始字节
+// ---------------------------------------------------------------------------
+constexpr const char* kLoginReminderFile = "dchat-login.dat";
+
+std::string DpapiProtect(const std::string& plain) {
+    DATA_BLOB in{};
+    in.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(plain.data()));
+    in.cbData = static_cast<DWORD>(plain.size());
+    DATA_BLOB out{};
+    if (!::CryptProtectData(&in, L"dchat login", nullptr, nullptr, nullptr, 0, &out)) {
+        return std::string();
+    }
+    std::string result(reinterpret_cast<const char*>(out.pbData), out.cbData);
+    ::LocalFree(out.pbData);
+    return result;
+}
+
+std::string DpapiUnprotect(const std::string& blob) {
+    DATA_BLOB in{};
+    in.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(blob.data()));
+    in.cbData = static_cast<DWORD>(blob.size());
+    DATA_BLOB out{};
+    if (!::CryptUnprotectData(&in, nullptr, nullptr, nullptr, nullptr, 0, &out)) {
+        return std::string();
+    }
+    std::string result(reinterpret_cast<const char*>(out.pbData), out.cbData);
+    ::LocalFree(out.pbData);
+    return result;
+}
+
+struct SavedLogin {
+    std::string host;
+    int port = 0;
+    std::string user;
+    std::string password;
+};
+
+bool SaveLoginReminder(const std::string& host, int port, const std::string& user,
+                       const std::string& password) {
+    if (user.empty()) return false;
+    const std::string secret = DpapiProtect(password);
+    if (secret.empty()) return false;
+    std::ofstream out(kLoginReminderFile, std::ios::binary);
+    if (!out) return false;
+    out << host << '\t' << port << '\t' << user << '\n';
+    out.write(secret.data(), static_cast<std::streamsize>(secret.size()));
+    return out.good();
+}
+
+bool LoadLoginReminder(SavedLogin* saved) {
+    if (saved == nullptr) return false;
+    std::ifstream in(kLoginReminderFile, std::ios::binary);
+    if (!in) return false;
+    std::string head;
+    if (!std::getline(in, head)) return false;
+    if (!head.empty() && head.back() == '\r') head.pop_back();
+    std::string secret((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (secret.empty()) return false;
+    // 第一行拆成 host / port / user
+    std::vector<std::string> fields;
+    std::size_t from = 0;
+    while (true) {
+        const std::size_t tab = head.find('\t', from);
+        fields.push_back(head.substr(from, tab == std::string::npos ? std::string::npos
+                                                                    : tab - from));
+        if (tab == std::string::npos) break;
+        from = tab + 1;
+    }
+    if (fields.size() < 3 || fields[2].empty()) return false;
+    saved->host = fields[0];
+    saved->port = std::atoi(fields[1].c_str());
+    saved->user = fields[2];
+    saved->password = DpapiUnprotect(secret);
+    return !saved->password.empty();
+}
+
+void ClearLoginReminder() {
+    std::remove(kLoginReminderFile);
+}
+
 bool PromptAuth(HWND parent, AuthDialogState& state) {
     static bool registered = false;
     if (!registered) {
@@ -4268,6 +4366,22 @@ bool PromptAuth(HWND parent, AuthDialogState& state) {
         registered = true;
     }
     state.parent = parent;
+
+    // ---- 自动登录 ----
+    //
+    // 只在**本次进程第一次**弹账号窗口时尝试，而且要求存下来的服务器地址和当前
+    // 要连的一致。否则用户想换个账号/换台服务器的时候会被自动登录顶回去。
+    static bool autoLoginTried = false;
+    bool autoSubmit = false;
+    if (!autoLoginTried) {
+        autoLoginTried = true;
+        SavedLogin saved;
+        if (LoadLoginReminder(&saved) && saved.host == g_host && saved.port == g_port) {
+            state.prefillUser = Utf8ToWide(saved.user);
+            state.prefillPassword = Utf8ToWide(saved.password);
+            autoSubmit = true;
+        }
+    }
 
     const DialogLayout layout = ComputeDialogLayout(AuthRowCount(state), true);
     RECT rc{0, 0, kDlgWidth, layout.height};
@@ -4292,6 +4406,12 @@ bool PromptAuth(HWND parent, AuthDialogState& state) {
     ShowWindow(dlg, SW_SHOW);
     SetFocus(GetDlgItem(dlg, IDD_USER));
     g_authDlg = &state;
+
+    // 自动登录：走**和点「登录」完全一样的那条路径**（同一个 WM_COMMAND 处理），
+    // 所以账号规范化、校验、失败提示全都一致，不会多出一套"自动登录专用"逻辑。
+    if (autoSubmit && state.dlg) {
+        PostMessageW(state.dlg, WM_COMMAND, MAKEWPARAM(IDD_OK, BN_CLICKED), 0);
+    }
 
     // 模态循环：界面可能在登录 / 注册之间切换，所以每轮都重新取"当前窗口"。
     // 回车 = 主按钮，Esc = 断开（这个窗口不是真正的对话框，系统不会自动找默认按钮）。
@@ -7085,6 +7205,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     g_authPending = false;
                     if (!notice.text.empty()) g_nick = notice.text;
                     g_authed = true;
+                    // 认证确认成功之后才"记住账号" —— 失败的登录不能覆盖掉
+                    // 上一次能用的凭据（比如临时输错一次密码）。
+                    if (!g_pendingUser.empty()) {
+                        SaveLoginReminder(g_host, g_port, g_pendingUser, g_pendingPassword);
+                    }
                     if (g_authDlg) {
                         AuthDialogOnResult(true, std::wstring());
                     } else {
@@ -7496,6 +7621,30 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int showCmd) {
         if (argv != nullptr) {
             for (int i = 1; i + 1 < argc; ++i) {
                 if (std::wstring(argv[i]) == L"--state-file") g_statePath = argv[i + 1];
+                if (std::wstring(argv[i]) == L"--selftest-login") {
+                    // 自检：把"记住账号"的存取完整走一遍，**不启动界面**。
+                    // 验证的是最容易错的部分：DPAPI 加解密 + 文件格式 + 中文与空格。
+                    // 退出码 0 = 通过，1 = 失败。自动化测试用。
+                    SavedLogin probe;
+                    const bool saved = SaveLoginReminder("127.0.0.1", 5555, "selftest_user",
+                                                         "p@ss w0rd 中文");
+                    const bool loaded = saved && LoadLoginReminder(&probe);
+                    const bool same = loaded && probe.host == "127.0.0.1" && probe.port == 5555 &&
+                                      probe.user == "selftest_user" &&
+                                      probe.password == "p@ss w0rd 中文";
+                    // 密文里绝不该出现明文密码
+                    bool plaintextLeak = false;
+                    {
+                        std::ifstream raw(kLoginReminderFile, std::ios::binary);
+                        std::string blob((std::istreambuf_iterator<char>(raw)),
+                                         std::istreambuf_iterator<char>());
+                        plaintextLeak = blob.find("p@ss w0rd") != std::string::npos;
+                    }
+                    ClearLoginReminder();
+                    std::printf("保存=%d 读取=%d 一致=%d 明文泄漏=%d\n", saved ? 1 : 0,
+                                loaded ? 1 : 0, same ? 1 : 0, plaintextLeak ? 1 : 0);
+                    return (same && !plaintextLeak) ? 0 : 1;
+                }
             }
             LocalFree(argv);
         }

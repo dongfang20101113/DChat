@@ -65,7 +65,8 @@ target_link_libraries(dchat_ui PUBLIC gdiplus gdi32 user32 shell32 ole32 winmm)
 add_executable(dchat_client WIN32 src/client.cpp)
 # dwmapi/uxtheme：让滚动条与窗口标题栏跟随深色模式
 # comdlg32：选文件的对话框；shell32：窗口接受拖放文件
-target_link_libraries(dchat_client PRIVATE dchat_ui dchat_protocol ws2_32 user32 gdi32 dwmapi uxtheme comdlg32 shell32 Threads::Threads)
+# crypt32：自动登录用 DPAPI 加密保存密码（绝不明文落盘）
+target_link_libraries(dchat_client PRIVATE dchat_ui dchat_protocol ws2_32 user32 gdi32 dwmapi uxtheme comdlg32 shell32 crypt32 Threads::Threads)
 target_include_directories(dchat_client PRIVATE resources)
 
 # 应用图标（resources/dchat.ico 由 tools/make_dchat_icon.ps1 生成）
