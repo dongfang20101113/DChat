@@ -578,8 +578,9 @@ const char* kIndexHtml = R"HTML(<!doctype html>
   .sys { color:#8a8a94; font-size:13px; }
   .err { color:#ff6b6b; }
   #login { position:fixed; inset:0; background:#1b1b1f; display:flex; align-items:center;
-           justify-content:center; }
+           justify-content:center; padding:0 16px; }
   #login form { background:#232329; padding:24px; border-radius:12px; width:320px;
+                max-width:100%;  /* 手机上不能超屏，否则右侧会被切掉 */
                 display:flex; flex-direction:column; gap:10px; border:1px solid #33333a; }
   .other { text-align:center; font-size:13px; color:#8a8a94; }
   .other a { color:#7aa7ff; }
