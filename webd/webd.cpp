@@ -490,7 +490,22 @@ public:
     void OnDisconnected(const std::string& reason) override {
         SendLine("STATE\t未连接\t" + reason);
     }
-    void OnOnlineNicks(const std::vector<std::string>&) override {}
+    // 在线名单：登录后会来一次，有人进/出还会再来。以前这里直接丢掉，
+    // 网页版就没有"谁在线"这个概念，也没法从名单里发起私聊。
+    void OnOnlineNicks(const std::vector<std::string>& nicks) override {
+        // 两个坑：
+        // ① 服务器给的是 "a, b, c" 这种**逗号分隔**串，按空格切完每段尾巴还带逗号；
+        // ② ChatCore 已经把**自己**剔掉了，所以这里只有别人。
+        std::vector<std::string> clean;
+        for (const std::string& raw : nicks) {
+            std::string nick = raw;
+            while (!nick.empty() && (nick.back() == ',' || nick.back() == ' ')) nick.pop_back();
+            if (!nick.empty()) clean.push_back(nick);
+        }
+        std::string line = "NAMES\t" + std::to_string(clean.size());
+        for (const std::string& nick : clean) line += "\t" + nick;
+        SendLine(line);
+    }
     void OnTransferProgress(const std::string& text) override { SendLine("SYS\t" + text); }
     void OnColorSettingChanged(bool enabled, const std::string&) override {
         SendLine("SYS\t彩色聊天：" + std::string(enabled ? "开" : "关"));
@@ -949,8 +964,9 @@ function connect(host, user, pass, reg) {
     switch (f[0]) {
       case 'SAY': {
         const own = f[4] === '1';
+        const atMe = f[5] === '1';   // 服务器标了「这条 @ 到我」
         const d = document.createElement('div');
-        d.className = 'row' + (own ? ' own' : '');
+        d.className = 'row' + (own ? ' own' : '') + (atMe ? ' mention' : '');
         d.innerHTML = '';
         const n = document.createElement('span'); n.className = 'nick'; n.textContent = f[1];
         const t = document.createElement('span'); t.className = 'time'; t.textContent = f[2];
@@ -992,6 +1008,7 @@ function connect(host, user, pass, reg) {
       case 'STATE':
         setState(f[1] + (f[2] ? '　' + f[2] : ''), f[1] === '已登录');
         if (f[1] === '已登录') {
+          window.__MINE__ = f[2] || '';   // 记下自己的昵称，在线名单里要标「这是我」
           inputEl.disabled = false; sendEl.disabled = false; pickEl.disabled = false;
           const micEl = document.getElementById('mic');
           if (micEl) micEl.disabled = false;
@@ -1160,12 +1177,16 @@ fileEl.addEventListener('change', () => {
 .pbody .tip{color:#8a8a94;font-size:12px;padding:10px 0}
 .pbody h4{margin:14px 0 6px;font-size:13px;color:#8a8a94;font-weight:600}
 @media(max-width:640px){.sheet{max-height:92vh}.pbody{padding:12px}}
+/* 有人 @ 我：整行标黄 + 左边竖条，翻历史时一眼能看到 */
+.row.mention{background:#3a2f1c;border-left:3px solid #ffb020;padding-left:7px}
+.row.mention .nick{color:#ffcf70}
 </style>
 <div id="rpanel"><div class="sheet">
   <div class="tabs">
     <button data-tab="find" class="on">搜索</button>
     <button data-tab="create">建群</button>
     <button data-tab="members">成员</button>
+    <button data-tab="online">在线</button>
     <button data-tab="manage">管理</button>
     <button data-tab="cmd">指令</button>
     <span style="flex:1"></span>
@@ -1188,6 +1209,10 @@ fileEl.addEventListener('change', () => {
   <div class="pbody" id="ptab-members" style="display:none">
     <button id="membersGo" style="width:100%;padding:10px;border:0;border-radius:8px;background:#33333c;color:#e6e6e6;font:inherit;cursor:pointer">刷新成员表</button>
     <div id="memberList"></div>
+  </div>
+  <div class="pbody" id="ptab-online" style="display:none">
+    <div class="tip">在线的人（不含自己）。点「私聊」开一个一对一会话。</div>
+    <div id="onlineList"></div>
   </div>
   <div class="pbody" id="ptab-manage" style="display:none">
     <h4>群公告</h4>
@@ -1246,9 +1271,10 @@ function pickTab(name) {
   for (const b of document.querySelectorAll('#rpanel .tabs button[data-tab]')) {
     b.classList.toggle('on', b.dataset.tab === name);
   }
-  for (const id of ['find', 'create', 'members', 'manage', 'cmd']) {
+  for (const id of ['find', 'create', 'members', 'online', 'manage', 'cmd']) {
     q('ptab-' + id).style.display = (id === name) ? '' : 'none';
   }
+  if (name === 'online') renderOnline();
   if (name === 'manage') {
     const can = (myRole === 'owner' || myRole === 'admin');
     q('manageTip').textContent = can
@@ -1345,6 +1371,40 @@ function renderMembers(rows) {
   }
 }
 
+// ---- 在线名单 / 私聊 ----
+// 名单由网关推（登录后一次，有人进出再推），不是每次开面板都问服务器。
+let onlineNicks = [];
+function renderOnline() {
+  const box = q('onlineList');
+  box.innerHTML = '';
+  if (!onlineNicks.length) {
+    box.innerHTML = '<div class="tip">现在只有你自己在线（这个列表不含自己）。</div>';
+    return;
+  }
+  const me = (window.__MINE__ || '');
+  for (const nick of onlineNicks) {
+    const row = document.createElement('div'); row.className = 'prow';
+    const g = document.createElement('div'); g.className = 'g';
+    const b = document.createElement('b'); b.textContent = nick;
+    g.appendChild(b);
+    if (nick === me) {
+      const s = document.createElement('span'); s.textContent = '这是我';
+      g.appendChild(s);
+    }
+    row.appendChild(g);
+    if (nick !== me) {
+      const btn = document.createElement('button'); btn.textContent = '私聊';
+      btn.addEventListener('click', () => {
+        send('INPUT\t/dm ' + nick);
+        add('sys', '正在和 ' + nick + ' 建立私聊…');
+        closePanel();
+      });
+      row.appendChild(btn);
+    }
+    box.appendChild(row);
+  }
+}
+
 // ---- 管理 ----
 q('annGo').addEventListener('click', () => {
   const t = q('annText').value.trim();
@@ -1408,6 +1468,11 @@ window.__EXTRA_FRAME__ = function (f) {
     case 'SETTINGS':
       panelRoom = f[1] || '';
       myRole = f[3] || 'member';
+      break;
+    case 'NAMES':
+      // NAMES \t <人数> \t <昵称>…
+      onlineNicks = f.slice(2);
+      renderOnline();
       break;
     case 'GHITS':    pendingHits = []; break;
     case 'GHIT':
