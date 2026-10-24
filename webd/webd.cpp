@@ -31,9 +31,11 @@
 // 用法：
 //   dchat-webd --port 8080 --server 127.0.0.1:5555 --www ./webd-page
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -867,6 +869,9 @@ struct Config {
     std::string adminTokenFile = "/var/lib/dchat/dchat-admin-token.txt";
 };
 
+// 定义在文件后半部分（ServeConnection 之后）；这里先声明，路由那边要用。
+void ServeAdmin(dchat::sock::Handle handle, const std::string& rawRequest);
+
 Config g_config;
 
 bool ReadRequest(dchat::sock::Handle handle, std::string* out) {
@@ -1071,6 +1076,9 @@ void ServeConnection(dchat::sock::Handle handle) {
         reply("200 OK", "text/html; charset=utf-8", kIndexHtml);
     } else if (route == "/download") {
         reply("200 OK", "text/html; charset=utf-8", kDownloadHtml);
+    } else if (g_config.adminPort > 0 && (route == "/admin" || route.rfind("/admin/", 0) == 0)) {
+        // 管理员页面。adminPort 为 0 时这条分支根本不会命中，/admin 直接落到 404。
+        ServeAdmin(handle, request);
     } else if (path.rfind("/dl/", 0) == 0) {
         // 下载：文件名里不许出现 .. 或 /
         std::string name = path.substr(4);
@@ -1145,6 +1153,409 @@ void ServeConnection(dchat::sock::Handle handle) {
     (void)method;
 }
 
+// ============================================================================
+// 管理员页面
+//
+// ## 安全模型（整个功能的地基，改之前先读完）
+//
+// 1. **规则写权限只在服务器回环端口上**。网页这边只是"转发"，自己不留写规则的能力。
+// 2. **口令不落 Cookie**：登录后只把随机 session id 放 Cookie
+//    （HttpOnly + SameSite=Strict + Path=/admin），口令原文不离开服务器。
+// 3. **CSRF 双提交**：表单隐藏字段 == 会话 id，服务端再比一次。
+// 4. **失败限流**：5 分钟内错 5 次锁住。
+// 5. 默认关闭：网关没配 --admin 时 /admin 直接 404。
+// ============================================================================
+
+struct AdminRuleMeta {
+    const char* name;
+    bool isBool;
+    const char* hint;
+};
+
+/** 只是页面文案。规则**存不存在**和**范围**都以服务器 LIST / SET 结果为准。 */
+const AdminRuleMeta kAdminRules[] = {
+    {"chatinterval", false, "两条消息之间最少间隔（毫秒），0 = 不限制"},
+    {"documentsize", false, "单个文件最大大小（MB）"},
+    {"keepchathistory", true, "新加入的客户端能否看到之前的聊天记录和文件"},
+    {"chatcolor", true, "聊天里能否用彩色代码（关掉后色码原样显示）"},
+    {"maxservertemp", false, "服务端保存文件 + 聊天记录缓存的总上限（MB）"},
+    {"uploadrate", false, "单个客户端上传限速（KB/s），0 = 不限制"},
+    {"downloadrate", false, "单个客户端下载限速（KB/s），0 = 不限制"},
+    {"maxtextlen", false, "单条消息最大字符数（Unicode 码点），0 = 不限制"},
+    {"maxtextlines", false, "单条消息最大行数，0 = 不限制"},
+    {"maxconns", false, "同时连接总数上限，0 = 不限制"},
+    {"maxconnsperip", false, "同一 IP 的同时连接数上限，0 = 不限制"},
+    {"loginfails", false, "同一 IP 在 5 分钟内允许的登录失败次数，0 = 不限制"},
+    {"handshaketimeout", false, "连上后多少秒内必须登录，0 = 不限制"},
+    {"registerinterval", false, "同一 IP 两次注册的最小间隔（秒），0 = 不限制"},
+    {"maxaccounts", false, "账号总数上限，0 = 不限制"},
+    {"offlinemessages", false, "登录时最多补发多少条离线消息，0 = 不补发"},
+};
+
+std::mutex g_adminMutex;
+std::map<std::string, std::time_t> g_adminSessions;
+std::map<std::string, std::pair<int, std::time_t>> g_adminFails;
+
+constexpr int kAdminSessionSec = 3600;
+constexpr int kAdminFailLimit = 5;
+constexpr int kAdminFailWindowSec = 300;
+
+std::string RandomHex(int bytes) {
+    static std::atomic<unsigned long long> counter{0};
+    unsigned long long seed = static_cast<unsigned long long>(std::time(nullptr)) ^
+                              (static_cast<unsigned long long>(counter.fetch_add(1)) << 32);
+    std::string out;
+    const char* hex = "0123456789abcdef";
+    for (int i = 0; i < bytes; ++i) {
+        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+        const unsigned char byte = static_cast<unsigned char>((seed >> 33) & 0xFF);
+        out.push_back(hex[byte >> 4]);
+        out.push_back(hex[byte & 0x0F]);
+    }
+    return out;
+}
+
+bool SlowEqualsStr(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    unsigned char diff = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        diff = static_cast<unsigned char>(diff | (static_cast<unsigned char>(a[i] ^ b[i])));
+    }
+    return diff == 0;
+}
+
+/** 每次现读：改口令不用重启网关，也少一份内存副本。 */
+std::string AdminToken() {
+    FILE* file = std::fopen(g_config.adminTokenFile.c_str(), "rb");
+    if (file == nullptr) return std::string();
+    char buffer[256] = {0};
+    const std::size_t got = std::fread(buffer, 1, sizeof(buffer) - 1, file);
+    std::fclose(file);
+    std::string token(buffer, got);
+    while (!token.empty() &&
+           (token.back() == '\n' || token.back() == '\r' || token.back() == ' ')) {
+        token.pop_back();
+    }
+    return token;
+}
+
+/** 连服务器回环管理端口：认证 + 一条请求 + 读回（短连接，每次重新认证）。 */
+std::string AdminCall(const std::string& request) {
+    if (g_config.adminPort <= 0) return "ERR 管理通道未启用";
+    const std::string token = AdminToken();
+    if (token.empty()) return "ERR 读不到管理口令文件";
+    const dchat::sock::Handle sock = dchat::sock::CreateTcp();
+    if (sock == dchat::sock::kInvalid) return "ERR 建 socket 失败";
+    dchat::sock::SetNoSigpipe(sock);
+    dchat::sock::SetReceiveTimeout(sock, 5000);
+    const dchat::sock::Address address =
+        dchat::sock::MakeAddress(g_config.adminHost, g_config.adminPort);
+    if (::connect(sock, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
+        dchat::sock::Close(sock);
+        return "ERR 连不上管理端口";
+    }
+    const std::string payload = "ADMIN " + token + "\n" + request + "\n";
+    dchat::sock::SendAll(sock, payload.data(), payload.size());
+    std::string reply;
+    char chunk[4096];
+    while (true) {
+        const std::ptrdiff_t got = dchat::sock::Receive(sock, chunk, sizeof(chunk));
+        if (got <= 0) break;
+        reply.append(chunk, static_cast<std::size_t>(got));
+        if (reply.find("RULES_END") != std::string::npos) break;
+        if (request != "LIST" && reply.find("\nOK ") != std::string::npos) break;
+        if (request != "LIST" && reply.find("\nERR ") != std::string::npos) break;
+    }
+    dchat::sock::Close(sock);
+    const std::size_t firstNewline = reply.find('\n');
+    if (firstNewline != std::string::npos && reply.rfind("OK 已认证", 0) == 0) {
+        reply = reply.substr(firstNewline + 1);
+    }
+    return reply;
+}
+
+std::string SessionFromCookie(const std::string& headLower, const std::string& head) {
+    const std::size_t at = headLower.find("cookie:");
+    if (at == std::string::npos) return std::string();
+    const std::size_t end = headLower.find("\r\n", at);
+    const std::string line =
+        head.substr(at, end == std::string::npos ? std::string::npos : end - at);
+    const std::size_t named = line.find("dchat_admin=");
+    if (named == std::string::npos) return std::string();
+    const std::size_t begin = named + 12;
+    std::size_t stop = line.find(';', begin);
+    if (stop == std::string::npos) stop = line.size();
+    return Trim(line.substr(begin, stop - begin));
+}
+
+bool SessionValid(const std::string& id) {
+    if (id.empty()) return false;
+    std::lock_guard<std::mutex> lock(g_adminMutex);
+    const auto it = g_adminSessions.find(id);
+    if (it == g_adminSessions.end()) return false;
+    if (it->second < std::time(nullptr)) {
+        g_adminSessions.erase(it);
+        return false;
+    }
+    return true;
+}
+
+std::string AdminLoginPage(const std::string& message) {
+    std::string html =
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>dchat 管理</title><style>"
+        ":root{color-scheme:dark}body{margin:0;background:#1b1b1f;color:#e6e6e6;"
+        "font:15px/1.6 -apple-system,\"Segoe UI\",\"Microsoft YaHei\",sans-serif;"
+        "display:flex;align-items:center;justify-content:center;height:100vh;padding:0 16px}"
+        "form{background:#232329;border:1px solid #33333a;border-radius:12px;padding:24px;"
+        "width:320px;max-width:100%;display:flex;flex-direction:column;gap:12px}"
+        "input{box-sizing:border-box;width:100%;padding:10px 12px;border-radius:8px;"
+        "border:1px solid #3a3a42;background:#2a2a31;color:#e6e6e6;font:inherit}"
+        "button{padding:10px;border:0;border-radius:8px;background:#2f6fed;color:#fff;"
+        "font:inherit;cursor:pointer}.msg{color:#ff6b6b;font-size:13px}"
+        "</style></head><body><form method=\"post\" action=\"/admin/login\">"
+        "<b style=\"font-size:16px\">dchat 管理员</b>"
+        "<div style=\"color:#8a8a94;font-size:13px\">输入服务器上的管理口令"
+        "（<code>dchat-admin-token.txt</code>）</div>";
+    if (!message.empty()) html += "<div class=\"msg\">" + message + "</div>";
+    html +=
+        "<input type=\"password\" name=\"t\" placeholder=\"管理口令\" autofocus>"
+        "<button type=\"submit\">登录</button></form></body></html>";
+    return html;
+}
+
+std::string AdminPage(const std::string& sessionId, const std::string& message) {
+    const std::string listing = AdminCall("LIST");
+    std::map<std::string, std::string> values;
+    std::size_t from = 0;
+    while (from < listing.size()) {
+        const std::size_t end = listing.find('\n', from);
+        const std::string line =
+            listing.substr(from, end == std::string::npos ? std::string::npos : end - from);
+        from = (end == std::string::npos) ? listing.size() : end + 1;
+        const std::size_t tab = line.find('\t');
+        if (tab != std::string::npos) values[line.substr(0, tab)] = line.substr(tab + 1);
+    }
+    if (values.empty()) {
+        return AdminLoginPage("读不到规则列表：" + Trim(listing).substr(0, 200));
+    }
+
+    std::string html =
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>dchat 服务器规则</title><style>"
+        ":root{color-scheme:dark}body{margin:0;background:#1b1b1f;color:#e6e6e6;"
+        "font:15px/1.6 -apple-system,\"Segoe UI\",\"Microsoft YaHei\",sans-serif}"
+        ".wrap{max-width:760px;margin:0 auto;padding:28px 16px}"
+        "h1{font-size:20px;margin:0 0 4px}p.sub{color:#8a8a94;margin:0 0 20px;font-size:13px}"
+        ".row{display:flex;align-items:center;gap:12px;padding:11px 0;"
+        "border-bottom:1px solid #2e2e35;flex-wrap:wrap}"
+        ".nm{flex:1;min-width:180px}.nm b{font-size:14px}"
+        ".nm span{display:block;color:#8a8a94;font-size:12px}"
+        "input[type=number]{width:110px;box-sizing:border-box;padding:7px 9px;border-radius:7px;"
+        "border:1px solid #3a3a42;background:#2a2a31;color:#e6e6e6;font:inherit}"
+        "input[type=checkbox]{width:22px;height:22px}"
+        "button{padding:11px 20px;border:0;border-radius:8px;background:#2f6fed;color:#fff;"
+        "font:inherit;cursor:pointer;margin-top:18px}"
+        ".ok{background:#1d3a29;color:#7ddca0;padding:10px 14px;border-radius:8px;"
+        "font-size:13px;margin-bottom:16px}.bad{background:#3a1d1d;color:#ff9b9b;"
+        "padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px}"
+        "@media(max-width:640px){.nm{min-width:100%}input[type=number]{width:100%}"
+        "button{width:100%}}"
+        "</style></head><body><div class=\"wrap\">"
+        "<h1>服务器规则</h1>"
+        "<p class=\"sub\">改完点最下面保存。这里的修改与服务端控制台的 "
+        "<code>/chatrule</code> 完全等价——走同一条路径，会立刻写盘并广播给在线客户端。</p>";
+    if (!message.empty()) {
+        const bool bad = (message.rfind("✗", 0) == 0);
+        html += "<div class=\"" + std::string(bad ? "bad" : "ok") + "\">" + message + "</div>";
+    }
+    html += "<form method=\"post\" action=\"/admin/set\">";
+    html += "<input type=\"hidden\" name=\"csrf\" value=\"" + sessionId + "\">";
+    for (const AdminRuleMeta& meta : kAdminRules) {
+        const auto it = values.find(meta.name);
+        if (it == values.end()) continue;  // 服务器没这条就不显示，避免页面和服务器脱节
+        html += "<div class=\"row\"><div class=\"nm\"><b>" + std::string(meta.name) + "</b><span>" +
+                meta.hint + "</span></div>";
+        if (meta.isBool) {
+            html += "<input type=\"checkbox\" name=\"" + std::string(meta.name) + "\" value=\"true\"";
+            if (it->second == "true") html += " checked";
+            html += ">";
+        } else {
+            html += "<input type=\"number\" name=\"" + std::string(meta.name) + "\" value=\"" +
+                    it->second + "\" step=\"1\">";
+        }
+        html += "</div>";
+    }
+    html += "<button type=\"submit\">保存</button></form></div></body></html>";
+    return html;
+}
+
+/** 处理所有 /admin 请求（登录、列表、保存）。 */
+void ServeAdmin(dchat::sock::Handle handle, const std::string& rawRequest) {
+    const std::size_t headerEnd = rawRequest.find("\r\n\r\n");
+    const std::string head =
+        (headerEnd == std::string::npos) ? rawRequest : rawRequest.substr(0, headerEnd);
+    const std::string body =
+        (headerEnd == std::string::npos) ? std::string() : rawRequest.substr(headerEnd + 4);
+    const std::string headLower = Lower(head);
+    std::string method;
+    std::string path;
+    {
+        const std::size_t firstEnd = head.find("\r\n");
+        const std::string firstLine = head.substr(0, firstEnd);
+        const std::size_t sp1 = firstLine.find(' ');
+        const std::size_t sp2 = firstLine.rfind(' ');
+        if (sp1 != std::string::npos && sp2 != std::string::npos && sp2 > sp1) {
+            method = firstLine.substr(0, sp1);
+            path = firstLine.substr(sp1 + 1, sp2 - sp1 - 1);
+        }
+    }
+    std::string route = path;
+    const std::size_t qmark = route.find('?');
+    const std::string query = (qmark == std::string::npos) ? std::string() : route.substr(qmark + 1);
+    if (qmark != std::string::npos) route = route.substr(0, qmark);
+
+    auto send = [&](const std::string& status, const std::string& extra, const std::string& content) {
+        const std::string out = "HTTP/1.1 " + status +
+                                "\r\nContent-Type: text/html; charset=utf-8\r\n"
+                                "Content-Length: " + std::to_string(content.size()) + "\r\n" +
+                                extra +
+                                "X-Frame-Options: DENY\r\n"
+                                "X-Content-Type-Options: nosniff\r\n"
+                                "Referrer-Policy: no-referrer\r\nConnection: close\r\n\r\n" +
+                                content;
+        SendAll(handle, out.data(), out.size());
+    };
+    auto redirect = [&](const std::string& location, const std::string& extra) {
+        const std::string out = "HTTP/1.1 303 See Other\r\nLocation: " + location + "\r\n" + extra +
+                                "Content-Length: 0\r\nConnection: close\r\n\r\n";
+        SendAll(handle, out.data(), out.size());
+    };
+    auto field = [&](const std::string& name) -> std::string {
+        std::size_t from = 0;
+        while (from < body.size()) {
+            const std::size_t amp = body.find('&', from);
+            const std::string pair =
+                body.substr(from, amp == std::string::npos ? std::string::npos : amp - from);
+            from = (amp == std::string::npos) ? body.size() : amp + 1;
+            const std::size_t eq = pair.find('=');
+            if (eq == std::string::npos) continue;
+            if (PercentDecode(pair.substr(0, eq)) == name) return PercentDecode(pair.substr(eq + 1));
+        }
+        return std::string();
+    };
+
+    // 网关和服务器在同一台机器，登录限流按这一个桶算
+    const std::string peerIp = "127.0.0.1";
+
+    if (route == "/admin/login") {
+        if (method != "POST") {
+            redirect("/admin", "");
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_adminMutex);
+            auto it = g_adminFails.find(peerIp);
+            if (it != g_adminFails.end()) {
+                if (it->second.second + kAdminFailWindowSec < std::time(nullptr)) {
+                    g_adminFails.erase(it);
+                } else if (it->second.first >= kAdminFailLimit) {
+                    send("429 Too Many Requests", "", AdminLoginPage("尝试次数太多，请 5 分钟后再试"));
+                    return;
+                }
+            }
+        }
+        const std::string token = AdminToken();
+        if (token.empty()) {
+            send("500 Internal Server Error", "", AdminLoginPage("服务器上没有管理口令文件"));
+            return;
+        }
+        if (SlowEqualsStr(field("t"), token)) {
+            std::lock_guard<std::mutex> lock(g_adminMutex);
+            g_adminFails.erase(peerIp);
+            const std::string id = RandomHex(24);
+            g_adminSessions[id] = std::time(nullptr) + kAdminSessionSec;
+            redirect("/admin", "Set-Cookie: dchat_admin=" + id +
+                                   "; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=" +
+                                   std::to_string(kAdminSessionSec) + "\r\n");
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_adminMutex);
+            auto& fail = g_adminFails[peerIp];
+            if (fail.second == 0) fail.second = std::time(nullptr);
+            ++fail.first;
+        }
+        send("401 Unauthorized", "", AdminLoginPage("口令不对"));
+        return;
+    }
+
+    const std::string sessionId = SessionFromCookie(headLower, head);
+    if (!SessionValid(sessionId)) {
+        send("200 OK", "", AdminLoginPage(""));
+        return;
+    }
+
+    if (route == "/admin/set") {
+        if (method != "POST") {
+            redirect("/admin", "");
+            return;
+        }
+        if (field("csrf") != sessionId) {
+            send("403 Forbidden", "", AdminLoginPage("会话校验失败，请重新登录"));
+            return;
+        }
+        int changed = 0;
+        std::string firstError;
+        for (const AdminRuleMeta& meta : kAdminRules) {
+            std::string request;
+            if (meta.isBool) {
+                request = std::string("SET ") + meta.name +
+                          ((field(meta.name) == "true") ? " true" : " false");
+            } else {
+                const std::string value = field(meta.name);
+                if (value.empty()) continue;
+                request = std::string("SET ") + meta.name + " " + value;
+            }
+            const std::string reply = AdminCall(request);
+            if (reply.rfind("OK", 0) == 0) {
+                ++changed;
+            } else if (firstError.empty()) {
+                firstError = std::string(meta.name) + "：" + Trim(reply);
+            }
+        }
+        std::string message;
+        if (firstError.empty()) {
+            message = "✓ 已保存 " + std::to_string(changed) + " 项（已写盘并广播给在线客户端）";
+        } else {
+            message = "✗ 部分失败：" + firstError;
+        }
+        std::string encoded;
+        for (char ch : message) {
+            const unsigned char byte = static_cast<unsigned char>(ch);
+            if (byte >= 0x80) {
+                encoded.push_back(ch);  // 中文原样带过去，浏览器能处理
+            } else if ((byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'z') ||
+                       (byte >= 'A' && byte <= 'Z') || byte == '-' || byte == '_' || byte == '.') {
+                encoded.push_back(ch);
+            } else {
+                char hexText[8];
+                std::snprintf(hexText, sizeof(hexText), "%%%02X", byte);
+                encoded += hexText;
+            }
+        }
+        redirect("/admin?m=" + encoded, "");
+        return;
+    }
+
+    std::string message;
+    const std::size_t m = query.find("m=");
+    if (m != std::string::npos) message = PercentDecode(query.substr(m + 2));
+    send("200 OK", "", AdminPage(sessionId, message));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1164,6 +1575,18 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--dl") {
             g_config.dlDir = next();
+        } else if (arg == "--admin") {
+            // --admin 127.0.0.1:5556，指向服务器 --admin-port 开的那个回环端口
+            const std::string value = next();
+            const std::size_t colon = value.rfind(':');
+            if (colon != std::string::npos) {
+                g_config.adminHost = value.substr(0, colon);
+                g_config.adminPort = std::atoi(value.c_str() + colon + 1);
+            } else {
+                g_config.adminPort = std::atoi(value.c_str());
+            }
+        } else if (arg == "--admin-token") {
+            g_config.adminTokenFile = next();
         } else if (arg == "--help" || arg == "-h") {
             std::printf("用法：dchat-webd [--port 8080] [--server 127.0.0.1:5555] [--dl 目录]\n");
             return 0;
