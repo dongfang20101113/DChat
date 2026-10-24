@@ -21,7 +21,7 @@
 namespace dchat {
 
 inline constexpr std::size_t kFileKeyBytes = 32;
-inline constexpr std::size_t kFileIvBytes = 16;
+inline constexpr std::size_t kFileIvBytes = 12;  // AES-GCM 标准 nonce 长度是 96 位 = 12 字节
 inline constexpr std::size_t kFileTagBytes = 16;
 inline constexpr std::size_t kFileMagicBytes = 9;  // "DCHATENC1" 是 9 个字符，别数错
 /** 不写成 `const char*`：那样每个 TU 一份，还容易被误当宏用。 */

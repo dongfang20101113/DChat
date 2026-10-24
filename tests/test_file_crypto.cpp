@@ -55,10 +55,17 @@ int main() {
     Check(EncryptFileBlob(key, plain, &blob2, &error), "同一明文再加密一次");
     Check(blob2 != blob, "两次加密的密文不同（IV 是随机的）");
     {
-        // IV 在魔数之后那 16 字节
-        const std::string iv1 = blob.substr(kFileMagicBytes, kFileIvBytes);
-        const std::string iv2 = blob2.substr(kFileMagicBytes, kFileIvBytes);
-        Check(iv1 != iv2, "两次的 IV 不同");
+        // 只有前一步真的加密成功才有东西可比。**不能直接 substr** ——
+        // 加密失败时 blob 是空的，substr 会抛 out_of_range 把整个测试崩掉，
+        // 那样就看不到"到底哪一条失败了"（第一次跑就是这么崩的）。
+        if (blob.size() >= kFileMagicBytes + kFileIvBytes &&
+            blob2.size() >= kFileMagicBytes + kFileIvBytes) {
+            const std::string iv1 = blob.substr(kFileMagicBytes, kFileIvBytes);
+            const std::string iv2 = blob2.substr(kFileMagicBytes, kFileIvBytes);
+            Check(iv1 != iv2, "两次的 IV 不同");
+        } else {
+            Check(false, "密文长度不足，无法比较 IV（说明加密那一步就失败了）");
+        }
     }
 
     std::printf("[4] 错密钥 / 篡改必须失败\n");
