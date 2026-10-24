@@ -25,6 +25,14 @@ struct ServerRules {
                                    // 关掉后客户端的色码**原样显示**，不是把它删掉
     int maxServerTempMb = 1048;    // maxservertemp：服务端保存文件 + 聊天记录缓存的总上限（MB）
 
+    // webuploadmb：网页版单文件上传上限（MB）。
+    //
+    // 为什么单独一条：网页版是把整个文件塞进**一帧 WebSocket**（Base64），
+    // 所以它的上限和 documentsize 不是一回事——桌面端能传 64 MB 不代表浏览器
+    // 该吃 64 MB 的帧。以前这个值是写在 webd 里的 8 MB 常量，服务器管不到，
+    // 现在归 chatrule 管。取值不会超过 documentsize（超了服务器也存不下）。
+    int webUploadMb = 8;
+
     // ---- 2026-10 新增：公网接入需要的限速与文本限制 ----
     // 全部遵循上面 chatinterval 的约定：**0 = 不限制**，这样升级后行为不变，
     // 由服务器管理员按需开启（公网服务器建议都设上）。

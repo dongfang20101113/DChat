@@ -93,6 +93,37 @@ int main() {
     }
 
     {
+        // 网页版单文件上限：以前写死在 webd 里，现在归 chatrule 管
+        std::printf("[3b] webuploadmb（网页版单文件上限）\n");
+        ServerRules rules;
+        check(rules.webUploadMb == 8, "默认 8 MB（和以前写死的值一致，升级后行为不变）");
+
+        dchat::RuleChange change =
+            dchat::ApplyRule(&rules, "webuploadmb", RuleAction::Set, 32, false);
+        check(change.ok && rules.webUploadMb == 32, "可以调到 32 MB");
+
+        // 超过 documentsize（默认 64）应该放行，但超过 documentsize 才拦
+        rules.documentSizeMb = 16;
+        change = dchat::ApplyRule(&rules, "webuploadmb", RuleAction::Set, 32, false);
+        check(!change.ok && rules.webUploadMb == 32,
+              "超过 documentsize 时被拒绝，且原值不动");
+        check(change.message.find("documentsize") != std::string::npos,
+              "提示里指出卡在 documentsize");
+
+        // 把 documentsize 降下来时，网页版上限要跟着降，不能俩值互相矛盾
+        change = dchat::ApplyRule(&rules, "documentsize", RuleAction::Set, 10, false);
+        check(change.ok && rules.documentSizeMb == 10 && rules.webUploadMb == 10,
+              "documentsize 降到 10 时 webuploadmb 同步降到 10");
+
+        // 取值范围
+        change = dchat::ApplyRule(&rules, "webuploadmb", RuleAction::Set, 0, false);
+        check(change.ok && rules.webUploadMb == 1, "低于下限被夹到 1 MB");
+        change = dchat::ApplyRule(&rules, "webuploadmb", RuleAction::Set, 999, false);
+        check(!change.ok || rules.webUploadMb <= rules.documentSizeMb,
+              "超上限不会越过 documentsize");
+    }
+
+    {
         std::printf("[4] 布尔规则与未知规则\n");
         ServerRules rules;
         dchat::RuleChange change =

@@ -34,6 +34,8 @@ const RuleRange kRanges[] = {
     {"maxaccounts", 0, 10000000, "个", "账号总数上限（0 = 不限制）"},
     // ---- 2026-10 新增：离线消息 ----
     {"offlinemessages", 0, 1000, "条", "登录时最多补发多少条离线消息（0 = 不补发）"},
+    // ---- 2026-10 新增：网页版 ----
+    {"webuploadmb", 1, 64, "MB", "网页版单文件上传上限"},
 };
 
 const RuleRange* FindRange(const std::string& name) {
@@ -80,6 +82,7 @@ const std::vector<RuleInfo>& AllRuleInfos() {
         {"registerinterval", "<秒> 同 IP 两次注册的最小间隔，0 = 不限", false},
         {"maxaccounts", "<个> 账号总数上限，0 = 不限", false},
         {"offlinemessages", "<条> 登录时最多补发多少条离线消息，0 = 不补", false},
+        {"webuploadmb", "<MB> 网页版单文件上传上限（不超过 documentsize）", false},
     };
     return infos;
 }
@@ -149,6 +152,8 @@ std::vector<std::pair<std::string, std::string>> RuleValues(const ServerRules& r
             value = std::to_string(rules.maxAccounts);
         } else if (name == "offlinemessages") {
             value = std::to_string(rules.offlineMessages);
+        } else if (name == "webuploadmb") {
+            value = std::to_string(rules.webUploadMb);
         }
         if (!value.empty()) out.emplace_back(name, value);
     }
@@ -221,6 +226,11 @@ std::string DescribeRule(const ServerRules& rules, const std::string& name) {
     if (lower == "offlinemessages") {
         return "offlinemessages = " + std::to_string(rules.offlineMessages) +
                " 条（重新登录时最多补发多少条离线期间错过的消息，0 = 不补发）";
+    }
+    if (lower == "webuploadmb") {
+        return "webuploadmb = " + std::to_string(rules.webUploadMb) +
+               " MB（网页版单文件上传上限；浏览器是把整个文件塞进一帧 WebSocket，"
+               "所以这个值和桌面端的 documentsize 分开）";
     }
     return "未知规则：" + name;
 }
@@ -308,6 +318,7 @@ RuleChange ApplyRule(ServerRules* rules, const std::string& name, RuleAction act
     if (lower == "registerinterval") current = rules->registerIntervalSec;
     if (lower == "maxaccounts") current = rules->maxAccounts;
     if (lower == "offlinemessages") current = rules->offlineMessages;
+    if (lower == "webuploadmb") current = rules->webUploadMb;
 
     long long next = current;
     if (action == RuleAction::Set) {
@@ -339,6 +350,13 @@ RuleChange ApplyRule(ServerRules* rules, const std::string& name, RuleAction act
                          " MB）；先调小 documentsize";
         return change;
     }
+    // 网页版上限不能超过单文件上限：超了服务器照样不收，两边说法就对不上了
+    if (lower == "webuploadmb" && next > rules->documentSizeMb) {
+        change.message = "webuploadmb 不能超过 documentsize（当前 " +
+                         std::to_string(rules->documentSizeMb) +
+                         " MB）；先调大 documentsize，或把 webuploadmb 设小一点";
+        return change;
+    }
 
     change.ok = true;
     change.changed = (next != current);
@@ -356,6 +374,13 @@ RuleChange ApplyRule(ServerRules* rules, const std::string& name, RuleAction act
     if (lower == "registerinterval") rules->registerIntervalSec = static_cast<int>(next);
     if (lower == "maxaccounts") rules->maxAccounts = static_cast<int>(next);
     if (lower == "offlinemessages") rules->offlineMessages = static_cast<int>(next);
+    if (lower == "webuploadmb") rules->webUploadMb = static_cast<int>(next);
+    // 把单文件上限降到网页版上限以下时，网页版那条要跟着降——
+    // 否则网页还会放行一个服务器铁定不接收的大小。
+    if (lower == "documentsize" && rules->webUploadMb > rules->documentSizeMb) {
+        rules->webUploadMb = rules->documentSizeMb;
+        note += "（webuploadmb 同步降到 " + std::to_string(rules->webUploadMb) + " MB）";
+    }
     change.message = lower + " = " + std::to_string(next) + " " + range->unit + note;
     return change;
 }
@@ -436,6 +461,8 @@ std::string SerializeRules(const ServerRules& rules) {
            "      # 账号总数上限，0 = 不限制（换 IP 也绕不过这道闸）\n";
     out += "offlinemessages " + std::to_string(rules.offlineMessages) +
            "      # 登录时最多补发多少条离线消息，0 = 不补发（要先开 keepchathistory）\n";
+    out += "webuploadmb " + std::to_string(rules.webUploadMb) +
+           "      # 网页版单文件上传上限（MB），不能超过 documentsize\n";
     return out;
 }
 
@@ -522,11 +549,16 @@ int ParseRules(const std::string& text, ServerRules* rules) {
         if (name == "registerinterval") parsed.registerIntervalSec = static_cast<int>(number);
         if (name == "maxaccounts") parsed.maxAccounts = static_cast<int>(number);
         if (name == "offlinemessages") parsed.offlineMessages = static_cast<int>(number);
+        if (name == "webuploadmb") parsed.webUploadMb = static_cast<int>(number);
         ++count;
     }
     // 文件里可能把两个值写成互相矛盾的样子，这里把 documentsize 夹到不超过 maxservertemp
     if (parsed.documentSizeMb > parsed.maxServerTempMb) {
         parsed.documentSizeMb = parsed.maxServerTempMb;
+    }
+    // 网页版上限同样不能越过单文件上限
+    if (parsed.webUploadMb > parsed.documentSizeMb) {
+        parsed.webUploadMb = parsed.documentSizeMb;
     }
     *rules = parsed;
     return count;

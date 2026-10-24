@@ -210,6 +210,8 @@ bool IsOpNick(const std::string& nick);
 std::string MintOpSession(const std::string& nick);
 bool OpSessionNick(const std::string& id, std::string* nick);
 std::string RandomHex(int bytes);
+// 网页版单文件上传上限，跟着 chatrule 的 webuploadmb 走（定义在管理员那一节）
+int WebUploadLimitMb();
 
 class Session : public dchat::ChatCoreDelegate,
                 public std::enable_shared_from_this<Session> {
@@ -313,8 +315,11 @@ public:
             }
             // 网页版走的是"一帧把整个文件塞进 WebSocket"，太大的文件不现实。
             // 桌面端没有这个限制（它直接读盘分块发）。
-            if (bytes.size() > 8ull * 1024 * 1024) {
-                SendLine(std::string("ERROR\t网页版上传上限 8 MB，更大的文件请用桌面客户端"));
+            // 上限由 chatrule 的 webuploadmb 决定，不再是写死的 8 MB。
+            const int limitMb = WebUploadLimitMb();
+            if (bytes.size() > static_cast<std::size_t>(limitMb) * 1024ull * 1024ull) {
+                SendLine("ERROR\t网页版单文件上限 " + std::to_string(limitMb) +
+                         " MB（由 chatrule 的 webuploadmb 控制），更大的文件请用桌面客户端");
                 return;
             }
             ++uploadSerial_;
@@ -696,7 +701,7 @@ const char* kIndexHtml = R"HTML(<!doctype html>
 <main><aside id="rooms"></aside><div id="log"></div></main>
 <footer>
   <input id="input" placeholder="说点什么…（/help 看指令，/rooms 看会话，/get <id> 下载文件）" disabled>
-  <button class="ghost" id="pick" disabled title="发文件（上限 8 MB）">📎</button>
+  <button class="ghost" id="pick" disabled title="发文件（上限 __UPLOAD_MB__ MB）">📎</button>
   <button id="send" disabled>发送</button>
 </footer>
 <input type="file" id="file" style="display:none">
@@ -721,6 +726,9 @@ const char* kIndexHtml = R"HTML(<!doctype html>
 // 前端算出来的那一段未必和服务端路由一致。房间号在网关侧已校验过只含
 // [a-z0-9_-]，填进字符串字面量不会有转义问题。
 window.DCHAT_ROOM = "__ROOM_ID__";
+// 单文件上传上限（MB），由服务器 chatrule 的 webuploadmb 决定、网关填进来。
+// 前端这道检查只是为了早一步拦住、少传一趟——真正的闸在网关和服务器上。
+const UPLOAD_MB = __UPLOAD_MB__;
 </script>
 <script>
 const logEl = document.getElementById('log');
@@ -956,7 +964,8 @@ sendEl.addEventListener('click', submit);
 inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
 
 // 发文件：读成 Base64 一帧发过去。网关那边解码写临时文件再走 /send。
-// 上限 8 MB —— 网页版是把整个文件塞进一帧 WebSocket，再大就不合适了
+// 上限由 chatrule 的 webuploadmb 决定（以前是写死的 8 MB）——
+// 网页版是把整个文件塞进一帧 WebSocket，所以它和桌面端的 documentsize 分开。
 // （桌面端没这个限制，它直接读盘分块发）。
 const pickEl = document.getElementById('pick');
 const fileEl = document.getElementById('file');
@@ -964,8 +973,8 @@ pickEl.addEventListener('click', () => fileEl.click());
 fileEl.addEventListener('change', () => {
   const f = fileEl.files[0];
   if (!f) return;
-  if (f.size > 8 * 1024 * 1024) {
-    add('err', '网页版上传上限 8 MB，更大的文件请用桌面客户端');
+  if (f.size > UPLOAD_MB * 1024 * 1024) {
+    add('err', '网页版单文件上限 ' + UPLOAD_MB + ' MB（服务器设置），更大的文件请用桌面客户端');
     fileEl.value = '';
     return;
   }
@@ -1397,15 +1406,19 @@ bool IsWebRoomId(const std::string& text) {
     return true;
 }
 
-/** 把房间号填进页面占位符。房间号已过 IsWebRoomId，不含任何要转义的字符。 */
-std::string FillRoom(const char* page, const std::string& roomId) {
+/** 把页面里的占位符换成实际值。房间号已过 IsWebRoomId，不含要转义的字符；上限是数字。 */
+std::string FillPage(const char* page, const std::string& roomId) {
     std::string html = page;
-    const std::string token = "__ROOM_ID__";
-    std::size_t at = html.find(token);
-    while (at != std::string::npos) {
-        html.replace(at, token.size(), roomId);
-        at = html.find(token, at + roomId.size());
-    }
+    auto replaceAll = [&html](const std::string& token, const std::string& value) {
+        std::size_t at = html.find(token);
+        while (at != std::string::npos) {
+            html.replace(at, token.size(), value);
+            at = html.find(token, at + value.size());
+        }
+    };
+    replaceAll("__ROOM_ID__", roomId);
+    // 上传上限放进页面，页面上的提示文字和前端那道预检才和服务器一致
+    replaceAll("__UPLOAD_MB__", std::to_string(WebUploadLimitMb()));
     return html;
 }
 
@@ -1589,7 +1602,7 @@ void ServeConnection(dchat::sock::Handle handle) {
     if (route == "/" || route == "/index.html") {
         // 也要走一次 FillRoom（房间号填空）：否则页面里留着字面量 "__ROOM_ID__"，
         // 前端会把它当成房间名去 /open，等于每次打开首页都白报一条错。
-        reply("200 OK", "text/html; charset=utf-8", FillRoom(kIndexHtml, ""));
+        reply("200 OK", "text/html; charset=utf-8", FillPage(kIndexHtml, ""));
     } else if (route == "/download") {
         reply("200 OK", "text/html; charset=utf-8", kDownloadHtml);
     } else if (g_config.adminPort > 0 && (route == "/admin" || route.rfind("/admin/", 0) == 0)) {
@@ -1686,13 +1699,13 @@ void ServeConnection(dchat::sock::Handle handle) {
         const bool isRoomPath = !segments.empty() && segments[0] == "room";
         if (isRoomPath && segments.size() == 1) {
             // /room 单独访问：当成首页（没指定哪个房间）
-            reply("200 OK", "text/html; charset=utf-8", FillRoom(kIndexHtml, ""));
+            reply("200 OK", "text/html; charset=utf-8", FillPage(kIndexHtml, ""));
         } else if (isRoomPath && segments.size() == 2 && IsWebRoomId(segments[1])) {
-            reply("200 OK", "text/html; charset=utf-8", FillRoom(kIndexHtml, segments[1]));
+            reply("200 OK", "text/html; charset=utf-8", FillPage(kIndexHtml, segments[1]));
         } else if (isRoomPath && segments.size() == 3 && segments[2] == "settings" &&
                    IsWebRoomId(segments[1])) {
             reply("200 OK", "text/html; charset=utf-8",
-                  FillRoom(kRoomSettingsHtml, segments[1]));
+                  FillPage(kRoomSettingsHtml, segments[1]));
         } else {
             reply("404 Not Found", "text/plain; charset=utf-8",
                   "not found　（房间是 /room/<房间名>，房间设置是 /room/<房间名>/settings）");
@@ -1738,6 +1751,7 @@ const AdminRuleMeta kAdminRules[] = {
     {"registerinterval", false, "同一 IP 两次注册的最小间隔（秒），0 = 不限制"},
     {"maxaccounts", false, "账号总数上限，0 = 不限制"},
     {"offlinemessages", false, "登录时最多补发多少条离线消息，0 = 不补发"},
+    {"webuploadmb", false, "网页版单文件上传上限（MB），不能超过 documentsize"},
 };
 
 std::string RandomHex(int bytes) {
@@ -1900,6 +1914,46 @@ std::string AdminCall(const std::string& request) {
         reply = reply.substr(firstNewline + 1);
     }
     return reply;
+}
+
+// ---------------------------------------------------------------------------
+// 网页版单文件上传上限
+//
+// 以前这个值是写死在这份文件里的 8 MB 常量：服务器上的 chatrule 管不到它，
+// 管理员把 documentsize 调到 200 MB，网页版还是只让传 8 MB，而且页面上那句
+// 「上限 8 MB」也不会变。现在它归 chatrule 的 webuploadmb 管。
+//
+// 值从管理通道的 LIST 拿（和 /admin 页面完全同一个来源，不会出现两套数）。
+// 缓存 5 秒：页面每次请求都会问，但没必要每次都连一次 5556。
+// ---------------------------------------------------------------------------
+constexpr int kWebUploadFallbackMb = 8;
+
+int WebUploadLimitMb() {
+    static std::mutex mutex;
+    static int cached = kWebUploadFallbackMb;
+    static std::time_t stamp = 0;
+    std::lock_guard<std::mutex> lock(mutex);
+    const std::time_t now = std::time(nullptr);
+    if (stamp != 0 && now - stamp < 5) return cached;
+
+    int value = kWebUploadFallbackMb;
+    const std::string listing = AdminCall("LIST");
+    std::size_t from = 0;
+    while (from < listing.size()) {
+        const std::size_t end = listing.find('\n', from);
+        const std::string line =
+            listing.substr(from, end == std::string::npos ? std::string::npos : end - from);
+        from = (end == std::string::npos) ? listing.size() : end + 1;
+        const std::size_t tab = line.find('\t');
+        if (tab == std::string::npos) continue;
+        if (line.substr(0, tab) != "webuploadmb") continue;
+        const int parsed = std::atoi(line.c_str() + static_cast<std::ptrdiff_t>(tab) + 1);
+        if (parsed > 0) value = parsed;
+        break;
+    }
+    cached = value;
+    stamp = now;
+    return cached;
 }
 
 /** 从 Cookie 头里取某个名字的值。 */
