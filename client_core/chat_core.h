@@ -159,6 +159,15 @@ public:
     const std::vector<MemberInfo>& CurrentMembers() const { return members_; }
     /** 最后一次 `/find` 的结果。 */
     const std::vector<GroupHit>& LastGroupHits() const { return groupHits_; }
+    /**
+     * 三张列表各自的版本号：收到对应的 `_END` 时 +1。
+     *
+     * 给界面用，判断「这批数据收全了没有」——网页版要把结果写成结构化的帧推给
+     * 浏览器，不能发一半就开始画。单纯看 size() 不行：两次搜索结果可能一样多。
+     */
+    unsigned GroupHitsVersion() const { return groupHitsVersion_; }
+    unsigned MembersVersion() const { return membersVersion_; }
+    unsigned PendingVersion() const { return pendingVersion_; }
     /** 服务端有没有确认 rooms1 能力。 */
     bool RoomsCapable() const { return roomsCapable_; }
     /** 待审的入群申请（当前会话的）。`/audit` 会重新拉一次。 */
@@ -240,6 +249,10 @@ private:
     std::vector<RoomInfo> rooms_;
     std::vector<MemberInfo> members_;
     std::vector<GroupHit> groupHits_;
+    // 列表版本号（见头文件里的访问器）
+    unsigned groupHitsVersion_ = 0;
+    unsigned membersVersion_ = 0;
+    unsigned pendingVersion_ = 0;
     std::string currentRoom_;
     bool roomsCapable_ = false;
     // 每个房间已经显示到第几条历史。用来给 RHIST 去重：

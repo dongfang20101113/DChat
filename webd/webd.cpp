@@ -233,7 +233,10 @@ public:
 
     /** 处理浏览器发来的一行（见文件头的协议说明）。 */
     void OnBrowserLine(const std::string& line) {
-        std::fprintf(stderr, "[ws] 浏览器输入: %s\n", line.c_str());
+        // 日志只留前一段：上传/语音的帧里是几十 KB 的 Base64，
+        // 原样打出来会把日志撑爆，还泄漏文件内容。
+        std::fprintf(stderr, "[ws] 浏览器输入: %.120s%s\n", line.c_str(),
+                     line.size() > 120 ? "…" : "");
         std::fflush(stderr);
         const std::size_t tab = line.find('\t');
         const std::string command = Lower(Trim(tab == std::string::npos ? line : line.substr(0, tab)));
@@ -344,6 +347,82 @@ public:
             core_->SubmitInput("/send " + path);
             return;
         }
+        // ---- 房间面板要的三张"列表"：光是敲 /find 只会把结果打成一堆文字，
+        //      图形界面要的是结构化数据，所以这里读 ChatCore 收好的结果再推出去 ----
+        if (command == "find") {
+            if (!core_ || !core_->LoggedIn()) {
+                SendLine(std::string("ERROR\t还没登录"));
+                return;
+            }
+            const std::string keyword = Trim(rest);
+            if (keyword.empty()) {
+                SendLine(std::string("ERROR\t搜什么？给个关键词"));
+                return;
+            }
+            core_->SubmitInput("/find " + keyword);
+            DumpWhenReady(0, core_->GroupHitsVersion());
+            return;
+        }
+        if (command == "audit") {
+            if (!core_ || !core_->LoggedIn()) {
+                SendLine(std::string("ERROR\t还没登录"));
+                return;
+            }
+            core_->SubmitInput("/audit");
+            DumpWhenReady(2, core_->PendingVersion());
+            return;
+        }
+        if (command == "members") {
+            if (!core_ || !core_->LoggedIn()) {
+                SendLine(std::string("ERROR\t还没登录"));
+                return;
+            }
+            // 成员表是进房间时服务端推的，这里不用再请求，直接把手上这份发过去
+            DumpMembers();
+            return;
+        }
+        if (command == "voice") {
+            // VOICE \t <WAV 的 Base64>
+            //
+            // 录音在浏览器里完成（16 kHz / 单声道 / 16 位 PCM WAV，和另外三端一致），
+            // 网关这边只做"落盘 + 以 kind=voice 上传"——服务器和另外几端就靠
+            // kind 这一格判断这是语音，**不看扩展名**。
+            if (!core_ || !core_->LoggedIn()) {
+                SendLine(std::string("ERROR\t还没登录"));
+                return;
+            }
+            std::vector<unsigned char> bytes;
+            if (!dchat::Base64Decode(Trim(rest), &bytes) || bytes.empty()) {
+                SendLine(std::string("ERROR\t语音数据解码失败"));
+                return;
+            }
+            const int limitMb = WebUploadLimitMb();
+            if (bytes.size() > static_cast<std::size_t>(limitMb) * 1024ull * 1024ull) {
+                SendLine("ERROR\t语音太大（上限 " + std::to_string(limitMb) +
+                         " MB），录短一点");
+                return;
+            }
+            ++uploadSerial_;
+            ::mkdir("webd-uploads", 0755);
+            const std::string dir = "webd-uploads/" + std::to_string(uploadSerial_);
+            ::mkdir(dir.c_str(), 0755);
+            const std::string path = dir + "/voice.wav";
+            FILE* file = std::fopen(path.c_str(), "wb");
+            if (file == nullptr) {
+                SendLine(std::string("ERROR\t网关写不了临时文件"));
+                return;
+            }
+            std::fwrite(bytes.data(), 1, bytes.size(), file);
+            std::fclose(file);
+            std::string error;
+            const std::string localId = core_->Files().Upload(path, "voice", &error);
+            if (localId.empty()) {
+                SendLine("ERROR\t语音发送失败：" + error);
+                return;
+            }
+            SendLine("INFO\t🎤 语音已发出（" + std::to_string(bytes.size()) + " 字节）");
+            return;
+        }
         if (command == "quit") {
             Close();
             return;
@@ -376,8 +455,9 @@ public:
                 SendLine("ERROR\t" + message.text);
                 return;
             case dchat::ChatMessage::Kind::FileOffer:
-                SendLine("INFO\t附件 " + message.fileId + "：" + message.text +
-                         "（在输入框里发 /get " + message.fileId + " 下载）");
+                // 附件卡片：带 isVoice，页面据此画「▶ 播放」还是「⬇ 下载」
+                SendLine("FILEOFFER\t" + message.fileId + "\t" +
+                         (message.isVoice ? "1" : "0") + "\t" + message.text);
                 return;
             case dchat::ChatMessage::Kind::System:
             case dchat::ChatMessage::Kind::Notice:
@@ -416,7 +496,9 @@ public:
         SendLine("SYS\t彩色聊天：" + std::string(enabled ? "开" : "关"));
     }
     void OnVoiceCommand(const std::string&) override {
-        SendLine(std::string("ERROR\t网页版暂不支持录音"));
+        // 录音在网页版是**浏览器**的事（getUserMedia + 自己拼 WAV），核心只负责
+        // "把这件事转交给界面"。有人手敲 /voice 时提示一句就够了。
+        SendLine(std::string("INFO\t网页版录音请点输入框右边的 🎤 按钮"));
     }
 
     /** 发一帧 WebSocket 文本帧。**加锁**：接收线程和 WS 线程都会调。 */
@@ -524,6 +606,65 @@ private:
      * FileTransfers::LocalPathFor()：拿到路径就登记 + 通知浏览器。
      * 不能阻塞在 WS 线程上等 —— 那条线程还要收浏览器的其他消息。
      */
+    // ---- 房间面板要的三张列表：推结构化数据，不是一堆文字 ----
+
+    void DumpGroupHits() {
+        if (!core_) return;
+        const auto& hits = core_->LastGroupHits();
+        SendLine("GHITS\t" + std::to_string(hits.size()));
+        for (const auto& hit : hits) {
+            SendLine("GHIT\t" + hit.id + "\t" + hit.name + "\t" + std::to_string(hit.members) +
+                     "\t" + std::to_string(hit.maxMembers) + "\t" + hit.joinMode);
+        }
+        SendLine(std::string("GHITS_END"));
+    }
+
+    void DumpMembers() {
+        if (!core_) return;
+        const auto& members = core_->CurrentMembers();
+        SendLine("MEMBERS\t" + std::to_string(members.size()));
+        for (const auto& member : members) {
+            SendLine("MEMBER\t" + member.nick + "\t" + member.role + "\t" + member.display);
+        }
+        SendLine(std::string("MEMBERS_END"));
+    }
+
+    void DumpPending() {
+        if (!core_) return;
+        const auto& pending = core_->PendingRequests();
+        SendLine("PENDING\t" + std::to_string(pending.size()));
+        for (const std::string& nick : pending) SendLine("REQ\t" + nick);
+        SendLine(std::string("PENDING_END"));
+    }
+
+    /**
+     * 等这一批收全了再推。
+     *
+     * `kind`：0 = 搜索结果（等 GHIT_END），2 = 待审申请（等 GREQ_END）。
+     * 轮询 50 ms、最多 4 秒；超时就把手上这份推过去——总比让面板一直转圈好。
+     * 用版本号而不是 size() 判断，是因为两次搜索结果可能一样多。
+     */
+    void DumpWhenReady(int kind, unsigned before) {
+        std::weak_ptr<Session> weak = shared_from_this();
+        std::thread([weak, kind, before]() {
+            for (int i = 0; i < 80; ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                auto self = weak.lock();
+                if (!self || !self->core_) return;
+                const unsigned now = (kind == 0) ? self->core_->GroupHitsVersion()
+                                                 : self->core_->PendingVersion();
+                if (now == before) continue;
+                if (kind == 0) self->DumpGroupHits();
+                else self->DumpPending();
+                return;
+            }
+            auto self = weak.lock();
+            if (!self) return;
+            if (kind == 0) self->DumpGroupHits();
+            else self->DumpPending();
+        }).detach();
+    }
+
     void StartBrowserDownload(const std::string& id) {
         if (id.empty() || !core_) {
             SendLine(std::string("ERROR\t用法：/get <附件id>"));
@@ -694,6 +835,7 @@ const char* kIndexHtml = R"HTML(<!doctype html>
   <button id="menu" title="会话列表">☰</button>
   <b>dchat</b><span id="state">未连接</span><span id="where"></span>
   <span style="flex:1"></span>
+  <button id="btnPanel" class="ghost" title="房间" style="padding:4px 9px;font-size:13px">＋</button>
   <a id="adminlink" href="/admin" style="display:none;font-size:13px">管理</a>
   <a id="rset" href="#" style="display:none;font-size:13px">房间设置</a>
   <a href="/download" style="font-size:13px">下载客户端</a>
@@ -702,6 +844,7 @@ const char* kIndexHtml = R"HTML(<!doctype html>
 <footer>
   <input id="input" placeholder="说点什么…（/help 看指令，/rooms 看会话，/get <id> 下载文件）" disabled>
   <button class="ghost" id="pick" disabled title="发文件（上限 __UPLOAD_MB__ MB）">📎</button>
+  <button class="ghost" id="mic" disabled title="按住说话（点一下开始，再点一下发送）">🎤</button>
   <button id="send" disabled>发送</button>
 </footer>
 <input type="file" id="file" style="display:none">
@@ -849,7 +992,10 @@ function connect(host, user, pass, reg) {
       case 'STATE':
         setState(f[1] + (f[2] ? '　' + f[2] : ''), f[1] === '已登录');
         if (f[1] === '已登录') {
-          inputEl.disabled = false; sendEl.disabled = false; pickEl.disabled = false; inputEl.focus();
+          inputEl.disabled = false; sendEl.disabled = false; pickEl.disabled = false;
+          const micEl = document.getElementById('mic');
+          if (micEl) micEl.disabled = false;
+          inputEl.focus();
           // `/房间名` 进来的：登录成功后自动切到那个房间。
           // 断线重连后要再走一遍——服务端那边是个全新会话，房间是空的。
           if (wantRoom && !openedPageRoom) {
@@ -861,6 +1007,8 @@ function connect(host, user, pass, reg) {
           openedPageRoom = false;
         }
         break;
+      // 房间面板 / 语音 / 指令面板的帧交给第二个 script（它挂在这个钩子上）
+      default: if (window.__EXTRA_FRAME__) window.__EXTRA_FRAME__(f); break;
     }
   };
   ws.onclose = () => {
@@ -987,7 +1135,431 @@ fileEl.addEventListener('change', () => {
   reader.readAsDataURL(f);
   fileEl.value = '';
 });
-</script></body></html>
+</script>
+<!-- ==================== 房间面板 / 语音 / 指令面板 ==================== -->
+<style>
+#rpanel{position:fixed;inset:0;background:rgba(8,8,10,.72);display:none;z-index:50;
+  align-items:center;justify-content:center;padding:16px}
+#rpanel.on{display:flex}
+.sheet{background:#232329;border:1px solid #3a3a42;border-radius:14px;width:520px;
+  max-width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
+.tabs{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid #33333a;flex-wrap:wrap}
+.tabs button{padding:6px 12px;border-radius:8px;border:0;background:#2a2a31;color:#c9c9d1;
+  font:inherit;font-size:13px;cursor:pointer}
+.tabs button.on{background:#2f6fed;color:#fff}
+.pbody{padding:14px 16px;overflow:auto;flex:1}
+.pbody input,.pbody select{padding:8px 10px;border-radius:8px;border:1px solid #3a3a42;
+  background:#2a2a31;color:#e6e6e6;font:inherit;width:100%;box-sizing:border-box}
+.prow{display:flex;gap:8px;align-items:center;padding:9px 0;border-bottom:1px solid #2c2c33}
+.prow .g{flex:1;min-width:0}
+.prow .g b{font-size:14px}.prow .g span{display:block;color:#8a8a94;font-size:12px}
+.prow button{padding:6px 10px;border-radius:7px;border:0;background:#2f6fed;color:#fff;
+  font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}
+.prow button.ghost{background:#33333c}
+.prow button.warn{background:#a33}
+.pbody .tip{color:#8a8a94;font-size:12px;padding:10px 0}
+.pbody h4{margin:14px 0 6px;font-size:13px;color:#8a8a94;font-weight:600}
+@media(max-width:640px){.sheet{max-height:92vh}.pbody{padding:12px}}
+</style>
+<div id="rpanel"><div class="sheet">
+  <div class="tabs">
+    <button data-tab="find" class="on">搜索</button>
+    <button data-tab="create">建群</button>
+    <button data-tab="members">成员</button>
+    <button data-tab="manage">管理</button>
+    <button data-tab="cmd">指令</button>
+    <span style="flex:1"></span>
+    <button id="rclose" class="ghost">关闭</button>
+  </div>
+  <div class="pbody" id="ptab-find">
+    <input id="findKw" placeholder="群关键词（群必须开了「向公众展示」才搜得到）">
+    <div style="height:8px"></div>
+    <button id="findGo" style="width:100%;padding:10px;border:0;border-radius:8px;background:#2f6fed;color:#fff;font:inherit;cursor:pointer">搜索</button>
+    <div id="findList"></div>
+  </div>
+  <div class="pbody" id="ptab-create" style="display:none">
+    <input id="newId" placeholder="群 ID（3-16 位小写字母/数字/_/-）">
+    <div style="height:8px"></div>
+    <input id="newName" placeholder="群名称">
+    <div style="height:8px"></div>
+    <button id="createGo" style="width:100%;padding:10px;border:0;border-radius:8px;background:#2f6fed;color:#fff;font:inherit;cursor:pointer">创建</button>
+    <div class="tip">ID 建好不能改；名称以后能在「房间设置」里改。</div>
+  </div>
+  <div class="pbody" id="ptab-members" style="display:none">
+    <button id="membersGo" style="width:100%;padding:10px;border:0;border-radius:8px;background:#33333c;color:#e6e6e6;font:inherit;cursor:pointer">刷新成员表</button>
+    <div id="memberList"></div>
+  </div>
+  <div class="pbody" id="ptab-manage" style="display:none">
+    <h4>群公告</h4>
+    <input id="annText" placeholder="留空 = 查看；填内容 = 设为公告">
+    <div style="height:8px"></div>
+    <button id="annGo" style="width:100%;padding:10px;border:0;border-radius:8px;background:#2f6fed;color:#fff;font:inherit;cursor:pointer">设置公告</button>
+    <h4>入群申请</h4>
+    <button id="auditGo" style="width:100%;padding:10px;border:0;border-radius:8px;background:#33333c;color:#e6e6e6;font:inherit;cursor:pointer">刷新待审</button>
+    <div id="pendingList"></div>
+    <h4>我</h4>
+    <input id="nickText" placeholder="群昵称（只在这个群显示）">
+    <div style="height:8px"></div>
+    <button id="nickGo" style="width:100%;padding:10px;border:0;border-radius:8px;background:#33333c;color:#e6e6e6;font:inherit;cursor:pointer">改群昵称</button>
+    <h4>危险操作</h4>
+    <button id="leaveGo" style="width:100%;padding:10px;border:0;border-radius:8px;background:#a33;color:#fff;font:inherit;cursor:pointer">退出当前群</button>
+    <div style="height:8px"></div>
+    <button id="deleteGo" style="width:100%;padding:10px;border:0;border-radius:8px;background:#a33;color:#fff;font:inherit;cursor:pointer">解散当前群（仅群主）</button>
+    <div class="tip" id="manageTip"></div>
+  </div>
+  <div class="pbody" id="ptab-cmd" style="display:none">
+    <div class="tip">客户端指令的图形入口。管理员指令要 op 身份，服务器会再校验一次。</div>
+    <h4>玩家管理（op）</h4>
+    <input id="cmdNick" placeholder="昵称">
+    <div style="height:8px"></div>
+    <div style="display:flex;gap:8px"><button id="cmdBan" style="flex:1;padding:9px;border:0;border-radius:8px;background:#a33;color:#fff;font:inherit;cursor:pointer">封禁</button>
+    <button id="cmdKick" style="flex:1;padding:9px;border:0;border-radius:8px;background:#a33;color:#fff;font:inherit;cursor:pointer">踢出</button>
+    <button id="cmdUnban" style="flex:1;padding:9px;border:0;border-radius:8px;background:#33333c;color:#e6e6e6;font:inherit;cursor:pointer">解封</button></div>
+    <h4>公告 / 管理员</h4>
+    <input id="cmdSay" placeholder="全服公告内容">
+    <div style="height:8px"></div>
+    <div style="display:flex;gap:8px"><button id="cmdSayGo" style="flex:1;padding:9px;border:0;border-radius:8px;background:#2f6fed;color:#fff;font:inherit;cursor:pointer">发公告</button>
+    <button id="cmdOps" style="flex:1;padding:9px;border:0;border-radius:8px;background:#33333c;color:#e6e6e6;font:inherit;cursor:pointer">看管理员</button></div>
+    <h4>黑名单</h4>
+    <input id="blockNick" placeholder="昵称">
+    <div style="height:8px"></div>
+    <div style="display:flex;gap:8px"><button id="blockGo" style="flex:1;padding:9px;border:0;border-radius:8px;background:#33333c;color:#e6e6e6;font:inherit;cursor:pointer">屏蔽</button>
+    <button id="unblockGo" style="flex:1;padding:9px;border:0;border-radius:8px;background:#33333c;color:#e6e6e6;font:inherit;cursor:pointer">取消屏蔽</button>
+    <button id="blocksGo" style="flex:1;padding:9px;border:0;border-radius:8px;background:#33333c;color:#e6e6e6;font:inherit;cursor:pointer">看名单</button></div>
+    <div class="tip" id="cmdTip"></div>
+  </div>
+</div></div>
+<script>
+// ============================================================================
+// 房间面板 / 语音 / 指令面板
+//
+// 和上面的聊天脚本共用全局作用域（两个 classic script 共享同一个全局词法环境），
+// 所以 send() / add() / currentRoom 能直接用；帧通过上面 switch 的 default
+// 分支转进来（window.__EXTRA_FRAME__）。
+// ============================================================================
+
+let myRole = 'member';   // 我在当前房间的角色（SETTINGS 帧带过来）
+let panelRoom = '';      // 面板针对的房间
+
+function q(id) { return document.getElementById(id); }
+function pickTab(name) {
+  for (const b of document.querySelectorAll('#rpanel .tabs button[data-tab]')) {
+    b.classList.toggle('on', b.dataset.tab === name);
+  }
+  for (const id of ['find', 'create', 'members', 'manage', 'cmd']) {
+    q('ptab-' + id).style.display = (id === name) ? '' : 'none';
+  }
+  if (name === 'manage') {
+    const can = (myRole === 'owner' || myRole === 'admin');
+    q('manageTip').textContent = can
+      ? '你是' + (myRole === 'owner' ? '群主' : '管理员') + '，下面的操作都能用。'
+      : '你是普通成员：公告/审核/踢人会被服务器拒绝（改群昵称、退群仍可用）。';
+  }
+}
+function openPanel(tab) {
+  q('rpanel').classList.add('on');
+  pickTab(tab || 'find');
+  if ((tab || 'find') === 'members') send('MEMBERS');
+}
+function closePanel() { q('rpanel').classList.remove('on'); }
+
+q('btnPanel').addEventListener('click', () => openPanel('manage'));
+q('rclose').addEventListener('click', closePanel);
+q('rpanel').addEventListener('click', (e) => { if (e.target.id === 'rpanel') closePanel(); });
+for (const b of document.querySelectorAll('#rpanel .tabs button[data-tab]')) {
+  b.addEventListener('click', () => {
+    pickTab(b.dataset.tab);
+    if (b.dataset.tab === 'members') send('MEMBERS');
+  });
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePanel(); });
+
+// ---- 搜索 ----
+q('findGo').addEventListener('click', () => {
+  const kw = q('findKw').value.trim();
+  if (!kw) return;
+  q('findList').innerHTML = '<div class="tip">搜索中…</div>';
+  send('FIND\t' + kw);
+});
+q('findKw').addEventListener('keydown', (e) => { if (e.key === 'Enter') q('findGo').click(); });
+
+function joinModeText(mode) {
+  return mode === 'direct' ? '可直接加入' : mode === 'auto' ? '自动审核' : '需管理员同意';
+}
+function renderHits(rows) {
+  const box = q('findList');
+  box.innerHTML = '';
+  if (!rows.length) {
+    box.innerHTML = '<div class="tip">没搜到。群必须由管理员打开「向公众展示」才会出现。</div>';
+    return;
+  }
+  for (const h of rows) {
+    const row = document.createElement('div'); row.className = 'prow';
+    const g = document.createElement('div'); g.className = 'g';
+    const b = document.createElement('b'); b.textContent = h.name || h.id;
+    const s = document.createElement('span');
+    s.textContent = h.id + '　' + h.members + '/' + h.max + ' 人　' + joinModeText(h.mode);
+    g.append(b, s);
+    const btn = document.createElement('button'); btn.textContent = '加入';
+    btn.addEventListener('click', () => { send('INPUT\t/join ' + h.id); add('sys', '已请求加入 ' + h.id); });
+    row.append(g, btn);
+    box.appendChild(row);
+  }
+}
+
+// ---- 建群 ----
+q('createGo').addEventListener('click', () => {
+  const id = q('newId').value.trim(), name = q('newName').value.trim();
+  if (!id || !name) { add('err', '群 ID 和名称都要填'); return; }
+  send('INPUT\t/create ' + id + ' ' + name);
+  add('sys', '正在建群 ' + id + ' …');
+  closePanel();
+});
+
+// ---- 成员 ----
+q('membersGo').addEventListener('click', () => send('MEMBERS'));
+function roleText(role) { return role === 'owner' ? '群主' : role === 'admin' ? '管理员' : '成员'; }
+function renderMembers(rows) {
+  const box = q('memberList');
+  box.innerHTML = '';
+  if (!rows.length) { box.innerHTML = '<div class="tip">没有成员数据（先进一个群，再点刷新）。</div>'; return; }
+  const can = (myRole === 'owner' || myRole === 'admin');
+  for (const m of rows) {
+    const row = document.createElement('div'); row.className = 'prow';
+    const g = document.createElement('div'); g.className = 'g';
+    const b = document.createElement('b');
+    b.textContent = m.nick + (m.display ? '（' + m.display + '）' : '');
+    const s = document.createElement('span'); s.textContent = roleText(m.role);
+    g.append(b, s); row.appendChild(g);
+    if (can && m.role !== 'owner') {
+      const r = document.createElement('button'); r.className = 'ghost';
+      r.textContent = (m.role === 'admin') ? '降为成员' : '设为管理员';
+      r.addEventListener('click', () => {
+        send('INPUT\t/role ' + m.nick + ' ' + (m.role === 'admin' ? 'member' : 'admin'));
+      });
+      const k = document.createElement('button'); k.className = 'warn'; k.textContent = '踢出';
+      k.addEventListener('click', () => { if (confirm('把 ' + m.nick + ' 踢出该群？')) send('INPUT\t/gkick ' + m.nick); });
+      row.append(r, k);
+    }
+    box.appendChild(row);
+  }
+}
+
+// ---- 管理 ----
+q('annGo').addEventListener('click', () => {
+  const t = q('annText').value.trim();
+  if (!t) { send('INPUT\t/announce'); return; }
+  send('INPUT\t/announce ' + t);
+  add('sys', '已提交公告');
+});
+q('auditGo').addEventListener('click', () => {
+  q('pendingList').innerHTML = '<div class="tip">拉取中…</div>';
+  send('AUDIT');
+});
+q('nickGo').addEventListener('click', () => {
+  const n = q('nickText').value.trim();
+  if (!n) { add('err', '群昵称不能为空'); return; }
+  send('INPUT\t/nick ' + n);
+});
+q('leaveGo').addEventListener('click', () => {
+  if (!panelRoom) { add('err', '还没进任何群'); return; }
+  if (!confirm('退出 ' + panelRoom + ' ？')) return;
+  send('INPUT\t/leave ' + panelRoom);
+});
+q('deleteGo').addEventListener('click', () => {
+  if (!panelRoom) { add('err', '还没进任何群'); return; }
+  if (!confirm('解散 ' + panelRoom + ' ？不可恢复。')) return;
+  send('INPUT\t/delete ' + panelRoom);
+});
+function renderPending(rows) {
+  const box = q('pendingList');
+  box.innerHTML = '';
+  if (!rows.length) { box.innerHTML = '<div class="tip">没有待审的申请。</div>'; return; }
+  for (const nick of rows) {
+    const row = document.createElement('div'); row.className = 'prow';
+    const g = document.createElement('div'); g.className = 'g';
+    const b = document.createElement('b'); b.textContent = nick;
+    g.appendChild(b); row.appendChild(g);
+    const ok = document.createElement('button'); ok.textContent = '同意';
+    ok.addEventListener('click', () => { send('INPUT\t/ok ' + nick); row.remove(); });
+    const no = document.createElement('button'); no.className = 'warn'; no.textContent = '拒绝';
+    no.addEventListener('click', () => { send('INPUT\t/no ' + nick); row.remove(); });
+    row.append(ok, no);
+    box.appendChild(row);
+  }
+}
+
+// ---- 指令面板（走和聊天框完全相同的路径，权限由服务器判）----
+q('cmdBan').addEventListener('click', () => { const n = q('cmdNick').value.trim(); if (n) send('INPUT\t/ban ' + n); });
+q('cmdKick').addEventListener('click', () => { const n = q('cmdNick').value.trim(); if (n) send('INPUT\t/kick ' + n); });
+q('cmdUnban').addEventListener('click', () => { const n = q('cmdNick').value.trim(); if (n) send('INPUT\t/unban ' + n); });
+q('cmdSayGo').addEventListener('click', () => { const t = q('cmdSay').value.trim(); if (t) send('INPUT\t/say ' + t); });
+q('cmdOps').addEventListener('click', () => send('INPUT\t/ops'));
+q('blockGo').addEventListener('click', () => { const n = q('blockNick').value.trim(); if (n) send('INPUT\t/block ' + n); });
+q('unblockGo').addEventListener('click', () => { const n = q('blockNick').value.trim(); if (n) send('INPUT\t/unblock ' + n); });
+q('blocksGo').addEventListener('click', () => send('INPUT\t/blocks'));
+
+// ---- 收网关推来的结构化列表 ----
+let pendingHits = null, pendingMembers = null, pendingReqs = null;
+let pendingPlay = '';
+
+window.__EXTRA_FRAME__ = function (f) {
+  switch (f[0]) {
+    case 'SETTINGS':
+      panelRoom = f[1] || '';
+      myRole = f[3] || 'member';
+      break;
+    case 'GHITS':    pendingHits = []; break;
+    case 'GHIT':
+      if (pendingHits) {
+        pendingHits.push({id: f[1], name: f[2], members: f[3], max: f[4], mode: f[5]});
+      }
+      break;
+    case 'GHITS_END':
+      if (pendingHits) { renderHits(pendingHits); pendingHits = null; }
+      break;
+    case 'MEMBERS':   pendingMembers = []; break;
+    case 'MEMBER':
+      if (pendingMembers) pendingMembers.push({nick: f[1], role: f[2], display: f[3] || ''});
+      break;
+    case 'MEMBERS_END':
+      if (pendingMembers) { renderMembers(pendingMembers); pendingMembers = null; }
+      break;
+    case 'PENDING':   pendingReqs = []; break;
+    case 'REQ':       if (pendingReqs) pendingReqs.push(f[1]); break;
+    case 'PENDING_END':
+      if (pendingReqs) { renderPending(pendingReqs); pendingReqs = null; }
+      break;
+    case 'FILEOFFER': {
+      // 附件卡片：语音给「▶ 播放」，普通文件给下载
+      const d = document.createElement('div'); d.className = 'row sys';
+      const a = document.createElement('a');
+      a.href = '#';
+      a.textContent = (f[2] === '1' ? '▶ 播放语音 ' : '⬇ 下载文件 ') + f[1] +
+                      (f[3] ? '（' + f[3] + '）' : '');
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        pendingPlay = (f[2] === '1' ? f[1] : '');
+        send('INPUT\t/get ' + f[1]);
+        if (f[2] !== '1') add('sys', '正在取 ' + f[1] + '，取好后点这里下载');
+      });
+      d.appendChild(a);
+      const logEl = document.getElementById('log');
+      logEl.appendChild(d);
+      logEl.scrollTop = logEl.scrollHeight;
+      break;
+    }
+    case 'FILE': {
+      // 网关已经把附件落到本机：语音直接放，其它给下载链接
+      if (pendingPlay && f[1] === pendingPlay) {
+        const audio = new Audio('/file/' + encodeURIComponent(f[1]));
+        audio.controls = true;
+        audio.play().catch(() => add('sys', '浏览器拦了自动播放，点播放键即可'));
+        const d = document.createElement('div'); d.className = 'row sys';
+        d.appendChild(audio);
+        document.getElementById('log').appendChild(d);
+        pendingPlay = '';
+      }
+      break;
+    }
+  }
+};
+
+// ============================================================================
+// 语音：在浏览器里录 16 kHz / 单声道 / 16 位 PCM WAV
+//
+// 格式和桌面端、安卓端**必须一致**，否则发出去对方放不出来
+// （src/voice_notes.h：16000 Hz、单声道、16 位、2 MB 上限、最短 1 秒）。
+// 浏览器没有现成的 WAV 录音，所以自己从 Web Audio 取 PCM 再拼 WAV 头。
+// ============================================================================
+let voice = null;
+
+function wavHeader(dataBytes, sampleRate) {
+  const buf = new ArrayBuffer(44);
+  const v = new DataView(buf);
+  const put = (off, s) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
+  put(0, 'RIFF'); v.setUint32(4, 36 + dataBytes, true); put(8, 'WAVE');
+  put(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true);              // 单声道
+  v.setUint32(24, sampleRate, true);
+  v.setUint32(28, sampleRate * 2, true); // 字节率
+  v.setUint16(32, 2, true);              // 块对齐
+  v.setUint16(34, 16, true);             // 16 位
+  put(36, 'data'); v.setUint32(40, dataBytes, true);
+  return new Uint8Array(buf);
+}
+
+async function startVoice() {
+  if (!navigator.mediaDevices || !window.AudioContext) {
+    add('err', '这个浏览器不支持录音（需要 https 或 localhost）');
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1}});
+    const ctx = new AudioContext({sampleRate: 16000});
+    const src = ctx.createMediaStreamSource(stream);
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    const chunks = [];
+    proc.onaudioprocess = (e) => { chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+    src.connect(proc);
+    proc.connect(ctx.destination);
+    voice = {stream, ctx, src, proc, chunks, startedAt: Date.now()};
+    q('mic').textContent = '⏹';
+    q('mic').style.color = '#ff6b6b';
+    add('sys', '🎤 正在录音…再点一下发送（最多 64 秒）');
+    voice.timer = setTimeout(() => stopVoice(), 64000);
+  } catch (err) {
+    add('err', '录不了音：' + err.message);
+  }
+}
+
+async function stopVoice() {
+  const v = voice;
+  if (!v) return;
+  voice = null;
+  clearTimeout(v.timer);
+  q('mic').textContent = '🎤';
+  q('mic').style.color = '';
+  v.stream.getTracks().forEach((t) => t.stop());
+  try { v.proc.disconnect(); } catch (e) {}
+  try { await v.ctx.close(); } catch (e) {}
+
+  const seconds = (Date.now() - v.startedAt) / 1000;
+  if (seconds < 1) { add('err', '太短了（至少 1 秒）'); return; }
+
+  let total = 0;
+  for (const c of v.chunks) total += c.length;
+  const all = new Float32Array(total);
+  let off = 0;
+  for (const c of v.chunks) { all.set(c, off); off += c.length; }
+
+  // 有些浏览器不认 sampleRate 请求，所以按真实采样率重采样到 16 kHz
+  const srcRate = v.ctx.sampleRate || 16000;
+  const ratio = srcRate / 16000;
+  const outLen = Math.floor(all.length / ratio);
+  const data = new Uint8Array(outLen * 2);
+  for (let i = 0; i < outLen; i++) {
+    let s = all[Math.floor(i * ratio)] || 0;
+    s = s < -1 ? -1 : (s > 1 ? 1 : s);
+    const v16 = s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7fff);
+    data[i * 2] = v16 & 0xFF;
+    data[i * 2 + 1] = (v16 >> 8) & 0xFF;
+  }
+  if (data.length > 2 * 1024 * 1024) { add('err', '超过 64 秒上限，没发'); return; }
+
+  const header = wavHeader(data.length, 16000);
+  const whole = new Uint8Array(header.length + data.length);
+  whole.set(header, 0);
+  whole.set(data, header.length);
+  let bin = '';
+  for (let i = 0; i < whole.length; i++) bin += String.fromCharCode(whole[i]);
+  send('VOICE\t' + btoa(bin));
+  add('sys', '🎤 语音已提交（' + Math.round(seconds) + ' 秒，' + whole.length + ' 字节）');
+}
+
+q('mic').addEventListener('click', () => { voice ? stopVoice() : startVoice(); });
+</script>
+</body></html>
 )HTML";
 
 // ============================================================================

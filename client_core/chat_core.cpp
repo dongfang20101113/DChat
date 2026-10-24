@@ -221,6 +221,41 @@ void ChatCore::HandleLine(const std::string& line) {
         Notice(body, ChatMessage::Kind::System);
         return;
     }
+    if (message.command == "RFILE_OFFER") {
+        // RFILE_OFFER <房间ID> <上传者> <附件ID> <文件名B64> <字节数> <有缩略图> [种类]
+        //
+        // 大厅走 FILE_OFFER，其余会话在**最前面多一层房间号**。以前这里完全没处理，
+        // 结果群里的附件卡片在共用这套解析的客户端（Linux CLI、网页版）上根本不出现
+        // ——只能看到一行原始协议文本。桌面端有自己的解析器，所以只有这两个端受影响。
+        //
+        // 按房间分：就在当前会话就原地显示，不是当前会话就在正文前标上房间名
+        // （和 RMSG 的处理方式一致）。
+        if (words.size() >= 3) {
+            std::string payload;
+            for (std::size_t i = 1; i < words.size(); ++i) {
+                if (!payload.empty()) payload += " ";
+                payload += words[i];
+            }
+            const FileOffer offer = ParseFileOffer(payload);
+            if (offer.valid) {
+                ChatMessage card;
+                card.valid = true;
+                card.kind = ChatMessage::Kind::FileOffer;
+                card.nick = offer.owner;
+                card.fileId = offer.id;
+                card.isVoice = offer.IsVoice();
+                card.text = offer.Describe();
+                if (words[0] != currentRoom_) {
+                    const RoomInfo* room = FindRoom(words[0]);
+                    const std::string label =
+                        (room != nullptr && !room->name.empty()) ? room->name : words[0];
+                    card.text = "[" + label + "] " + card.text;
+                }
+                Push(card);
+            }
+        }
+        return;
+    }
     if (message.command == "FILE_OFFER") {
         const FileOffer offer = ParseFileOffer(line);
         if (!offer.valid) return;
@@ -729,7 +764,10 @@ bool ChatCore::HandleRoomLine(const std::string& command, const std::vector<std:
         }
         return true;
     }
-    if (command == "RMEMBERS_END") return true;
+    if (command == "RMEMBERS_END") {
+        ++membersVersion_;  // 这批成员收全了
+        return true;
+    }
     if (command == "RMSG") {
         // RMSG <时间> <房间ID> <昵称> <文本>　非大厅消息
         //
@@ -782,6 +820,7 @@ bool ChatCore::HandleRoomLine(const std::string& command, const std::vector<std:
         return true;
     }
     if (command == "GHIT_END") {
+        ++groupHitsVersion_;  // 搜索结果收全了
         if (groupHits_.empty()) {
             Notice("没搜到群（群必须由管理员勾选「向公众展示」才会出现在搜索里）");
         } else {
@@ -821,6 +860,7 @@ bool ChatCore::HandleRoomLine(const std::string& command, const std::vector<std:
         return true;
     }
     if (command == "GREQ_END") {
+        ++pendingVersion_;  // 待审名单收全了
         if (pending_.empty()) Notice("现在没有待审核的入群申请");
         return true;
     }
