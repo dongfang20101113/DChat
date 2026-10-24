@@ -872,11 +872,32 @@ Config g_config;
 bool ReadRequest(dchat::sock::Handle handle, std::string* out) {
     std::string buffer;
     char chunk[4096];
-    while (buffer.find("\r\n\r\n") == std::string::npos) {
+    std::size_t headerEnd = std::string::npos;
+    while ((headerEnd = buffer.find("\r\n\r\n")) == std::string::npos) {
         const std::ptrdiff_t got = dchat::sock::Receive(handle, chunk, sizeof(chunk));
         if (got <= 0) return false;
         buffer.append(chunk, static_cast<std::size_t>(got));
         if (buffer.size() > 64 * 1024) return false;  // 请求头不该这么大
+    }
+
+    // **请求体也要读**。之前只读到请求头结束就返回，于是表单 POST 上来 body 是空的
+    // —— 登录密码根本收不到。按 Content-Length 把剩余字节读完再交出去。
+    std::size_t contentLength = 0;
+    {
+        const std::string head = Lower(buffer.substr(0, headerEnd));
+        const std::string needle = "content-length:";
+        const std::size_t at = head.find(needle);
+        if (at != std::string::npos) {
+            contentLength = static_cast<std::size_t>(
+                std::atoi(buffer.c_str() + static_cast<std::ptrdiff_t>(at + needle.size())));
+        }
+    }
+    if (contentLength > 64 * 1024) return false;  // 不信任客户端声明的长度
+    const std::size_t want = headerEnd + 4 + contentLength;
+    while (buffer.size() < want) {
+        const std::ptrdiff_t got = dchat::sock::Receive(handle, chunk, sizeof(chunk));
+        if (got <= 0) break;
+        buffer.append(chunk, static_cast<std::size_t>(got));
     }
     *out = buffer;
     return true;
@@ -1040,9 +1061,15 @@ void ServeConnection(dchat::sock::Handle handle) {
         SendAll(handle, body.data(), body.size());
     };
 
-    if (path == "/" || path == "/index.html") {
+    // 路由要**剥掉查询串**再比：`/?_=123` 之前直接 404（截图时踩到的）。
+    // 注意 WebSocket 分支在上面，那条要用查询串里的 ?server=，不能用这个。
+    std::string route = path;
+    const std::size_t qmark = route.find('?');
+    if (qmark != std::string::npos) route = route.substr(0, qmark);
+
+    if (route == "/" || route == "/index.html") {
         reply("200 OK", "text/html; charset=utf-8", kIndexHtml);
-    } else if (path == "/download") {
+    } else if (route == "/download") {
         reply("200 OK", "text/html; charset=utf-8", kDownloadHtml);
     } else if (path.rfind("/dl/", 0) == 0) {
         // 下载：文件名里不许出现 .. 或 /
