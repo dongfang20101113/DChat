@@ -50,4 +50,62 @@ inline void ReconnectReset(int* attempt) {
     if (attempt != nullptr) *attempt = 0;
 }
 
+/**
+ * 断线重连的**状态机**（纯逻辑，不碰 socket / 界面 / 定时器）。
+ *
+ * 抽出来的理由：真正容易写错的是"什么时候该连、什么时候该放弃、什么时候不该连"，
+ * 而这些判断在真实环境里几乎没法稳定复现（要拔网线、要服务器崩、要用户恰好点断开）。
+ * 界面那边于是只剩三行胶水：拿到延迟就 SetTimer，拿到负数就提示放弃。
+ *
+ * 三条规则：
+ * 1. **只有"登录过之后被动掉线"才自动重连**。用户自己点断开的、或者压根没登录
+ *    成功的，都不该自己连回去（否则会出现"我明明关了它自己又连上了"）。
+ * 2. 每次失败 `attempt + 1` 并退避；到 `maxAttempts` 放弃。
+ * 3. 登录成功立刻清零，下一次掉线重新从 3 秒开始。
+ */
+struct ReconnectState {
+    ReconnectPolicy policy;
+    bool wanted = false;
+    int attempt = 0;
+
+    /**
+     * 掉线时调用。返回下一次重连前该等多少毫秒；**< 0 表示不重连**。
+     *
+     * `wasLoggedIn`：掉线前是否已经登录成功。
+     * `userAskedToDisconnect`：这次断开是不是用户自己点的。
+     */
+    int OnDisconnected(bool wasLoggedIn, bool userAskedToDisconnect) {
+        if (!wasLoggedIn || userAskedToDisconnect) {
+            Cancel();
+            return -1;
+        }
+        wanted = true;
+        attempt = 0;
+        return ReconnectDelayMs(policy, attempt);
+    }
+
+    /** 一次尝试失败后调用。返回下一次等待毫秒；< 0 表示放弃。 */
+    int OnAttemptFailed() {
+        if (!wanted) return -1;
+        ++attempt;
+        if (ReconnectGiveUp(policy, attempt)) {
+            Cancel();
+            return -1;
+        }
+        return ReconnectDelayMs(policy, attempt);
+    }
+
+    /** 连上并且登录成功：清零并停止重连。 */
+    void OnSucceeded() {
+        wanted = false;
+        attempt = 0;
+    }
+
+    /** 用户主动断开 / 程序退出：停止重连。 */
+    void Cancel() {
+        wanted = false;
+        attempt = 0;
+    }
+};
+
 }  // namespace dchat

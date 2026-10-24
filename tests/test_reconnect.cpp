@@ -77,6 +77,47 @@ int main() {
         Check(true, "传 nullptr 不崩");
     }
 
+    std::printf("[6] 状态机：什么时候该连、什么时候不该连\n");
+    {
+        ReconnectState state;
+
+        // 没登录成功过（比如密码错、连不上）—— 不该自动重连
+        Check(state.OnDisconnected(false, false) < 0, "没登录成功过就不重连");
+
+        // 用户自己点的断开 —— 不该自动重连（否则会出现「我关了它自己又连上」）
+        Check(state.OnDisconnected(true, true) < 0, "用户主动断开就不重连");
+        Check(!state.wanted, "主动断开后状态是「不想连」");
+
+        // 登录过、被动掉线 —— 该连，第一次等 3 秒
+        Check(state.OnDisconnected(true, false) == 3000, "被动掉线第一次等 3 秒");
+        Check(state.wanted, "状态是「想连」");
+
+        // 连续失败按退避走
+        Check(state.OnAttemptFailed() == 6000, "失败一次后等 6 秒");
+        Check(state.OnAttemptFailed() == 12000, "再失败等 12 秒");
+        Check(state.attempt == 2, "尝试次数记到 2");
+
+        // 连上就清零
+        state.OnSucceeded();
+        Check(!state.wanted && state.attempt == 0, "连上后清零");
+        Check(state.OnDisconnected(true, false) == 3000, "再次掉线重新从 3 秒开始");
+
+        // 一直失败到放弃
+        ReconnectState giveUp;
+        giveUp.OnDisconnected(true, false);
+        int last = -1;
+        for (int i = 0; i < giveUp.policy.maxAttempts; ++i) {
+            last = giveUp.OnAttemptFailed();
+        }
+        Check(last < 0, "试满次数后返回负数（放弃）");
+        Check(!giveUp.wanted, "放弃后状态是「不想连」");
+        Check(giveUp.OnAttemptFailed() < 0, "放弃之后再问仍然是不连");
+
+        // 放弃后用户手动连上，状态机不能残留
+        giveUp.OnSucceeded();
+        Check(giveUp.attempt == 0, "放弃后重新成功也要从零开始");
+    }
+
     std::printf("\n%d 项检查，失败 %d 项。\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

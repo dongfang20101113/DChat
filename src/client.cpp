@@ -42,6 +42,7 @@
 #include "image_preview.h"
 #include "input_history.h"
 #include "protocol.h"
+#include "reconnect.h"       // 断线重连的退避策略与状态机（纯逻辑，有单测）
 #include "crypto.h"
 
 #include <fstream>  // TOFU：记住服务器指纹（dchat-known-servers.txt）
@@ -68,6 +69,11 @@ constexpr UINT WM_APP_FILEOPEN = WM_APP + 6;   // 点了缩略图 -> 用默认�
 constexpr UINT WM_APP_VOICECLICK = WM_APP + 7;  // 点到了语音气泡 -> 播放/暂停
 constexpr UINT_PTR kRecordTimerId = 1;          // 录音计时（每 200ms 刷一次界面）
 constexpr UINT_PTR kStateTimerId = 2;           // 自动化测试的状态导出（见 WriteClientState）
+constexpr UINT_PTR kReconnectTimerId = 4;       // 断线自动重连的等待计时
+// 重连尝试的结果（lParam 是 new 出来的 std::string* 错误原因）。
+// 为什么要把"连接"扔到工作线程再回消息：TCP 连不上的时候 connect() 会卡
+// 十几秒，直接放在 WM_TIMER 里会把界面冻住，连窗口都拖不动。
+constexpr UINT WM_APP_RECONNECT = WM_APP + 41;
 
 // 给客户端窗口发 WM_COPYDATA 时用的标识（脚本/其他程序可以借此让它发送文件）
 constexpr ULONG_PTR kFileSendMagic = 0x43484131;  // 'CHA1'
@@ -463,6 +469,10 @@ std::string g_host = "127.0.0.1";
 std::string g_nick = "user";
 bool g_authPending = false;      // 已发出登录/注册请求，等待服务器回应
 bool g_authed = false;           // 已经登录成功（连上但还没登录时状态栏显示"未登录"）
+// 断线自动重连：状态机负责"该不该连、等多久"，这里只放它的实例。
+dchat::ReconnectState g_reconnect;
+// 用户自己点了「断开」：这个标志保证 WM_APP_CLOSED 不会把它又连回去。
+bool g_userDisconnected = false;
 bool g_heartbeatPending = false; // 刚发过心跳 PING（对应的 PONG 不显示成提示）
 int g_maxFileMb = 64;            // 服务器当前的单文件上限（由服务器发的 RULES 行更新）
 int g_port = dchat::kDefaultPort;
@@ -542,6 +552,10 @@ void WriteClientState() {
     out += "conn.connected=" + std::to_string(IsConnected() ? 1 : 0) + "\n";
     out += "conn.authed=" + std::to_string(g_authed ? 1 : 0) + "\n";
     out += "conn.nick=" + EscapeStateValue(g_nick) + "\n";
+    // 断线自动重连的状态：验证「拔网线 → 退避重试 → 恢复后自动连回」时靠这几个字段断言，
+    // 不用去猜界面上的提示文字。
+    out += "reconnect.wanted=" + std::to_string(g_reconnect.wanted ? 1 : 0) + "\n";
+    out += "reconnect.attempt=" + std::to_string(g_reconnect.attempt) + "\n";
     out += "current.index=" + std::to_string(g_currentSession) + "\n";
     out += "current.id=" + EscapeStateValue((g_currentSession >= 0 && g_currentSession < sessionCount)
                                                 ? g_sessions[g_currentSession].id
@@ -4348,7 +4362,7 @@ void ClearLoginReminder() {
     std::remove(kLoginReminderFile);
 }
 
-bool PromptAuth(HWND parent, AuthDialogState& state) {
+bool PromptAuth(HWND parent, AuthDialogState& state, bool forceAutoLogin = false) {
     static bool registered = false;
     if (!registered) {
         const wchar_t* classes[2] = {L"DchatLoginDlg", L"DchatRegisterDlg"};
@@ -4373,7 +4387,9 @@ bool PromptAuth(HWND parent, AuthDialogState& state) {
     // 要连的一致。否则用户想换个账号/换台服务器的时候会被自动登录顶回去。
     static bool autoLoginTried = false;
     bool autoSubmit = false;
-    if (!autoLoginTried) {
+    // forceAutoLogin：断线重连时用。这时候进程早就不是第一次弹这个窗口了，
+    // 但**必须**再自动登一次，否则用户得在每次掉线后手打一遍密码。
+    if (!autoLoginTried || forceAutoLogin) {
         autoLoginTried = true;
         SavedLogin saved;
         if (LoadLoginReminder(&saved) && saved.host == g_host && saved.port == g_port) {
@@ -6208,9 +6224,82 @@ void DoConnect(HWND hwnd) {
 
 void DoDisconnect(HWND hwnd) {
     if (!IsConnected()) return;
+    g_userDisconnected = true;          // 用户自己要断的，别自动连回去
+    g_reconnect.Cancel();
+    KillTimer(hwnd, kReconnectTimerId);
     SendRawLine(dchat::BuildLine("QUIT"));
     DisconnectFromServer(true);
     (void)hwnd;
+}
+
+// ---------------- 断线自动重连 ----------------
+//
+// 分工：判断（该不该连、等多久、何时放弃）全在 dchat::ReconnectState 里，
+// 有单测；这里只做三件事——SetTimer、在到点时发起一次连接、把结果喂回状态机。
+
+/** 按状态机给的延迟挂一次重连计时；负数 = 不连了。 */
+void ScheduleReconnect(HWND hwnd, int delayMs) {
+    KillTimer(hwnd, kReconnectTimerId);
+    if (delayMs < 0) {
+        if (g_authed || g_reconnect.wanted) {
+            ViewAddItem(ItemKind::Error,
+                        "自动重连已放弃（试了 " + std::to_string(g_reconnect.policy.maxAttempts) +
+                            " 次）。网络好了可以手动点「连接」。",
+                        dchat::NowTimeString());
+        }
+        return;
+    }
+    ViewAddItem(ItemKind::Notice,
+                "连接断了，" + std::to_string(delayMs / 1000) + " 秒后自动重连（第 " +
+                    std::to_string(g_reconnect.attempt + 1) + "/" +
+                    std::to_string(g_reconnect.policy.maxAttempts) + " 次）",
+                dchat::NowTimeString());
+    SetTimer(hwnd, kReconnectTimerId, static_cast<UINT>(delayMs), nullptr);
+}
+
+/** 到点了：在工作线程里连一次，结果回到界面线程处理。 */
+void BeginReconnectAttempt(HWND hwnd) {
+    if (!g_reconnect.wanted || IsConnected()) return;
+    const std::string host = g_host;
+    const int port = g_port;
+    ViewAddItem(ItemKind::Notice, "正在重连 " + host + ":" + std::to_string(port) + " ...",
+                dchat::NowTimeString());
+    std::thread([hwnd, host, port]() {
+        std::string error;
+        const bool ok = ConnectToServer(host, port, &error);
+        auto* payload = new std::string(error);
+        if (!PostMessageW(hwnd, WM_APP_RECONNECT, ok ? 1 : 0,
+                          reinterpret_cast<LPARAM>(payload))) {
+            delete payload;
+        }
+    }).detach();
+}
+
+/** 重连连上了：用记住的账号自动登录（forceAutoLogin）。 */
+void FinishReconnectAttempt(HWND hwnd, bool connected, const std::string& error) {
+    if (!g_reconnect.wanted) return;  // 期间用户自己断开/退出了
+    if (!connected) {
+        ViewAddItem(ItemKind::Error, "重连失败：" + error, dchat::NowTimeString());
+        ScheduleReconnect(hwnd, g_reconnect.OnAttemptFailed());
+        return;
+    }
+    g_authed = false;
+    g_userDisconnected = false;
+    UpdateStatus();
+    AuthDialogState auth;
+    auth.host = g_host;
+    auth.port = g_port;
+    if (PromptAuth(hwnd, auth, true)) {
+        if (g_nick.empty()) g_nick = auth.user;
+        g_reconnect.OnSucceeded();
+        ViewAddItem(ItemKind::Notice, "已重新连上：" + g_nick, dchat::NowTimeString());
+        UpdateStatus();
+        return;
+    }
+    // 自动登录没成功（没有记住的账号、或者用户把窗口关了）
+    if (IsConnected()) SendRawLine(dchat::BuildLine("QUIT"));
+    DisconnectFromServer(false);
+    ScheduleReconnect(hwnd, g_reconnect.OnAttemptFailed());
 }
 
 void SendCurrentInput() {
@@ -7205,6 +7294,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     g_authPending = false;
                     if (!notice.text.empty()) g_nick = notice.text;
                     g_authed = true;
+                    // 登录成功 = 这轮重连结束，退避计数清零
+                    g_reconnect.OnSucceeded();
+                    g_userDisconnected = false;
+                    KillTimer(hwnd, kReconnectTimerId);
                     // 认证确认成功之后才"记住账号" —— 失败的登录不能覆盖掉
                     // 上一次能用的凭据（比如临时输错一次密码）。
                     if (!g_pendingUser.empty()) {
@@ -7487,7 +7580,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 return 0;
             }
+            if (wp == kReconnectTimerId) {
+                KillTimer(hwnd, kReconnectTimerId);
+                BeginReconnectAttempt(hwnd);
+                return 0;
+            }
             break;
+        case WM_APP_RECONNECT: {
+            // 重连尝试的结果（工作线程连的，这里回到界面线程收尾）
+            std::unique_ptr<std::string> error(reinterpret_cast<std::string*>(lp));
+            FinishReconnectAttempt(hwnd, wp == 1, error ? *error : std::string());
+            return 0;
+        }
         case WM_APP_XFER: {
             // 发送线程的进度/结果回到界面线程
             auto* event = reinterpret_cast<TransferEvent*>(lp);
@@ -7530,6 +7634,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return TRUE;
         }
         case WM_APP_CLOSED: {
+            // **先记下掉线前是否登录过**：下面 DisconnectFromServer 会把它清掉，
+            // 而"登录过之后被动掉线"正是自动重连的唯一触发条件。
+            const bool wasLoggedIn = g_authed;
             if (g_authDlg) {
                 // 登录 / 注册还没完成就掉线了：让账号窗口把原因显示出来
                 AuthDialogOnResult(false, L"与服务器的连接已断开");
@@ -7537,6 +7644,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_sock != INVALID_SOCKET) {
                 DisconnectFromServer(false);
                 ViewAddItem(ItemKind::Notice, "与服务器的连接已断开", dchat::NowTimeString());
+            }
+            // 自动重连（用户自己点断开时 g_userDisconnected 为真，状态机会拒绝）
+            if (wasLoggedIn) {
+                ScheduleReconnect(hwnd, g_reconnect.OnDisconnected(true, g_userDisconnected));
             }
             return 0;
         }
