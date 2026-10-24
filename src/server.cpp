@@ -18,11 +18,16 @@
 #include <thread>
 #include <vector>
 
+#ifndef _WIN32
+#include <sys/stat.h>  // chmod：房间密钥和口令文件都收成 0600
+#endif
+
 #include "protocol.h"
 #include "history_store.h"
 #include "register_guard.h"
 #include "auth.h"
 #include "crypto.h"
+#include "file_crypto.h"
 #include "file_transfer.h"
 #include "server_rules.h"
 #include "server_command.h"
@@ -219,6 +224,93 @@ void RemoveStoredFileQuiet(const std::string& path) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
     if (ec) Log("failed to remove staged file " + path + "：" + ec.message());
+}
+
+// ---------------------------------------------------------------------------
+// 群文件加密的密钥与整文件读写
+// ---------------------------------------------------------------------------
+//
+// ⚠️ **密钥不能放在 g_filesRoot（dchat-files）下面**：ClearFilesDir() 每次启动都会
+// 把那个目录连同各房间子目录整个清掉，密钥会跟着被删 —— 之前加密的文件就全废了，
+// 而且不会报任何错，直到有人去下载才发现。所以单独放一个目录。
+//
+// 另一个刻意的地方：密钥**只按房间 ID** 存，不跟着房间的生命周期走。房间被解散后
+// 密钥文件留着无害（没有对应文件可解），但能防"解散后重建同名群、误读旧数据"。
+std::string g_roomKeysRoot = "dchat-roomkeys";
+std::mutex g_roomKeysMutex;
+std::map<std::string, dchat::FileKey> g_roomKeys;
+
+std::string RoomKeyPath(const std::string& roomId) {
+    return g_roomKeysRoot + "/" + roomId + ".key";
+}
+
+/** 取（必要时生成）房间密钥。**调用方不能持有 g_roomsMutex / g_filesMutex**。 */
+bool RoomFileKey(const std::string& roomId, bool create, dchat::FileKey* out) {
+    if (out == nullptr || roomId.empty()) return false;
+    std::lock_guard<std::mutex> lock(g_roomKeysMutex);
+    const auto found = g_roomKeys.find(roomId);
+    if (found != g_roomKeys.end()) {
+        *out = found->second;
+        return true;
+    }
+    {
+        FILE* file = std::fopen(RoomKeyPath(roomId).c_str(), "rb");
+        if (file != nullptr) {
+            dchat::FileKey key(dchat::kFileKeyBytes, 0);
+            const std::size_t got = std::fread(key.data(), 1, key.size(), file);
+            std::fclose(file);
+            if (got == key.size()) {
+                g_roomKeys[roomId] = key;
+                *out = key;
+                return true;
+            }
+            Log("！房间密钥文件长度不对（应该是 " + std::to_string(dchat::kFileKeyBytes) +
+                " 字节）：" + RoomKeyPath(roomId));
+        }
+    }
+    if (!create) return false;
+    dchat::FileKey key;
+    if (!dchat::GenerateFileKey(&key)) return false;
+    std::error_code ec;
+    std::filesystem::create_directories(g_roomKeysRoot, ec);
+    FILE* file = std::fopen(RoomKeyPath(roomId).c_str(), "wb");
+    if (file == nullptr) {
+        Log("！房间密钥写入失败：" + RoomKeyPath(roomId));
+        return false;
+    }
+    std::fwrite(key.data(), 1, key.size(), file);
+    std::fclose(file);
+#ifndef _WIN32
+    ::chmod(RoomKeyPath(roomId).c_str(), 0600);  // 和口令文件同级待遇
+#endif
+    g_roomKeys[roomId] = key;
+    *out = key;
+    Log("已生成房间文件密钥：" + RoomKeyPath(roomId));
+    return true;
+}
+
+/** 整文件读入内存。加密/解密都需要完整数据（GCM 要认证整段），所以不支持流式。 */
+bool ReadWholeFile(const std::string& path, std::string* out) {
+    FILE* file = std::fopen(path.c_str(), "rb");
+    if (file == nullptr) return false;
+    out->clear();
+    char buffer[65536];
+    while (true) {
+        const std::size_t got = std::fread(buffer, 1, sizeof(buffer), file);
+        if (got > 0) out->append(buffer, got);
+        if (got < sizeof(buffer)) break;
+    }
+    const bool ok = std::ferror(file) == 0;
+    std::fclose(file);
+    return ok;
+}
+
+bool WriteWholeFile(const std::string& path, const std::string& data) {
+    FILE* file = std::fopen(path.c_str(), "wb");
+    if (file == nullptr) return false;
+    const std::size_t wrote = std::fwrite(data.data(), 1, data.size(), file);
+    std::fclose(file);
+    return wrote == data.size();
 }
 
 // 启动时清空暂存根目录（连同各房间子目录一起）。
@@ -3609,6 +3701,46 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
                 return true;
             }
             upload->committed = true;  // 已交给 StoredFile 管，析构不要再删它
+
+            // ---- 群文件加密：把刚落定的明文换成密文 ----
+            //
+            // 位置很关键：在"改名落定之后、登记之前"。进 g_files 的必须是**最终形态**，
+            // 因为 StoredFile::size 要和磁盘上的字节数一致，否则缓存预算会算错
+            // （加密后大 kFileMagicBytes + kFileIvBytes + kFileTagBytes = 37 字节）。
+            //
+            // 加密失败一律**取消这次上传**：绝不能把一个"半截密文"登记进去 ——
+            // 那会变成谁都下不了的僵尸文件，还占着预算。
+            unsigned long long finalSize = upload->received;
+            bool wantEncrypt = false;
+            {
+                std::lock_guard<std::mutex> lock(g_roomsMutex);
+                const dchat::Room* room = RoomsLocked().Find(upload->roomId);
+                wantEncrypt = (room != nullptr) && room->fileEncryption;
+            }
+            if (wantEncrypt) {
+                dchat::FileKey roomKey;
+                std::string plain;
+                std::string error;
+                std::string blob;
+                if (!RoomFileKey(upload->roomId, true, &roomKey)) {
+                    error = "取不到这个群的文件密钥";
+                } else if (!ReadWholeFile(finalPath, &plain)) {
+                    error = "读不回刚落定的文件";
+                } else if (!dchat::EncryptFileBlob(roomKey, plain, &blob, &error)) {
+                    // error 里已经有原因
+                } else if (!WriteWholeFile(finalPath, blob)) {
+                    error = "密文写盘失败";
+                } else {
+                    finalSize = blob.size();
+                }
+                if (!error.empty()) {
+                    client->SendLine(Timed("ERROR", "群文件加密失败，上传取消：" + error));
+                    Log("upload aborted (encrypt failed): " + client->nick + " " + error);
+                    RemoveStoredFileQuiet(finalPath);
+                    return true;
+                }
+            }
+
             // 房间的缓存预算在这里取一次（它决定这个文件能不能存下、以及要淘汰谁）。
             // 取完就放锁：StoreFile 会拿 g_filesMutex，两把锁不嵌套。
             unsigned long long roomBudget = 0;
@@ -3618,7 +3750,7 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
                 if (room) roomBudget = EffectiveRoomBudget(*room);
             }
             const std::string fileId = StoreFile(upload->roomId, client->nick, upload->nameB64,
-                                                 upload->received, finalPath, upload->thumb,
+                                                 finalSize, finalPath, upload->thumb,
                                                  roomBudget);
             if (fileId.empty()) {
                 client->SendLine(Timed("ERROR", "服务器暂时存不下这个文件（可能超出了这个会话的缓存上限），稍后再试"));
@@ -3773,30 +3905,81 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
         // "服务器是否接受这个 offset" 由 FILE_FAIL 表达。
         // 教训：协议文档写着"加字段只追加在末尾、老客户端读到旧格数就停"，
         // 但**实现里可能有 `!= N` 这种更严的判断**，加字段前必须去客户端确认。
-        bool ok = client->SendLine(dchat::BuildLine(
-            "FILE_BEGIN", file->id + " " + file->nameB64 + " " + std::to_string(file->size)));
-        // 打开磁盘上的暂存文件，按 offset 顺序读出来发走（内容不再驻留内存）
-        std::ifstream in(file->path, std::ios::binary);
-        if (!in) {
-            client->SendLine(dchat::BuildLine("FILE_FAIL", file->id + " 文件已不在暂存目录里"));
-            Log("download failed (staged file missing): " + file->path);
-            return true;
+        // ---- 加密文件：先整段解密，再按明文大小发 ----
+        //
+        // **为什么不能流式**：AES-GCM 要收齐整段密文才能验证标签，所以必须完整读出来。
+        // 代价是下载一个加密文件大约占"文件大小"的内存；这是刻意的取舍（先保证正确）。
+        // 未加密的文件仍走原来的流式路径，内存占用不变。
+        //
+        // **只看文件头魔数，不看房间当前开关**：管理员把开关关掉之后，
+        // 之前加密的文件仍然必须能下载。
+        std::string plainCache;
+        bool encryptedFile = false;
+        {
+            FILE* probe = std::fopen(file->path.c_str(), "rb");
+            if (probe != nullptr) {
+                char head[dchat::kFileMagicBytes] = {0};
+                const std::size_t got = std::fread(head, 1, sizeof(head), probe);
+                std::fclose(probe);
+                encryptedFile = (got == sizeof(head)) &&
+                                (std::memcmp(head, dchat::kFileMagic, sizeof(head)) == 0);
+            }
         }
-        if (resumeFrom > 0) in.seekg(static_cast<std::streamoff>(resumeFrom));
-        for (unsigned long long offset = resumeFrom; ok && offset < file->size;
+        if (encryptedFile) {
+            std::string blob;
+            dchat::FileKey roomKey;
+            std::string error;
+            if (!ReadWholeFile(file->path, &blob)) {
+                error = "读不出来";
+            } else if (!RoomFileKey(file->roomId, false, &roomKey)) {
+                error = "找不到这个群的文件密钥";
+            } else if (!dchat::DecryptFileBlob(roomKey, blob, &plainCache, &error)) {
+                // error 里已经有原因（多半是密钥不对或文件被改过）
+            }
+            if (!error.empty()) {
+                client->SendLine(dchat::BuildLine("FILE_FAIL",
+                                                  file->id + " 文件已加密但解不开：" + error));
+                Log("download failed (decrypt): " + file->id + " " + error);
+                return true;
+            }
+        }
+
+        // **发给客户端的大小是明文大小**。加密后磁盘上那份比原文大 37 字节，
+        // 如果这里报的是密文大小，客户端会一直等那些永远不来的字节 ——
+        // 看着像"下载卡在 99%"，而且不报错。
+        const unsigned long long sendSize = encryptedFile ? plainCache.size() : file->size;
+        bool ok = client->SendLine(dchat::BuildLine(
+            "FILE_BEGIN", file->id + " " + file->nameB64 + " " + std::to_string(sendSize)));
+
+        std::ifstream in;
+        if (!encryptedFile) {
+            // 未加密：保持原来的流式读法（内容不驻留内存）
+            in.open(file->path, std::ios::binary);
+            if (!in) {
+                client->SendLine(dchat::BuildLine("FILE_FAIL", file->id + " 文件已不在暂存目录里"));
+                Log("download failed (staged file missing): " + file->path);
+                return true;
+            }
+            if (resumeFrom > 0) in.seekg(static_cast<std::streamoff>(resumeFrom));
+        }
+        for (unsigned long long offset = resumeFrom; ok && offset < sendSize;
              offset += dchat::kFileChunkBytes) {
-            const unsigned long long remain = file->size - offset;
+            const unsigned long long remain = sendSize - offset;
             const std::size_t length = remain < dchat::kFileChunkBytes
                                            ? static_cast<std::size_t>(remain)
                                            : dchat::kFileChunkBytes;
             std::string buffer(length, '\0');
-            in.read(&buffer[0], static_cast<std::streamsize>(length));
-            if (in.gcount() != static_cast<std::streamsize>(length)) {
-                // 暂存文件在下载过程中被别的线程过期/淘汰掉了。
-                // 客户端会收到不完整的数据并可以重试 —— 现在有断点续传，代价不大。
-                Log("download read failed (staged file gone?): " + file->id);
-                ok = false;
-                break;
+            if (encryptedFile) {
+                buffer.assign(plainCache, static_cast<std::size_t>(offset), length);
+            } else {
+                in.read(&buffer[0], static_cast<std::streamsize>(length));
+                if (in.gcount() != static_cast<std::streamsize>(length)) {
+                    // 暂存文件在下载过程中被别的线程过期/淘汰掉了。
+                    // 客户端会收到不完整的数据并可以重试 —— 现在有断点续传，代价不大。
+                    Log("download read failed (staged file gone?): " + file->id);
+                    ok = false;
+                    break;
+                }
             }
             const std::string chunk = dchat::Base64Encode(
                 reinterpret_cast<const unsigned char*>(buffer.data()), length);

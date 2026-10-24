@@ -176,6 +176,11 @@ struct Room {
     std::string announcement;
     unsigned long long cacheMaxMb = kDefaultGroupCacheMb;  // 服务端保留预算
     bool importantNotice = true;  // 是否允许在本群发"重要提醒"（@全体）
+    // 群文件加密：开启后本群文件在服务端**落盘时是密文**。
+    // 注意这是静态加密（防磁盘/备份泄露），不是端到端——密钥由服务端保管，
+    // 详见 docs/file-encryption.md。加解密全在服务端内部完成，协议不变，
+    // 所以老客户端完全不受影响。
+    bool fileEncryption = false;
 
     bool IsHall() const { return kind == RoomKind::Hall; }
     bool IsDirect() const { return kind == RoomKind::Direct; }
@@ -278,6 +283,7 @@ enum class RoomSettingKey {
     CacheMaxMb,       // 总缓存最大大小（服务端保留预算）
     Announcement,     // 群公告
     ImportantNotice,  // 重要提醒开关
+    FileEncryption,   // 群文件加密（落盘时加密，防磁盘/备份泄露）
 };
 
 bool ParseRoomSettingKey(const std::string& text, RoomSettingKey* out);

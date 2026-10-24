@@ -409,6 +409,9 @@ int main() {
         check(dchat::ParseRoomSettingKey("importantnotice", &key) &&
                   key == dchat::RoomSettingKey::ImportantNotice,
               "解析 importantnotice");
+        check(dchat::ParseRoomSettingKey("fileencryption", &key) &&
+                  key == dchat::RoomSettingKey::FileEncryption,
+              "解析 fileencryption");
         check(!dchat::ParseRoomSettingKey("nosuchkey", &key), "不认识的设置名被拒");
     }
 
@@ -504,6 +507,25 @@ int main() {
         check(change.ok && !room.importantNotice, "关掉消息重要提醒");
         change = dchat::ApplyRoomSetting(&room, dchat::RoomSettingKey::ImportantNotice, "true");
         check(change.ok && room.importantNotice, "打开消息重要提醒");
+
+        // 群文件加密开关
+        check(!room.fileEncryption, "群文件加密默认是关的（升级后行为不变）");
+        change = dchat::ApplyRoomSetting(&room, dchat::RoomSettingKey::FileEncryption, "true");
+        check(change.ok && change.changed && room.fileEncryption, "打开群文件加密");
+        check(change.text.find("不会") != std::string::npos ||
+                  change.text.find("已经存在") != std::string::npos,
+              "开启时明确说了不回溯加密已存在的明文文件");
+        change = dchat::ApplyRoomSetting(&room, dchat::RoomSettingKey::FileEncryption, "true");
+        check(change.ok && !change.changed, "重复开同一个值不算变化（不重复广播）");
+        change = dchat::ApplyRoomSetting(&room, dchat::RoomSettingKey::FileEncryption, "maybe");
+        check(!change.ok, "群文件加密只接受 true / false");
+        change = dchat::ApplyRoomSetting(&room, dchat::RoomSettingKey::FileEncryption, "false");
+        check(change.ok && !room.fileEncryption, "关掉群文件加密");
+        checkText(dchat::RoomSettingLine(room, dchat::RoomSettingKey::FileEncryption),
+                  "RSET " + room.id + " fileencryption false", "RSET 广播里加密关是 false");
+        dchat::ApplyRoomSetting(&room, dchat::RoomSettingKey::FileEncryption, "true");
+        checkText(dchat::RoomSettingLine(room, dchat::RoomSettingKey::FileEncryption),
+                  "RSET " + room.id + " fileencryption true", "RSET 广播里加密开是 true");
 
         // 私聊没有群设置
         dchat::Room dm = dchat::MakeDmRoom("dm-000001", "alice", "bob");
@@ -604,6 +626,7 @@ int main() {
         bob.role = dchat::RoomRole::Admin;
         group.members.push_back(bob);
         group.pending.push_back("carol");
+        group.fileEncryption = true;  // 让下面的往返测试覆盖到这一项
         rooms.push_back(group);
 
         rooms.push_back(dchat::MakeDmRoom("dm-000001", "alice", "dave"));
@@ -634,11 +657,22 @@ int main() {
             check(got->maxMembers == 500, "最大人数往返一致");
             check(got->cacheMaxMb == 128, "缓存上限往返一致");
             check(!got->importantNotice, "重要提醒开关往返一致");
+            check(got->fileEncryption, "群文件加密开关往返一致");
             check(got->members.size() == 2, "成员数往返一致");
             checkText(got->members[0].displayName, "群主大人", "群昵称往返一致");
             check(got->members[0].role == dchat::RoomRole::Owner, "群主角色往返一致");
             check(got->members[1].role == dchat::RoomRole::Admin, "管理员角色往返一致");
             check(got->pending.size() == 1 && got->pending[0] == "carol", "待审队列往返一致");
+        }
+
+        // 老配置文件只有 11 个字段（没有 fileencryption 那一格）。
+        // 必须按"关"处理 —— 升级不能改变已有群的行为。
+        {
+            const std::string legacy = "R\toldgroup\tgroup\t\talice\t100\tdirect\t0\t256\t1\t\n";
+            const std::vector<dchat::Room> oldRooms = dchat::ParseRooms(legacy);
+            check(oldRooms.size() == 1, "11 字段的老配置能解析");
+            check(!oldRooms.empty() && !oldRooms[0].fileEncryption,
+                  "老配置解析后群文件加密是关的（升级不改变行为）");
         }
 
         const dchat::Room* dm = nullptr;

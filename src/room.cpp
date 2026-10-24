@@ -587,6 +587,8 @@ bool ParseRoomSettingKey(const std::string& text, RoomSettingKey* out) {
         key = RoomSettingKey::Announcement;
     } else if (lower == "importantnotice" || lower == "important") {
         key = RoomSettingKey::ImportantNotice;
+    } else if (lower == "fileencryption" || lower == "filecrypted") {
+        key = RoomSettingKey::FileEncryption;
     } else {
         return false;
     }
@@ -610,6 +612,8 @@ const char* RoomSettingKeyText(RoomSettingKey key) {
             return "announcement";
         case RoomSettingKey::ImportantNotice:
             return "importantnotice";
+        case RoomSettingKey::FileEncryption:
+            return "fileencryption";
     }
     return "name";
 }
@@ -630,6 +634,8 @@ std::string RoomSettingLabel(RoomSettingKey key) {
             return "群公告";
         case RoomSettingKey::ImportantNotice:
             return "消息重要提醒";
+        case RoomSettingKey::FileEncryption:
+            return "群文件加密";
     }
     return "";
 }
@@ -649,6 +655,8 @@ std::string RoomSettingRangeText(RoomSettingKey key) {
         case RoomSettingKey::Announcement:
             return "最多 " + std::to_string(kMaxRoomAnnounceChars) + " 个字符";
         case RoomSettingKey::ImportantNotice:
+            return "true / false";
+        case RoomSettingKey::FileEncryption:
             return "true / false";
     }
     return "";
@@ -778,6 +786,21 @@ RoomSettingChange ApplyRoomSetting(Room* room, RoomSettingKey key, const std::st
                                   : "已关闭「消息重要提醒」",
                           allowed ? "true" : "false");
         }
+        case RoomSettingKey::FileEncryption: {
+            bool enabled = false;
+            if (!ParseBool(value, &enabled)) return reject("群文件加密只能是 true 或 false");
+            const bool same = (enabled == room->fileEncryption);
+            room->fileEncryption = enabled;
+            change.changed = !same;
+            // 刻意**不回溯加密**已经存在的明文文件：往回加密要逐个解密再加密，
+            // 中途失败会留下半个损坏文件，风险大于收益。已加密的文件在关掉开关后
+            // 仍然能读（读路径只看文件头魔数，不看这个开关）。
+            return accept(enabled ? "已开启「群文件加密」（之后上传的文件在服务端落盘时是密文；"
+                                    "已经存在的明文文件不会被回溯加密）"
+                                  : "已关闭「群文件加密」（之后上传的文件是明文；"
+                                    "已经加密的文件仍然能正常下载）",
+                          enabled ? "true" : "false");
+        }
     }
     return reject("未知的设置项");
 }
@@ -809,6 +832,9 @@ std::string RoomSettingLine(const Room& room, RoomSettingKey key) {
         case RoomSettingKey::ImportantNotice:
             value = room.importantNotice ? "true" : "false";
             break;
+        case RoomSettingKey::FileEncryption:
+            value = room.fileEncryption ? "true" : "false";
+            break;
     }
     return BuildLine("RSET", room.id + " " + RoomSettingKeyText(key) + " " + value);
 }
@@ -817,7 +843,7 @@ std::vector<RoomSettingKey> AllRoomSettingKeys() {
     return {RoomSettingKey::Name,       RoomSettingKey::MaxMembers,
             RoomSettingKey::JoinMode,   RoomSettingKey::Listed,
             RoomSettingKey::CacheMaxMb, RoomSettingKey::Announcement,
-            RoomSettingKey::ImportantNotice};
+            RoomSettingKey::ImportantNotice, RoomSettingKey::FileEncryption};
 }
 
 // ---------------------------------------------------------------------------
@@ -962,7 +988,7 @@ std::string SerializeRooms(const std::vector<Room>& rooms) {
                "\t" + room.owner + "\t" + std::to_string(room.maxMembers) + "\t" +
                JoinModeText(room.joinMode) + "\t" + (room.listed ? "1" : "0") + "\t" +
                std::to_string(room.cacheMaxMb) + "\t" + (room.importantNotice ? "1" : "0") + "\t" +
-               Base64Encode(room.announcement) + "\n";
+               Base64Encode(room.announcement) + "\t" + (room.fileEncryption ? "1" : "0") + "\n";
         for (const RoomMember& member : room.members) {
             out += "M\t" + room.id + "\t" + member.nick + "\t" + RoomRoleText(member.role) + "\t" +
                    Base64Encode(member.displayName) + "\n";
@@ -1012,6 +1038,9 @@ std::vector<Room> ParseRooms(const std::string& text) {
                     if (ParseUint64(fields[8], &cacheMb)) room.cacheMaxMb = cacheMb;
                     room.importantNotice = (fields[9] == "1");
                     room.announcement = DecodeBase64Text(fields[10]);
+                    // 第 12 个字段是后加的：老配置文件只有 11 个，缺这个字段时按"关"处理，
+                    // 所以升级后行为不变（这也是本项目一贯的约定）。
+                    if (fields.size() >= 12) room.fileEncryption = (fields[11] == "1");
                     rooms.push_back(room);
                 }
             } else if (fields[0] == "M" && fields.size() >= 5) {
