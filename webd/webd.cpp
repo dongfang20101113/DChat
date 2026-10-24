@@ -1187,6 +1187,7 @@ fileEl.addEventListener('change', () => {
     <button data-tab="create">建群</button>
     <button data-tab="members">成员</button>
     <button data-tab="online">在线</button>
+    <button data-tab="account">账号</button>
     <button data-tab="manage">管理</button>
     <button data-tab="cmd">指令</button>
     <span style="flex:1"></span>
@@ -1213,6 +1214,19 @@ fileEl.addEventListener('change', () => {
   <div class="pbody" id="ptab-online" style="display:none">
     <div class="tip">在线的人（不含自己）。点「私聊」开一个一对一会话。</div>
     <div id="onlineList"></div>
+  </div>
+  <div class="pbody" id="ptab-account" style="display:none">
+    <h4>改密码（改的是你自己这个账号）</h4>
+    <input type="password" id="cpNew" placeholder="新密码" autocomplete="new-password">
+    <div style="height:8px"></div>
+    <input type="password" id="cpNew2" placeholder="再输一次" autocomplete="new-password">
+    <div style="height:8px"></div>
+    <button id="cpGo" style="width:100%;padding:10px;border:0;border-radius:8px;background:#a33;color:#fff;font:inherit;cursor:pointer">修改密码</button>
+    <div class="tip">
+      密码强度由服务器校验（太短会被拒）。<br>
+      ⚠️ 当前站点是 <b>http</b>，密码在网络上不加密；改完会清掉本机记住的账号，
+      下次要用新密码重新登录。
+    </div>
   </div>
   <div class="pbody" id="ptab-manage" style="display:none">
     <h4>群公告</h4>
@@ -1271,7 +1285,7 @@ function pickTab(name) {
   for (const b of document.querySelectorAll('#rpanel .tabs button[data-tab]')) {
     b.classList.toggle('on', b.dataset.tab === name);
   }
-  for (const id of ['find', 'create', 'members', 'online', 'manage', 'cmd']) {
+  for (const id of ['find', 'create', 'members', 'online', 'account', 'manage', 'cmd']) {
     q('ptab-' + id).style.display = (id === name) ? '' : 'none';
   }
   if (name === 'online') renderOnline();
@@ -1458,6 +1472,24 @@ q('cmdOps').addEventListener('click', () => send('INPUT\t/ops'));
 q('blockGo').addEventListener('click', () => { const n = q('blockNick').value.trim(); if (n) send('INPUT\t/block ' + n); });
 q('unblockGo').addEventListener('click', () => { const n = q('blockNick').value.trim(); if (n) send('INPUT\t/unblock ' + n); });
 q('blocksGo').addEventListener('click', () => send('INPUT\t/blocks'));
+
+// ---- 账号：改密码 ----
+// 走 /cp（服务器会校验强度，太短/太简单由服务器拒绝并回 ERROR）。
+// 改完把本机记住的账号清掉：留着旧的会自动登录失败，用户看到的只是
+// 「口令不对」，反而不知道是自己刚改过密码。
+q('cpGo').addEventListener('click', () => {
+  const a = q('cpNew').value, b = q('cpNew2').value;
+  if (!a) { add('err', '新密码不能为空'); return; }
+  if (a !== b) { add('err', '两次输入不一致'); return; }
+  if (a.indexOf(' ') >= 0) { add('err', '密码里不能有空格'); return; }
+  send('INPUT\t/cp ' + a);
+  q('cpNew').value = '';
+  q('cpNew2').value = '';
+  try {
+    localStorage.removeItem('dchat_login');
+  } catch (e) { /* 隐私模式忽略 */ }
+  add('sys', '已提交改密码，注意看下面的结果。本机记住的账号已清除，下次请用新密码登录。');
+});
 
 // ---- 收网关推来的结构化列表 ----
 let pendingHits = null, pendingMembers = null, pendingReqs = null;
