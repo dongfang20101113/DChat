@@ -578,8 +578,16 @@ void ChatCore::SubmitInput(const std::string& text) {
         return;
     }
 
-    // 其余指令原样发给服务器（和另外两端一样）
-    if (!connection_.SendLine(text)) {
+    // 其余指令**当普通消息发出去**，不是原样甩给协议层。
+    //
+    // 服务器并不在协议层认 `/指令`：它是在 `MSG` 的正文里判断"这行以 / 开头"，
+    // 再交给 ParseServerCommand 解析（见 server.cpp 的 IsCommandAttempt 那段）。
+    // 所以直接把 `/say hi` 当成一行协议命令发过去，服务器只会看到一条不认识的
+    // 命令（协议解析会把命令名转成大写，于是报「未知命令: /SAY」）。
+    //
+    // 这条以前一直是错的：Linux CLI 和网页版共用这套核心，/ban /kick /op /say
+    // /dm /nick 这些**全都不生效**，只有桌面端（自己拼消息）是好的。
+    if (!SendMessage(text)) {
         Notice("指令发不出去：连接可能已断开", ChatMessage::Kind::Error);
     }
 }
