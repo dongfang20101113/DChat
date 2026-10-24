@@ -382,7 +382,9 @@ int main() {
     std::printf("[11] 群设置权限：管理员可设，普通成员不可\n");
     {
         const std::vector<dchat::RoomSettingKey> keys = dchat::AllRoomSettingKeys();
-        check(keys.size() == 7, "一共 7 个管理员可设项");
+        // 这条断言是**故意写成精确数字**的：设置项数量变化必须被人看见，
+        // 不能悄悄多出来一项（多一项就可能多一个只有管理员能改的面板项）。
+        check(keys.size() == 8, "一共 8 个管理员可设项（2026-10 加了 fileencryption）");
 
         for (dchat::RoomSettingKey key : keys) {
             check(dchat::CanChangeRoomSetting(dchat::RoomRole::Owner, key),
