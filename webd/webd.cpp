@@ -860,6 +860,11 @@ struct Config {
     std::string serverHost = "127.0.0.1";
     int serverPort = 5555;
     std::string dlDir = "./dchat-downloads";
+    // 管理通道：指向服务器 --admin-port 开的那个**仅回环**端口。
+    // 0 = 不启用管理员页面（此时 /admin 直接 404，攻击面为零）。
+    std::string adminHost = "127.0.0.1";
+    int adminPort = 0;
+    std::string adminTokenFile = "/var/lib/dchat/dchat-admin-token.txt";
 };
 
 Config g_config;
