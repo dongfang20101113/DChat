@@ -209,7 +209,10 @@ public:
     }
 
     // ---- WebSocket 的收 ----
-    void Start() { SendLine(std::string("INFO\t网页版已就绪，输入账号登录")); }
+    void Start() {
+        SendLine(std::string("INFO\t网页版已就绪，输入账号登录"));
+        StartRoomListPump();  // 登录后左侧的会话选择器靠它更新
+    }
 
     /** 处理浏览器发来的一行（见文件头的协议说明）。 */
     void OnBrowserLine(const std::string& line) {
@@ -374,6 +377,45 @@ public:
     /** 发一帧 WebSocket 文本帧。**加锁**：接收线程和 WS 线程都会调。 */
     void SendLine(const std::string& text);
 
+    /**
+     * 会话列表变了就推一份结构化的给浏览器（左侧选择器用）。
+     *
+     * **为什么是轮询而不是回调**：ChatCore 没有"房间列表变了"的通知，而列表会因
+     * **别人**建群 / 把你踢了 / 改了群名而变化 —— 光靠"自己发过哪些指令"推不出来。
+     * 一秒比一次、而且只在签名变化时才发，开销可以忽略。
+     */
+    void StartRoomListPump() {
+        std::weak_ptr<Session> weak = shared_from_this();
+        std::thread([weak]() {
+            std::string last;
+            while (true) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                auto self = weak.lock();
+                if (!self) return;
+                if (!self->core_ || !self->core_->LoggedIn()) continue;
+                const auto& rooms = self->core_->Rooms();
+                const std::string current = self->core_->CurrentRoom();
+                std::string signature = current + ";";
+                for (const auto& room : rooms) {
+                    signature += room.id + "|" + room.name + "|" + room.myRole + "|" +
+                                 std::to_string(room.members) + "|" +
+                                 std::to_string(room.maxMembers) + "|" + room.kind + ";";
+                }
+                if (signature == last) continue;
+                last = signature;
+                // 先报行数 + 当前会话，再逐行发，最后 ROOMS_END 收尾
+                // —— 和协议里的 ROOMLIST / ROOMLIST_END 是同一个套路。
+                self->SendLine("ROOMS\t" + std::to_string(rooms.size()) + "\t" + current);
+                for (const auto& room : rooms) {
+                    self->SendLine("ROOM\t" + room.id + "\t" + room.kind + "\t" + room.name + "\t" +
+                                   std::to_string(room.members) + "\t" +
+                                   std::to_string(room.maxMembers) + "\t" + room.myRole);
+                }
+                self->SendLine(std::string("ROOMS_END"));
+            }
+        }).detach();
+    }
+
     bool closed() const { return closed_; }
     dchat::sock::Handle handle() const { return handle_; }
 
@@ -503,8 +545,32 @@ const char* kIndexHtml = R"HTML(<!doctype html>
   header b { font-size:16px; }
   #state { color:#8a8a94; font-size:12px; }
   #state.on { color:#4caf7d; }
-  main { flex:1; display:flex; min-height:0; }
+  main { flex:1; display:flex; min-height:0; position:relative; }
+  #rooms { width:220px; flex:0 0 220px; overflow-y:auto; background:#202026;
+           border-right:1px solid #33333a; padding:8px 0; }
+  .room { padding:10px 14px; cursor:pointer; border-left:3px solid transparent;
+          font-size:13px; display:flex; flex-direction:column; gap:2px; }
+  .room:hover { background:#2a2a31; }
+  .room.on { background:#2a2a31; border-left-color:#2f6fed; }
+  .room .nm { color:#e6e6e6; }
+  .room .sub { color:#8a8a94; font-size:11.5px; }
   #log { flex:1; overflow-y:auto; padding:12px 16px; }
+  #menu { display:none; background:none; border:0; color:#e6e6e6; font-size:20px;
+          padding:0 6px; cursor:pointer; }
+  /* ---- 手机窄屏：侧栏变成抽屉，输入区固定在底部、不被键盘顶飞 ---- */
+  @media (max-width: 640px) {
+    #rooms { position:absolute; z-index:5; top:0; bottom:0; left:0; width:76%;
+             max-width:280px; transform:translateX(-102%); transition:transform .18s; }
+    body.drawer #rooms { transform:translateX(0); box-shadow:0 0 0 100vmax #0008; }
+    #menu { display:block; }
+    header { padding:8px 10px; gap:8px; }
+    header b { font-size:15px; }
+    main { min-height:0; }
+    #log { padding:10px 12px; }
+    footer { padding:8px 10px; gap:6px; padding-bottom:calc(8px + env(safe-area-inset-bottom)); }
+    footer input, footer button { font-size:16px; }  /* ≥16px 才不会让 iOS 自动放大 */
+    .room { padding:12px 14px; }  /* 触摸目标大一点 */
+  }
   .row { margin:6px 0; white-space:pre-wrap; word-break:break-word; }
   .nick { color:#7aa7ff; }
   .time { color:#666; font-size:12px; margin:0 6px; }
@@ -527,11 +593,12 @@ const char* kIndexHtml = R"HTML(<!doctype html>
   a { color:#7aa7ff; }
 </style></head><body>
 <header>
-  <b>dchat</b><span id="state">未连接</span>
+  <button id="menu" title="会话列表">☰</button>
+  <b>dchat</b><span id="state">未连接</span><span id="where"></span>
   <span style="flex:1"></span>
   <a href="/download" style="font-size:13px">下载客户端</a>
 </header>
-<main><div id="log"></div></main>
+<main><aside id="rooms"></aside><div id="log"></div></main>
 <footer>
   <input id="input" placeholder="说点什么…（/help 看指令，/rooms 看会话，/get <id> 下载文件）" disabled>
   <button class="ghost" id="pick" disabled title="发文件（上限 8 MB）">📎</button>
@@ -555,6 +622,8 @@ const stateEl = document.getElementById('state');
 const inputEl = document.getElementById('input');
 const sendEl = document.getElementById('send');
 let ws = null;
+let roomBuf = [];      // 正在收的一批会话
+let currentRoom = '';  // 网关告诉我们"当前在哪个会话"
 
 function add(kind, text) {
   const d = document.createElement('div');
@@ -600,6 +669,10 @@ document.getElementById('loginForm').addEventListener('submit', (e) => {
         logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
         break;
       }
+      // ---- 左侧会话选择器：网关每秒比对一次，变了才推 ----
+      case 'ROOMS':   roomBuf = []; currentRoom = f[2] || ''; break;
+      case 'ROOM':    roomBuf.push(f); break;
+      case 'ROOMS_END': renderRooms(); break;
       case 'SYS':   add('sys', f[1]); break;
       case 'ERROR': add('err', f[1]); break;
       case 'INFO':  add('sys', f[1]); break;
@@ -630,6 +703,41 @@ function submit() {
   send('INPUT\t' + text);
   inputEl.value = '';
 }
+const roomsEl = document.getElementById('rooms');
+const whereEl = document.getElementById('where');
+
+/** 把一批 ROOM 行画成左侧列表。点一下就切会话（等价于 /open <id>）。 */
+function renderRooms() {
+  roomsEl.innerHTML = '';
+  let currentName = '';
+  for (const f of roomBuf) {
+    // ROOM \t id \t kind \t 名字 \t 成员数 \t 最大人数 \t 我的角色
+    const id = f[1], kind = f[2], name = f[3], members = f[4], max = f[5], role = f[6];
+    const row = document.createElement('div');
+    row.className = 'room' + (id === currentRoom ? ' on' : '');
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = name || id;
+    const sub = document.createElement('span');
+    sub.className = 'sub';
+    sub.textContent = (kind === 'hall' ? '大厅' : members + '/' + max + ' 人') +
+                      (role && role !== 'member' ? '　' + role : '');
+    row.append(nm, sub);
+    row.addEventListener('click', () => {
+      if (id !== currentRoom) send('INPUT\t/open ' + id);
+      document.body.classList.remove('drawer');  // 手机上选完自动收起
+    });
+    roomsEl.appendChild(row);
+    if (id === currentRoom) currentName = name || id;
+  }
+  whereEl.textContent = currentName ? '　· ' + currentName : '';
+}
+
+// 手机上的 ☰：展开/收起会话抽屉
+document.getElementById('menu').addEventListener('click', () => {
+  document.body.classList.toggle('drawer');
+});
+
 sendEl.addEventListener('click', submit);
 inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
 
