@@ -101,3 +101,46 @@ if (got < 0)  continue;           // 超时：继续等，只数次数
 
 > 顺手补了一个漏：`test_file_crypto` 之前只在命令行手工编着跑，**没注册进 ctest**，
 > 等于 CI 层面完全没覆盖加密。现在进 ctest 了。
+
+## 还没做的（含已摸清的位置，下次直接照着做，别重复侦察）
+
+### 1. 桌面端断线自动重连
+
+已有：`src/client.cpp` 每 45 秒的 `PING` 心跳、`DisconnectFromServer(bool)`。
+**缺的是"断了之后自己回来"。**
+
+- `RecvLoop` 里 socket 关闭那条路径：区分"用户主动断开"和"意外断开"，
+  后者设标志 + 发消息给 UI 线程（**不要**在接收线程里直接重连）
+- UI 线程加 `kReconnectTimerId`，3 秒后触发；**必须做退避**（3s→6s→12s…最多 60s）
+  并设**次数上限**，否则服务器一挂就是死循环
+- 重连不要再弹「连接」对话框（host/port 已经有了），直接 `PromptAuth`
+- `PromptAuth` 里自动登录现在是 `static bool autoLoginTried` 一次性开关，
+  要复用得改成全局标志（如 `g_autoLoginWanted`），重连时置 true
+
+**验证**：桌面端目前只能编译验证。建议先抽一个 `--selftest-reconnect` 无界面钩子
+（照 `--selftest-login` 的样子），把"该不该重连/退避算得对不对"写成纯函数单测，
+再接 UI。
+
+### 2. 安卓端自动登录
+
+已有：`DchatConnection` 的 `heartbeatLoop()` + `makePing()` + `sock.keepAlive = true`
+—— **保活是齐的，不用再加**。
+
+缺自动登录。已摸清：
+
+- `net/DchatSession.kt`：`login(nick, password)`（≈318 行）、`register(...)`、
+  `declareRooms()`、`clearRoomHistory()`
+- 同文件 ≈349 行有现成的 SharedPreferences 用法
+  （`getSharedPreferences("dchat_room_prefs", Context.MODE_PRIVATE)`），照抄加一个 `dchat_login`
+- **还没找到**：`LOGGEDIN` 的处理器不在 `net/` 下（`grep LOGGEDIN` 在 `net/` 零命中）。
+  下一步去 `protocol/RoomProtocol.kt` 或 UI 层找"什么时候算登录成功"，再在那里保存账号
+
+**验证**：凭据的 `encode`/`decode` 写成纯函数用现有 JVM 单测覆盖；SharedPreferences 那层薄，可以不测。
+
+### 3. 「网页版一些设置需要在 chatrule 里列出」——语义未定，需用户确认
+
+- **A**：`/admin` 里也要能改**每个群各自的**设置（`fileencryption`、群公告、缓存上限…）。
+  技术上要给管理端口加一条 `ROOMS` 请求（返回所有房间 + 各自设置），再让 webd 渲染成
+  **第二张表**。注意：`/chatrule` 是**服务器全局**规则，和"每个群自己的设置"是两回事，
+  **不能混在一张表里**。
+- **B**：网页客户端的**本地**设置（免打扰、置顶）集中管理。纯前端 + localStorage，不动服务端。
