@@ -55,6 +55,9 @@ struct RoomInfo {
     std::string joinMode;  // open / approval / auto
     bool listed = false;   // 是否向公众展示（可被搜到）
     std::string announcement;  // 群公告（RSET announcement，Base64 解出来的明文）
+    int cacheMaxMb = 0;        // 总缓存上限（RSET cachemaxmb）
+    bool importantNotice = false;  // 消息重要提醒（RSET importantnotice）
+    bool fileEncryption = false;   // 群文件加密（RSET fileencryption）
 };
 
 /** 一个群成员（RMEMBERS）。 */

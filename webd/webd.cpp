@@ -432,6 +432,18 @@ public:
                                  std::to_string(room.members) + "|" +
                                  std::to_string(room.maxMembers) + "|" + room.kind + ";";
                 }
+                // **设置值也要进签名**：不然群主在别的窗口改了「群文件加密」，
+                // 这边的设置页不会重推，页面就一直停在旧值上。
+                const dchat::RoomInfo* here = nullptr;
+                for (const auto& room : rooms) {
+                    if (room.id == current) here = &room;
+                }
+                if (here != nullptr) {
+                    signature += "S" + std::to_string(here->cacheMaxMb) +
+                                 (here->importantNotice ? "1" : "0") +
+                                 (here->fileEncryption ? "1" : "0") + (here->listed ? "1" : "0") +
+                                 here->joinMode + here->announcement + "|";
+                }
                 if (signature == last) continue;
                 last = signature;
                 // 先报行数 + 当前会话，再逐行发，最后 ROOMS_END 收尾
@@ -443,6 +455,29 @@ public:
                                    std::to_string(room.maxMembers) + "\t" + room.myRole);
                 }
                 self->SendLine(std::string("ROOMS_END"));
+                // 当前会话的 8 项设置，单独推给网页设置页。
+                //
+                // 为什么不塞进 ROOM 行：ROOM 已经是 7 段固定格式，聊天页按下标取值，
+                // 再往后追加字段会牵动三个端的解析；而且设置只有「当前房间」用得着。
+                if (here != nullptr) {
+                    const std::pair<const char*, std::string> rows[] = {
+                        {"name", here->name},
+                        {"maxmembers", std::to_string(here->maxMembers)},
+                        {"joinmode", here->joinMode},
+                        {"listed", here->listed ? "true" : "false"},
+                        {"cachemaxmb", std::to_string(here->cacheMaxMb)},
+                        {"announcement", here->announcement},
+                        {"importantnotice", here->importantNotice ? "true" : "false"},
+                        {"fileencryption", here->fileEncryption ? "true" : "false"},
+                    };
+                    self->SendLine("SETTINGS\t" + here->id + "\t" + here->kind + "\t" +
+                                   here->myRole + "\t" +
+                                   std::to_string(sizeof(rows) / sizeof(rows[0])));
+                    for (const auto& row : rows) {
+                        self->SendLine(std::string("SETTING\t") + row.first + "\t" + row.second);
+                    }
+                    self->SendLine(std::string("SETTINGS_END"));
+                }
             }
         }).detach();
     }
@@ -628,6 +663,7 @@ const char* kIndexHtml = R"HTML(<!doctype html>
   <button id="menu" title="会话列表">☰</button>
   <b>dchat</b><span id="state">未连接</span><span id="where"></span>
   <span style="flex:1"></span>
+  <a id="rset" href="#" style="display:none;font-size:13px">房间设置</a>
   <a href="/download" style="font-size:13px">下载客户端</a>
 </header>
 <main><aside id="rooms"></aside><div id="log"></div></main>
@@ -652,6 +688,14 @@ const char* kIndexHtml = R"HTML(<!doctype html>
   <div class="other">想装客户端？<a href="/download">下载 Windows / Android / Linux 版</a></div>
 </form></div>
 <script>
+// 这个 URL 属于哪个房间（由网关在服务端填进 __ROOM_ID__，不是前端读 pathname）。
+//
+// 为什么不在前端读 location.pathname：网关可能挂在子路径下被反向代理，
+// 前端算出来的那一段未必和服务端路由一致。房间号在网关侧已校验过只含
+// [a-z0-9_-]，填进字符串字面量不会有转义问题。
+window.DCHAT_ROOM = "__ROOM_ID__";
+</script>
+<script>
 const logEl = document.getElementById('log');
 const stateEl = document.getElementById('state');
 const inputEl = document.getElementById('input');
@@ -659,6 +703,40 @@ const sendEl = document.getElementById('send');
 let ws = null;
 let roomBuf = [];      // 正在收的一批会话
 let currentRoom = '';  // 网关告诉我们"当前在哪个会话"
+
+// URL 里指定的房间（`/房间名` 进入时由服务端注入；从根路径进来是空串）
+const pageRoom = window.DCHAT_ROOM || '';
+// 想要待在哪个房间。它会跟着左侧点击/前进后退变，**不能**直接改 pageRoom，
+// 否则断线重连后会被拽回最初那个房间。
+let wantRoom = pageRoom;
+let openedPageRoom = false;  // 每次登录后只自动进一次，之后听用户的
+
+/** 同步「房间设置」入口：没房间就藏起来。 */
+function syncRoomLink() {
+  const rset = document.getElementById('rset');
+  if (wantRoom) {
+    rset.href = '/' + encodeURIComponent(wantRoom) + '/settings';
+    rset.style.display = '';
+  } else {
+    rset.style.display = 'none';
+  }
+}
+syncRoomLink();
+
+/** 切到一个房间：改 URL + 更新设置入口 + 真的发 /open。 */
+function goRoom(id, push) {
+  if (!id) return;
+  wantRoom = id;
+  if (push) history.pushState({room: id}, '', '/' + encodeURIComponent(id));
+  syncRoomLink();
+  send('INPUT\t/open ' + id);
+}
+
+// 浏览器前进/后退：地址变了就跟着切房间
+window.addEventListener('popstate', () => {
+  const id = decodeURIComponent(location.pathname.replace(/^\/+/, '').split('/')[0]);
+  if (id && id !== wantRoom) goRoom(id, false);
+});
 
 function add(kind, text) {
   const d = document.createElement('div');
@@ -723,7 +801,18 @@ function connect(host, user, pass, reg) {
       }
       case 'STATE':
         setState(f[1] + (f[2] ? '　' + f[2] : ''), f[1] === '已登录');
-        if (f[1] === '已登录') { inputEl.disabled = false; sendEl.disabled = false; pickEl.disabled = false; inputEl.focus(); }
+        if (f[1] === '已登录') {
+          inputEl.disabled = false; sendEl.disabled = false; pickEl.disabled = false; inputEl.focus();
+          // `/房间名` 进来的：登录成功后自动切到那个房间。
+          // 断线重连后要再走一遍——服务端那边是个全新会话，房间是空的。
+          if (wantRoom && !openedPageRoom) {
+            openedPageRoom = true;
+            add('sys', '正在进入 ' + wantRoom + ' …');
+            send('INPUT\t/open ' + wantRoom);
+          }
+        } else {
+          openedPageRoom = false;
+        }
         break;
     }
   };
@@ -804,13 +893,19 @@ function renderRooms() {
                       (role && role !== 'member' ? '　' + role : '');
     row.append(nm, sub);
     row.addEventListener('click', () => {
-      if (id !== currentRoom) send('INPUT\t/open ' + id);
+      if (id !== currentRoom) goRoom(id, true);  // 让地址栏变成 /<id>，可收藏可分享
       document.body.classList.remove('drawer');  // 手机上选完自动收起
     });
     roomsEl.appendChild(row);
     if (id === currentRoom) currentName = name || id;
   }
   whereEl.textContent = currentName ? '　· ' + currentName : '';
+  // 从首页进来（地址里没房间）时，等网关告诉我们当前在哪个会话，
+  // 再把「房间设置」入口显出来——不然那个链接永远是隐藏的。
+  if (!wantRoom && currentRoom) {
+    wantRoom = currentRoom;
+    syncRoomLink();
+  }
 }
 
 // 手机上的 ☰：展开/收起会话抽屉
@@ -845,6 +940,247 @@ fileEl.addEventListener('change', () => {
   fileEl.value = '';
 });
 </script></body></html>
+)HTML";
+
+// ============================================================================
+// 房间设置页（`/<房间名>/settings`）
+//
+// 数据来源：网关每秒比对一次当前会话的 8 项设置，变了就推 SETTINGS/SETTING 帧。
+// 写回：浏览器发 `INPUT\t/set <项> <值>`，走和聊天框**同一条**路径
+//       （ChatCore 翻译成 GSET，服务端按「我是不是这个群的主/管」校验）。
+//       所以这里不拦权限——拦了也是假的，服务器才是权威。
+// 群名和群公告由 ChatCore 负责 Base64 编码，这个页面传明文即可。
+// ============================================================================
+const char* kRoomSettingsHtml = R"HTML(<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>房间设置 · dchat</title>
+<style>
+:root{color-scheme:dark}
+body{margin:0;background:#1b1b1f;color:#e6e6e6;font:15px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;background:#232329;border-bottom:1px solid #33333a}
+header b{font-size:15px}
+#state{color:#8a8a94;font-size:13px}
+#state.on{color:#7ddca0}
+a{color:#7aa7ff;text-decoration:none;font-size:13px}
+.wrap{max-width:640px;margin:0 auto;padding:18px 16px 64px}
+.row{padding:14px 0;border-bottom:1px solid #2e2e35}
+.nm{font-weight:600;font-size:14px}
+.hint{color:#8a8a94;font-size:12px;margin:2px 0 8px}
+input[type=text],input[type=number],input[type=password],textarea,select{box-sizing:border-box;
+  width:100%;padding:9px 11px;border-radius:8px;border:1px solid #3a3a42;background:#2a2a31;
+  color:#e6e6e6;font:inherit}
+textarea{min-height:88px;resize:vertical}
+.toggle{display:flex;align-items:center;gap:10px}
+.toggle input{width:22px;height:22px}
+button{padding:12px;width:100%;border:0;border-radius:8px;background:#2f6fed;color:#fff;
+  font:inherit;cursor:pointer;margin-top:20px}
+button:disabled{opacity:.45;cursor:default}
+.ok{background:#1d3a29;color:#7ddca0;padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:14px}
+.bad{background:#3a1d1d;color:#ff9b9b;padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:14px}
+#login{position:fixed;inset:0;background:rgba(10,10,12,.95);display:flex;align-items:center;
+  justify-content:center;padding:16px}
+#login form{background:#232329;border:1px solid #33333a;border-radius:12px;padding:24px;
+  width:320px;max-width:100%;display:flex;flex-direction:column;gap:12px}
+@media(max-width:640px){.wrap{padding:14px 12px 64px}}
+</style></head><body>
+<header>
+  <a id="back" href="/">← 返回聊天</a>
+  <b>房间设置</b>
+  <span style="flex:1"></span>
+  <span id="state">未连接</span>
+</header>
+<div class="wrap">
+  <div id="msg"></div>
+  <div id="panel" style="display:none">
+    <div class="row">
+      <div class="nm">群聊名称</div>
+      <div class="hint">1&ndash;32 个字符，所有人都会看到</div>
+      <input type="text" id="f-name" maxlength="32">
+    </div>
+    <div class="row">
+      <div class="nm">群公告</div>
+      <div class="hint">最多 500 个字符，进群时展示</div>
+      <textarea id="f-ann" maxlength="500"></textarea>
+    </div>
+    <div class="row">
+      <div class="nm">加群方式</div>
+      <div class="hint">别人加这个群时怎么处理</div>
+      <select id="f-join">
+        <option value="approval">管理员审核（默认）</option>
+        <option value="direct">直接添加</option>
+        <option value="auto">自动审核</option>
+      </select>
+    </div>
+    <div class="row">
+      <div class="nm">最大人数</div>
+      <div class="hint">2&ndash;500 人</div>
+      <input type="number" id="f-max" min="2" max="500" step="1">
+    </div>
+    <div class="row">
+      <div class="nm">总缓存最大大小</div>
+      <div class="hint">服务端为这个群保留的聊天记录 + 文件预算（MB）</div>
+      <input type="number" id="f-cache" min="1" step="1">
+    </div>
+    <div class="row">
+      <div class="nm">向公众展示</div>
+      <div class="hint">打开后别人能用 /find 搜到这个群</div>
+      <label class="toggle"><input type="checkbox" id="f-listed"> 允许被搜索到</label>
+    </div>
+    <div class="row">
+      <div class="nm">消息重要提醒</div>
+      <div class="hint">打开后群里的重要消息会额外提醒</div>
+      <label class="toggle"><input type="checkbox" id="f-imp"> 启用重要提醒</label>
+    </div>
+    <div class="row">
+      <div class="nm">群文件加密</div>
+      <div class="hint">打开后这个群的文件落盘时加密（防磁盘 / 备份泄露）</div>
+      <label class="toggle"><input type="checkbox" id="f-enc"> 加密存储群文件</label>
+    </div>
+    <button id="save">保存</button>
+    <p class="hint" id="rolegap" style="display:none">
+      你在这个群里不是群主或管理员，改不了这些设置。
+    </p>
+    <p class="hint">只有群主和管理员能改；服务器会再校验一次。</p>
+  </div>
+</div>
+<div id="login"><form id="loginForm">
+  <b style="font-size:16px">登录 dchat</b>
+  <div class="hint">改房间设置要先登录（只有群主和管理员改得动）</div>
+  <input type="text" id="user" placeholder="昵称" autocomplete="username">
+  <input type="password" id="pass" placeholder="密码" autocomplete="current-password">
+  <input type="text" id="host" value="dchat.xin:5555" placeholder="服务器:端口">
+  <button type="submit">登录</button>
+</form></div>
+<script>
+window.DCHAT_ROOM = "__ROOM_ID__";
+</script>
+<script>
+const ROOM = window.DCHAT_ROOM || '';
+let ws = null, credentials = null, reconnectDelay = 2000, myRole = '';
+let original = {};   // 服务端下发的原值，用来算「到底改了哪几项」
+
+function el(id) { return document.getElementById(id); }
+function setState(t, on) { el('state').textContent = t; el('state').className = on ? 'on' : ''; }
+function send(line) { if (ws && ws.readyState === 1) ws.send(line); }
+function msg(text, bad) {
+  const d = document.createElement('div');
+  d.className = bad ? 'bad' : 'ok';
+  d.textContent = text;
+  el('msg').innerHTML = '';
+  el('msg').appendChild(d);
+}
+if (ROOM) el('back').href = '/' + encodeURIComponent(ROOM);
+
+function connect(host, user, pass) {
+  el('login').style.display = 'none';
+  setState('连接中…', false);
+  const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+  ws = new WebSocket(proto + location.host + '/ws?server=' + encodeURIComponent(host));
+  ws.onopen = () => {
+    reconnectDelay = 2000;
+    setState('已连接', true);
+    send('LOGIN\t' + user + '\t' + pass + '\t0');
+  };
+  ws.onmessage = (ev) => {
+    const f = ev.data.split('\t');
+    if (f[0] === 'STATE') {
+      setState(f[1] + (f[2] ? '　' + f[2] : ''), f[1] === '已登录');
+      // 登录成功后进这个房间：SETTINGS 帧描述的是「当前会话」的设置，不进房就没有
+      if (f[1] === '已登录' && ROOM) send('INPUT\t/open ' + ROOM);
+      return;
+    }
+    if (f[0] === 'SETTINGS') { original = {}; myRole = f[3] || ''; return; }
+    if (f[0] === 'SETTING') { original[f[1]] = f[2]; return; }
+    if (f[0] === 'SETTINGS_END') { fill(); return; }
+    if (f[0] === 'ERROR') { msg(f[1], true); return; }
+    // SYS / INFO 是聊天流的噪音，设置页不显示
+  };
+  ws.onclose = () => {
+    setState('已断开', false);
+    if (credentials) {
+      setTimeout(() => connect(credentials.host, credentials.user, credentials.pass),
+                 reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    }
+  };
+  ws.onerror = () => msg('连接出错', true);
+}
+
+/** 把服务端下发的 8 项填进表单。 */
+function fill() {
+  const put = (id, value) => {
+    const e = el(id);
+    if (!e) return;
+    if (e.type === 'checkbox') e.checked = (value === 'true');
+    else e.value = value;
+  };
+  put('f-name', original.name || '');
+  put('f-ann', original.announcement || '');
+  put('f-join', original.joinmode || 'approval');
+  put('f-max', original.maxmembers || '');
+  put('f-cache', original.cachemaxmb || '');
+  put('f-listed', original.listed || 'false');
+  put('f-imp', original.importantnotice || 'false');
+  put('f-enc', original.fileencryption || 'false');
+  el('panel').style.display = '';
+  // 能不能改由服务器说了算，这里只是提前把按钮灰掉，少一次白跑
+  const canEdit = (myRole === 'owner' || myRole === 'admin');
+  el('rolegap').style.display = canEdit ? 'none' : '';
+  el('save').disabled = !canEdit;
+}
+
+function save() {
+  const now = {
+    name: el('f-name').value,
+    announcement: el('f-ann').value,
+    joinmode: el('f-join').value,
+    maxmembers: el('f-max').value,
+    cachemaxmb: el('f-cache').value,
+    listed: el('f-listed').checked ? 'true' : 'false',
+    importantnotice: el('f-imp').checked ? 'true' : 'false',
+    fileencryption: el('f-enc').checked ? 'true' : 'false'
+  };
+  let sent = 0;
+  for (const key of Object.keys(now)) {
+    // 空值跳过：数值框被清空时服务器只会回一个非法值错误，不如不提交
+    if (now[key] === '') continue;
+    if ((original[key] || '') === now[key]) continue;
+    send('INPUT\t/set ' + key + ' ' + now[key]);
+    ++sent;
+  }
+  msg(sent ? ('已提交 ' + sent + ' 项修改，服务端确认后这里会自动刷新') : '没有改动', false);
+}
+
+el('save').addEventListener('click', save);
+el('loginForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const host = el('host').value.trim() || 'dchat.xin:5555';
+  credentials = {host: host, user: el('user').value, pass: el('pass').value};
+  try {
+    localStorage.setItem('dchat_login',
+      JSON.stringify({host: credentials.host, user: credentials.user, pass: credentials.pass}));
+  } catch (err) { /* 隐私模式忽略 */ }
+  connect(credentials.host, credentials.user, credentials.pass);
+});
+
+// 和聊天页共用同一个 localStorage 键：登过一次，两边都自动登录
+(function autoLogin() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem('dchat_login') || 'null'); } catch (e) { saved = null; }
+  if (!saved || !saved.user) {
+    if (ROOM) msg('要改「' + ROOM + '」的设置，先登录。', true);
+    return;
+  }
+  el('host').value = saved.host || 'dchat.xin:5555';
+  el('user').value = saved.user;
+  el('pass').value = saved.pass || '';
+  credentials = {host: saved.host, user: saved.user, pass: saved.pass};
+  connect(saved.host, saved.user, saved.pass);
+})();
+</script>
+</body></html>
 )HTML";
 
 const char* kDownloadHtml = R"HTML(<!doctype html>
@@ -983,6 +1319,56 @@ bool ReadRequest(dchat::sock::Handle handle, std::string* out) {
     }
     *out = buffer;
     return true;
+}
+
+// ============================================================================
+// 房间页的路由与注入
+//
+// URL 约定：
+//   /                  聊天，不预设房间（和以前一样）
+//   /<房间名>            聊天，登录后自动进这个房间
+//   /<房间名>/settings   这个房间的设置
+//   /admin             服务器整体设置（chatrule），和房间分开
+// ============================================================================
+
+/**
+ * 一段 path 能不能当房间号用。
+ *
+ * **字符集收得很死是故意的**：这个值会被填进页面里的 JS 字符串字面量
+ * （`window.DCHAT_ROOM = "..."`），放宽就等于开一个 XSS 口子。
+ * 服务器那边的群 ID 本来就是 [a-z0-9_-]，所以这个限制挡不住合法的群。
+ * 大厅是 "hall"，私聊是 "dm-xxxx"，同样落在这个集合里。
+ */
+bool IsWebRoomId(const std::string& text) {
+    if (text.size() < 2 || text.size() > 64) return false;
+    for (char ch : text) {
+        const bool digit = ch >= '0' && ch <= '9';
+        const bool lower = ch >= 'a' && ch <= 'z';
+        if (!digit && !lower && ch != '_' && ch != '-') return false;
+    }
+    // 网关自己的固定路径不能被当成房间名。
+    //
+    // 之前漏了这一条：`/admin` 没配管理端口时本该 404，却因为 "admin" 是个合法
+    // 房间号而被当成房间页返回了 200 —— 用户看到的是个空聊天页，还不知道自己在哪。
+    // 这些名字的群在网页上就用短网址打不开（从 / 的房间列表进还是能进），
+    // 换一个名字即可，不值得为它把 /admin 让出去。
+    static const char* kReserved[] = {"admin", "download", "dl", "file", "ws", "index"};
+    for (const char* word : kReserved) {
+        if (text == word) return false;
+    }
+    return true;
+}
+
+/** 把房间号填进页面占位符。房间号已过 IsWebRoomId，不含任何要转义的字符。 */
+std::string FillRoom(const char* page, const std::string& roomId) {
+    std::string html = page;
+    const std::string token = "__ROOM_ID__";
+    std::size_t at = html.find(token);
+    while (at != std::string::npos) {
+        html.replace(at, token.size(), roomId);
+        at = html.find(token, at + roomId.size());
+    }
+    return html;
 }
 
 void ServeConnection(dchat::sock::Handle handle) {
@@ -1163,7 +1549,9 @@ void ServeConnection(dchat::sock::Handle handle) {
     if (qmark != std::string::npos) route = route.substr(0, qmark);
 
     if (route == "/" || route == "/index.html") {
-        reply("200 OK", "text/html; charset=utf-8", kIndexHtml);
+        // 也要走一次 FillRoom（房间号填空）：否则页面里留着字面量 "__ROOM_ID__"，
+        // 前端会把它当成房间名去 /open，等于每次打开首页都白报一条错。
+        reply("200 OK", "text/html; charset=utf-8", FillRoom(kIndexHtml, ""));
     } else if (route == "/download") {
         reply("200 OK", "text/html; charset=utf-8", kDownloadHtml);
     } else if (g_config.adminPort > 0 && (route == "/admin" || route.rfind("/admin/", 0) == 0)) {
@@ -1238,7 +1626,32 @@ void ServeConnection(dchat::sock::Handle handle) {
             std::fclose(file);
         }
     } else {
-        reply("404 Not Found", "text/plain; charset=utf-8", "not found");
+        // ---- 房间页：/<房间名> 和 /<房间名>/settings ----
+        //
+        // 放在**最后**：这样 /download、/admin、/dl/、/file/ 这些固定路由永远优先，
+        // 不会因为某人建了个叫 download 的群而把下载页顶掉（那种群在网页上打不开，
+        // 但别的路由不会坏 —— 这个取舍是有意的）。
+        std::vector<std::string> segments;
+        if (route.size() > 1) {
+            std::size_t from = 1;  // 跳过开头的 /
+            while (true) {
+                const std::size_t slash = route.find('/', from);
+                segments.push_back(route.substr(
+                    from, slash == std::string::npos ? std::string::npos : slash - from));
+                if (slash == std::string::npos) break;
+                from = slash + 1;
+            }
+            // 尾部多一个斜杠（/roomA/）当同一个房间，别让手输的人吃 404
+            if (segments.size() == 2 && segments[1].empty()) segments.pop_back();
+        }
+        if (segments.size() == 1 && IsWebRoomId(segments[0])) {
+            reply("200 OK", "text/html; charset=utf-8", FillRoom(kIndexHtml, segments[0]));
+        } else if (segments.size() == 2 && segments[1] == "settings" && IsWebRoomId(segments[0])) {
+            reply("200 OK", "text/html; charset=utf-8", FillRoom(kRoomSettingsHtml, segments[0]));
+        } else {
+            reply("404 Not Found", "text/plain; charset=utf-8",
+                  "not found　（房间是 /<房间名>，房间设置是 /<房间名>/settings）");
+        }
     }
     (void)method;
 }

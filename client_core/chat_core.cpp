@@ -703,9 +703,16 @@ bool ChatCore::HandleRoomLine(const std::string& command, const std::vector<std:
                 } else if (key == "joinmode") {
                     room->joinMode = value;
                 } else if (key == "listed") {
-                    room->listed = (value == "1");
+                    // 服务端发的是 true/false；老版本发过 1/0，两种都认
+                    room->listed = (value == "1" || value == "true");
                 } else if (key == "announcement") {
                     room->announcement = DecodeB64(value);
+                } else if (key == "cachemaxmb") {
+                    room->cacheMaxMb = std::atoi(value.c_str());
+                } else if (key == "importantnotice") {
+                    room->importantNotice = (value == "true");
+                } else if (key == "fileencryption") {
+                    room->fileEncryption = (value == "true");
                 }
             }
         }
