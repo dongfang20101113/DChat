@@ -704,7 +704,7 @@ let ws = null;
 let roomBuf = [];      // 正在收的一批会话
 let currentRoom = '';  // 网关告诉我们"当前在哪个会话"
 
-// URL 里指定的房间（`/房间名` 进入时由服务端注入；从根路径进来是空串）
+// URL 里指定的房间（`/room/<房间名>` 进入时由服务端注入；从根路径进来是空串）
 const pageRoom = window.DCHAT_ROOM || '';
 // 想要待在哪个房间。它会跟着左侧点击/前进后退变，**不能**直接改 pageRoom，
 // 否则断线重连后会被拽回最初那个房间。
@@ -715,7 +715,7 @@ let openedPageRoom = false;  // 每次登录后只自动进一次，之后听用
 function syncRoomLink() {
   const rset = document.getElementById('rset');
   if (wantRoom) {
-    rset.href = '/' + encodeURIComponent(wantRoom) + '/settings';
+    rset.href = '/room/' + encodeURIComponent(wantRoom) + '/settings';
     rset.style.display = '';
   } else {
     rset.style.display = 'none';
@@ -727,14 +727,15 @@ syncRoomLink();
 function goRoom(id, push) {
   if (!id) return;
   wantRoom = id;
-  if (push) history.pushState({room: id}, '', '/' + encodeURIComponent(id));
+  if (push) history.pushState({room: id}, '', '/room/' + encodeURIComponent(id));
   syncRoomLink();
   send('INPUT\t/open ' + id);
 }
 
 // 浏览器前进/后退：地址变了就跟着切房间
 window.addEventListener('popstate', () => {
-  const id = decodeURIComponent(location.pathname.replace(/^\/+/, '').split('/')[0]);
+  const parts = location.pathname.replace(/^\/+/, '').split('/');
+  const id = (parts[0] === 'room' && parts[1]) ? decodeURIComponent(parts[1]) : '';
   if (id && id !== wantRoom) goRoom(id, false);
 });
 
@@ -893,7 +894,7 @@ function renderRooms() {
                       (role && role !== 'member' ? '　' + role : '');
     row.append(nm, sub);
     row.addEventListener('click', () => {
-      if (id !== currentRoom) goRoom(id, true);  // 让地址栏变成 /<id>，可收藏可分享
+      if (id !== currentRoom) goRoom(id, true);  // 让地址栏变成 /room/<id>，可收藏可分享
       document.body.classList.remove('drawer');  // 手机上选完自动收起
     });
     roomsEl.appendChild(row);
@@ -1071,7 +1072,7 @@ function msg(text, bad) {
   el('msg').innerHTML = '';
   el('msg').appendChild(d);
 }
-if (ROOM) el('back').href = '/' + encodeURIComponent(ROOM);
+if (ROOM) el('back').href = '/room/' + encodeURIComponent(ROOM);
 
 function connect(host, user, pass) {
   el('login').style.display = 'none';
@@ -1346,16 +1347,9 @@ bool IsWebRoomId(const std::string& text) {
         const bool lower = ch >= 'a' && ch <= 'z';
         if (!digit && !lower && ch != '_' && ch != '-') return false;
     }
-    // 网关自己的固定路径不能被当成房间名。
-    //
-    // 之前漏了这一条：`/admin` 没配管理端口时本该 404，却因为 "admin" 是个合法
-    // 房间号而被当成房间页返回了 200 —— 用户看到的是个空聊天页，还不知道自己在哪。
-    // 这些名字的群在网页上就用短网址打不开（从 / 的房间列表进还是能进），
-    // 换一个名字即可，不值得为它把 /admin 让出去。
-    static const char* kReserved[] = {"admin", "download", "dl", "file", "ws", "index"};
-    for (const char* word : kReserved) {
-        if (text == word) return false;
-    }
+    // 房间名就是房间名，不需要保留字黑名单了 —— 房间全在 /room/ 下面，
+    // 和 /admin、/download 这些静态路径不在同一个命名空间。
+    // 唯一还要收死的是字符集：这个值会进页面里的 JS 字符串字面量。
     return true;
 }
 
@@ -1626,11 +1620,12 @@ void ServeConnection(dchat::sock::Handle handle) {
             std::fclose(file);
         }
     } else {
-        // ---- 房间页：/<房间名> 和 /<房间名>/settings ----
+        // ---- 房间页：/room/<房间名> 和 /room/<房间名>/settings ----
         //
-        // 放在**最后**：这样 /download、/admin、/dl/、/file/ 这些固定路由永远优先，
-        // 不会因为某人建了个叫 download 的群而把下载页顶掉（那种群在网页上打不开，
-        // 但别的路由不会坏 —— 这个取舍是有意的）。
+        // **为什么房间要挂在 /room/ 前面**：/admin 已经占了一段，以后再往里加
+        // /files、/settings、/search 之类，房间名迟早和它们撞上（群叫 admin 怎么办？）。
+        // 加一层前缀之后，命名空间彻底分开：静态功能在根上，房间一律在 /room/ 下面。
+        // 副作用是房间名不再需要保留字黑名单——/room/admin 就是那个群，不冲突。
         std::vector<std::string> segments;
         if (route.size() > 1) {
             std::size_t from = 1;  // 跳过开头的 /
@@ -1641,16 +1636,22 @@ void ServeConnection(dchat::sock::Handle handle) {
                 if (slash == std::string::npos) break;
                 from = slash + 1;
             }
-            // 尾部多一个斜杠（/roomA/）当同一个房间，别让手输的人吃 404
-            if (segments.size() == 2 && segments[1].empty()) segments.pop_back();
+            // 尾部多一个斜杠（/room/abc/）当同一个地址，别让手输的人吃 404
+            if (segments.size() > 1 && segments.back().empty()) segments.pop_back();
         }
-        if (segments.size() == 1 && IsWebRoomId(segments[0])) {
-            reply("200 OK", "text/html; charset=utf-8", FillRoom(kIndexHtml, segments[0]));
-        } else if (segments.size() == 2 && segments[1] == "settings" && IsWebRoomId(segments[0])) {
-            reply("200 OK", "text/html; charset=utf-8", FillRoom(kRoomSettingsHtml, segments[0]));
+        const bool isRoomPath = !segments.empty() && segments[0] == "room";
+        if (isRoomPath && segments.size() == 1) {
+            // /room 单独访问：当成首页（没指定哪个房间）
+            reply("200 OK", "text/html; charset=utf-8", FillRoom(kIndexHtml, ""));
+        } else if (isRoomPath && segments.size() == 2 && IsWebRoomId(segments[1])) {
+            reply("200 OK", "text/html; charset=utf-8", FillRoom(kIndexHtml, segments[1]));
+        } else if (isRoomPath && segments.size() == 3 && segments[2] == "settings" &&
+                   IsWebRoomId(segments[1])) {
+            reply("200 OK", "text/html; charset=utf-8",
+                  FillRoom(kRoomSettingsHtml, segments[1]));
         } else {
             reply("404 Not Found", "text/plain; charset=utf-8",
-                  "not found　（房间是 /<房间名>，房间设置是 /<房间名>/settings）");
+                  "not found　（房间是 /room/<房间名>，房间设置是 /room/<房间名>/settings）");
         }
     }
     (void)method;
