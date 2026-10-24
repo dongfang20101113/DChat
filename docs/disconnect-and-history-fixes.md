@@ -90,17 +90,14 @@ if (got < 0)  continue;           // 超时：继续等，只数次数
 
 | 项 | 结果 |
 | --- | --- |
-| `ctest` | **14/14** |
-| `test_linux_client` | **111 项 0 失败**（+3 去重检查） |
-| Android 单测 | **386 项 0 失败**（+1 去重检查） |
-| Windows 全量构建 | exit 0，0 警告 |
+| `ctest`（Linux） | **15/15**（新增 `file_crypto_tests`） |
+| `test_room` | **286 项 0 失败** |
+| `test_linux_client` | **111 项 0 失败** |
+| `test_file_crypto` | **27 项 0 失败** |
+| Android 单测 | **386 项 0 失败** |
+| Windows 全量构建 | exit 0，**0 warning / 0 error** |
 | 网页空闲 40 秒 | 仍 `Open`（修复前 30 秒必断） |
+| 桌面端自动登录自检 | `--selftest-login` 退出码 0 |
 
-## 还没做
-
-1. **桌面端自动登录 + 自动重连**：要加凭据存储（计划用 Windows DPAPI，
-   不用明文），并改造启动流程
-2. **Android 自动登录 + 断线重连**
-3. **「网页版一些设置也需要在 chatrule 里列出」** —— 需求含义待确认：
-   A（`/admin` 里也要能改群级的 `fileencryption` 等房间设置）
-   还是 B（网页客户端的本地设置如免打扰/置顶集中管理）
+> 顺手补了一个漏：`test_file_crypto` 之前只在命令行手工编着跑，**没注册进 ctest**，
+> 等于 CI 层面完全没覆盖加密。现在进 ctest 了。
