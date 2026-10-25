@@ -96,5 +96,5 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    return dchat::dshbot::RunBot(config);
+    return dchat::dshbot::RunBot(config, configPath);
 }

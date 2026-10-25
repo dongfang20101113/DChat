@@ -13,6 +13,8 @@
 #include "bot_chunk.h"
 #include "bot_config.h"
 #include "bot_event.h"
+#include "bot_http.h"
+#include "bot_json.h"
 #include "bot_policy.h"
 #include "bot_process.h"
 
@@ -280,6 +282,108 @@ int main() {
         const std::vector<std::string> inlinePrompt =
             BuildArgv({"tool", "--task", "{prompt}"}, "你好", "");
         Check(inlinePrompt.size() == 3 && inlinePrompt[2] == "你好", "{prompt} 展开成一个参数");
+    }
+
+    // =====================================================================
+    std::printf("[7] 配置写回（管理界面保存时用）\n");
+    {
+        const std::string original =
+            "# 这是注释，保存时不能丢\n"
+            "bot.nick = 小d\n"
+            "bot.password = abc12345\n"
+            "server.host = 127.0.0.1\n"
+            "rooms = grp1\n"
+            "reply.mode = all\n";
+        const std::string updated = UpdateConfigText(
+            original, {{"rooms", "grp1,grp2"}, {"reply.mode", "blacklist"}, {"reply.list", "坏人"}});
+        Check(updated.find("# 这是注释，保存时不能丢") != std::string::npos, "注释被保留");
+        Check(updated.find("rooms = grp1,grp2") != std::string::npos, "已有的键被就地替换");
+        Check(updated.find("reply.mode = blacklist") != std::string::npos, "模式写进去了");
+        Check(updated.find("reply.list = 坏人") != std::string::npos, "原来没有的键追加到末尾");
+        Check(updated.find("server.host = 127.0.0.1") != std::string::npos, "没改的键不动");
+
+        // 写出去的东西必须还能被解析回来（转义、逗号分隔这些细节最容易在这里出错）
+        Config config;
+        std::string error;
+        Check(ParseConfig(updated, &config, &error), "写回的配置能重新解析");
+        Check(config.rooms.size() == 2 && config.rooms[1] == "grp2", "rooms 写回后是两项");
+        Check(config.reply.mode == ReplyMode::Blacklist, "模式写回后是 blacklist");
+        Check(config.reply.nicks.size() == 1 && config.reply.nicks[0] == "坏人", "名单写回");
+
+        // 以后版本新增、当前版本还不认识的键：写回时**一个字都不能动**
+        // （不能因为"我不认识"就把它删掉——那是在替用户改配置）
+        const std::string future = UpdateConfigText("future.key = 保留\nrooms = a\n",
+                                                    {{"rooms", "b"}});
+        Check(future.find("future.key = 保留") != std::string::npos, "不认识的键原样保留");
+    }
+    {
+        // 带换行 / 反斜杠的值：换行必须由调用方先转义（否则配置结构直接坏掉），
+        // 而路径**不转义**——否则读回来时 `D:\new` 里的 `\n` 会变成换行。
+        const std::string updated = UpdateConfigText(
+            "bot.nick = a\n",
+            {{"reply.acktext", EscapeConfigValue("第一行\n第二行")}, {"brain.cwd", "D:\\dsh"}});
+        Check(updated.find("reply.acktext = 第一行\\n第二行") != std::string::npos,
+              "换行写成 \\n 转义");
+        Check(updated.find("brain.cwd = D:\\dsh") != std::string::npos, "路径原样写");
+        Config config;
+        std::string error;
+        Check(ParseConfig(updated + "bot.password = b\nrooms = hall\n", &config, &error),
+              "写回的配置能解析");
+        Check(config.ackText == "第一行\n第二行", "转义往返一致");
+        Check(config.brain.cwd == "D:\\dsh", "路径往返一致");
+    }
+
+    // =====================================================================
+    std::printf("[8] JSON 输入输出\n");
+    {
+        Check(JsonQuote("普通") == "\"普通\"", "中文原样");
+        Check(JsonQuote("a\"b") == "\"a\\\"b\"", "引号转义");
+        Check(JsonQuote("a\nb") == "\"a\\nb\"", "换行转义");
+        const std::vector<std::string> items = {"a", "b"};
+        Check(JsonQuoteArray(items) == "[\"a\",\"b\"]", "数组拼接");
+
+        FlatJson parsed;
+        std::string error;
+        Check(ParseFlatJson(
+                  "{\"rooms\":[\"a\",\"b\"],\"mentionOnly\":false,\"maxChars\":30,"
+                  "\"ackText\":\"hi\\n\"}",
+                  &parsed, &error),
+              "扁平对象能解析");
+        std::vector<std::string> rooms;
+        Check(parsed.GetArray("rooms", &rooms) && rooms.size() == 2, "数组字段");
+        Check(parsed.GetBool("mentionOnly", true) == false, "布尔字段");
+        Check(parsed.GetInt("maxChars", 0) == 30, "数字字段");
+        Check(parsed.GetString("ackText", "") == "hi\n", "字符串转义还原");
+        Check(parsed.GetString("missing", "默认") == "默认", "缺字段用默认值");
+        Check(!ParseFlatJson("[]", &parsed, &error), "非对象被拒绝");
+        Check(!ParseFlatJson("{\"a\":}", &parsed, &error), "缺值被拒绝");
+        Check(ParseFlatJson("{\"a\":[]}", &parsed, &error), "空数组合法");
+    }
+
+    // =====================================================================
+    std::printf("[9] HTTP 请求解析（管理界面的入口）\n");
+    {
+        const std::string raw =
+            "POST /api/config HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Dchat-Bot: 1\r\n"
+            "Content-Length: 10\r\n\r\n{\"a\":true}";
+        HttpRequest request;
+        std::size_t total = 0;
+        Check(ParseHttpRequest(raw, &request, &total) == 1, "完整请求解析成功");
+        Check(request.method == "POST", "方法");
+        Check(request.path == "/api/config", "路径");
+        Check(request.headers["x-dchat-bot"] == "1", "头部名转小写、值去掉空格");
+        Check(request.body == "{\"a\":true}", "请求体");
+        Check(total == raw.size(), "总长度");
+
+        Check(ParseHttpRequest("GET / HTTP/1.1\r\n", &request, &total) == 0, "头部不全要求继续读");
+        Check(ParseHttpRequest("BOGUS / HTTP/1.1\r\n\r\n", &request, &total) == -1, "非法方法被拒绝");
+
+        const std::string withQuery =
+            "GET /api/state?x=1&q=%E4%BD%A0%E5%A5%BD HTTP/1.1\r\n\r\n";
+        Check(ParseHttpRequest(withQuery, &request, &total) == 1, "带查询串");
+        Check(request.path == "/api/state", "路径不含查询串");
+        Check(QueryParam(request.query, "q") == "你好", "查询串百分号解码");
+        Check(QueryParam(request.query, "none").empty(), "不存在的参数返回空");
     }
 
     // =====================================================================

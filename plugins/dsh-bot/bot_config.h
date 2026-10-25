@@ -149,24 +149,31 @@ struct Config {
     std::string ackText = "（正在想…）";
 
     /**
-     * 登录后多久之内收到的聊天消息**当成历史回放丢掉**（毫秒）。
+     * 判定"历史回放结束"的安静时长（毫秒）：服务端开始回放后，只要还在收数据就
+     * 一直推迟结束，连续这么久没新行才认为回放完了。
      *
      * 线上服务器一般开着 keepchathistory / offlinemessages：登录那一刻服务端会把
      * 错过的历史**用原始 SAY/RMSG 行重放一遍**，里面完全可能有人 @ 过机器人。
-     * 不丢的话，机器人一上线就对着几个小时前的 10 条老消息逐条回答 —— 群里看到的是
-     * 一串答非所问。历史回放没法从协议上区分出来（没有序号也没有标记行），
-     * 只能靠"登录后这一小段时间内的不算"。
+     * 不丢的话，机器人一上线就对着几个小时前的 10 条老消息逐条回答 —— 群里看到的
+     * 是一串答非所问。历史行没有序号，协议上分不出来，只能靠这段"回放窗口"。
      *
-     * 服务端发"以下是加入之前的聊天记录"这类提示时会自动把这个窗口往后延，
-     * 所以慢网络下也能盖住整段回放。
+     * 默认 300 毫秒：回放是一口气写完的，行与行之间不会有这么长的空档；
+     * 而调太大（比如 2 秒）会让**刚上线的头两秒完全不理人**。
      */
-    int historySettleMs = 2000;
+    int historySettleMs = 300;
 
     // ---- 日志与状态 ----
     std::string logPath = "dchat-dsh-bot.log";
     bool verbose = false;
     /** 每个房间的 DSH 会话 id 存这里，重启后还能接上话。 */
     std::string sessionFile = "dchat-dsh-bot-sessions.txt";
+
+    /**
+     * 本机管理界面的端口（127.0.0.1，0 = 不开）。
+     *
+     * 只监听回环：它是"改机器人设置"的入口，里面没有密码，绝不能给外网看。
+     */
+    int uiPort = 8731;
 
     // ---- 重连 ----
     int reconnectMinMs = 3000;
@@ -181,6 +188,25 @@ bool ParseConfig(const std::string& text, Config* out, std::string* error);
 
 /** 读文件再解析。 */
 bool LoadConfigFile(const std::string& path, Config* out, std::string* error);
+
+/**
+ * 交叉校验（单行都合法、合起来不成立的组合）。
+ * 解析和"管理界面保存"两条路都走它，免得两边规则各写一套。
+ */
+bool ValidateConfig(Config* config, std::string* error);
+
+/**
+ * 把几个键的新值写回配置文本，**保留注释和别的行**。
+ *
+ * 为什么不是"整份重写"：配置文件里那些注释是给以后改它的人看的，
+ * 从界面点一下保存就把注释全抹掉，等于把文档一起删了。
+ * 键不存在的追加到末尾（append 顺序 = changes 的顺序）。
+ */
+std::string UpdateConfigText(const std::string& text,
+                             const std::vector<std::pair<std::string, std::string>>& changes);
+
+/** 把值转成能写进配置文件的形式（换行/制表符/反斜杠要转义）。 */
+std::string EscapeConfigValue(const std::string& value);
 
 /** 注释齐全的示例配置（`--example` 打印它，部署时直接重定向成文件）。 */
 std::string ExampleConfig();

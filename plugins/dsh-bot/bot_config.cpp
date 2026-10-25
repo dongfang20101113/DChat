@@ -268,49 +268,124 @@ bool ParseConfig(const std::string& text, Config* out, std::string* error) {
             if (!ParseInt(value, 100, 600000, &config.reconnectMinMs)) return bad("要在 100-600000 之间");
         } else if (key == "reconnect.maxms") {
             if (!ParseInt(value, 100, 3600000, &config.reconnectMaxMs)) return bad("要在 100-3600000 之间");
+        } else if (key == "ui.port") {
+            if (!ParseInt(value, 0, 65535, &config.uiPort)) return bad("要在 0-65535 之间（0 = 不开管理界面）");
         } else {
             // 不认识的键直接报错：静默忽略会让"我明明配了黑名单却不生效"变成悬案。
             return bad("未知的配置项（是不是拼错了？）");
         }
     }
 
-    // 交叉校验：单行都对、合起来不成立的情况在这里兜住。
-    if (config.nick.empty()) {
+    if (!ValidateConfig(&config, error)) return false;
+    *out = config;
+    return true;
+}
+
+bool ValidateConfig(Config* config, std::string* error) {
+    if (config == nullptr) return false;
+    const Config& configRef = *config;
+    if (configRef.nick.empty()) {
         if (error != nullptr) *error = "bot.nick 不能为空（机器人要用一个账号登录）";
         return false;
     }
-    if (config.password.empty()) {
+    if (configRef.password.empty()) {
         if (error != nullptr) *error = "bot.password 不能为空";
         return false;
     }
-    if (config.rooms.empty()) {
+    if (configRef.rooms.empty()) {
         if (error != nullptr) {
             *error = "rooms 不能为空：至少要写一个会话 ID（大厅写 hall）";
         }
         return false;
     }
-    if (config.typing.minChars > config.typing.maxChars) {
+    if (configRef.typing.minChars > configRef.typing.maxChars) {
         if (error != nullptr) *error = "typing.minchars 不能大于 typing.maxchars";
         return false;
     }
-    if (config.typing.maxGapMs < config.typing.minGapMs) {
+    if (configRef.typing.maxGapMs < configRef.typing.minGapMs) {
         if (error != nullptr) *error = "typing.maxgapms 不能小于 typing.mingapms";
         return false;
     }
-    if (config.brain.command.empty()) {
+    if (configRef.brain.command.empty()) {
         if (error != nullptr) *error = "brain.command 不能为空";
         return false;
     }
-    if (config.brain.promptTemplate.empty()) {
+    if (configRef.brain.promptTemplate.empty()) {
         if (error != nullptr) *error = "brain.prompttemplate 不能为空（那等于让模型猜要干什么）";
         return false;
     }
-    if (config.reply.mode != ReplyMode::All && config.reply.nicks.empty()) {
+    if (configRef.reply.mode != ReplyMode::All && configRef.reply.nicks.empty()) {
         if (error != nullptr) *error = "reply.mode 是 whitelist/blacklist 时 reply.list 不能为空";
         return false;
     }
-    *out = config;
     return true;
+}
+
+std::string EscapeConfigValue(const std::string& value) {
+    std::string out;
+    out.reserve(value.size() + 8);
+    for (char ch : value) {
+        switch (ch) {
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': break;  // 配置是行式的，回车没有意义
+            case '\t': out += "\\t"; break;
+            default: out.push_back(ch);
+        }
+    }
+    return out;
+}
+
+/**
+ * 把几个键的新值写回配置文本，保留注释和别的行。**不做转义** —— 见头文件里的说明：
+ * 只有"允许换行的文本字段"才需要调用方先用 EscapeConfigValue 处理，
+ * 路径这类值必须原样写，否则 `D:\new` 里的 `\n` 会被当成换行读回来。
+ */
+std::string UpdateConfigText(const std::string& text,
+                             const std::vector<std::pair<std::string, std::string>>& changes) {
+    // 逐行扫：认识的行就地改，不认识的原样保留（注释、空行、以后新增的键）。
+    std::vector<std::string> lines;
+    std::string current;
+    for (char ch : text) {
+        if (ch == '\n') {
+            if (!current.empty() && current.back() == '\r') current.pop_back();
+            lines.push_back(current);
+            current.clear();
+        } else {
+            current.push_back(ch);
+        }
+    }
+    if (!current.empty()) {
+        if (current.back() == '\r') current.pop_back();
+        lines.push_back(current);
+    }
+
+    std::vector<bool> applied(changes.size(), false);
+    for (std::string& line : lines) {
+        const std::string trimmed = Trim(line);
+        if (trimmed.empty() || trimmed[0] == '#') continue;
+        const std::size_t equals = trimmed.find('=');
+        if (equals == std::string::npos) continue;
+        const std::string key = Lower(Trim(trimmed.substr(0, equals)));
+        for (std::size_t i = 0; i < changes.size(); ++i) {
+            if (Lower(changes[i].first) == key) {
+                line = changes[i].first + " = " + changes[i].second;
+                applied[i] = true;
+                break;
+            }
+        }
+    }
+
+    std::string out;
+    for (const std::string& line : lines) {
+        out += line;
+        out += '\n';
+    }
+    for (std::size_t i = 0; i < changes.size(); ++i) {
+        if (applied[i]) continue;
+        out += changes[i].first + " = " + changes[i].second + "\n";
+    }
+    return out;
 }
 
 bool LoadConfigFile(const std::string& path, Config* out, std::string* error) {
@@ -380,7 +455,9 @@ std::string ExampleConfig() {
         "# 登录后多久内收到的聊天消息当成历史回放丢掉（毫秒）。线上开着\n"
         "# keepchathistory / offlinemessages 时会重放历史，不丢的话机器人会\n"
         "# 对着几小时前 @ 过它的老消息逐条回答。慢网络可以调大。\n"
-        "history.settlems = 2000\n"
+        "# 登录时服务端会重放历史（keepchathistory / offlinemessages），\n"
+        "# 那一段不当作实时消息：连续这么多毫秒没有新行就算回放结束。\n"
+        "history.settlems = 300\n"
         "\n"
         "# ---- 回答怎么分条发 ----\n"
         "typing.maxchars = 45\n"
@@ -412,6 +489,12 @@ std::string ExampleConfig() {
         "log.path = dchat-dsh-bot.log\n"
         "log.verbose = false\n"
         "state.sessionfile = dchat-dsh-bot-sessions.txt\n"
+        "\n"
+        "# ---- 本机管理界面 ----\n"
+        "# 只监听 127.0.0.1。浏览器打开 http://127.0.0.1:8731 就能改\n"
+        "# 「接入哪些群 / 白黑名单 / 触发方式 / 分条节奏」，保存后立刻生效。\n"
+        "# 0 = 不开这个界面。\n"
+        "ui.port = 8731\n"
         "\n"
         "# ---- 断线重连 ----\n"
         "reconnect.minms = 3000\n"

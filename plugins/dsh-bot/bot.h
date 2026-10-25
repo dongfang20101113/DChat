@@ -12,7 +12,10 @@
 // 没加入的群收不到消息，被踢出去就再也收不到，不需要在服务端开任何后门。
 #pragma once
 
+#include <deque>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include "bot_config.h"
 
@@ -33,15 +36,21 @@ public:
     /** 只有 verbose 打开时才输出。 */
     void Debug(const std::string& text);
 
+    /** 最近 count 行（管理界面直接显示，省得再教人去找日志文件）。 */
+    std::vector<std::string> Tail(std::size_t count) const;
+
 private:
     void Write(const char* level, const std::string& text);
 
+    mutable std::mutex mutex_;
     void* file_ = nullptr;  // FILE*（头文件里不拉 <cstdio>）
     bool verbose_ = false;
+    std::deque<std::string> tail_;
 };
 
-/** 跑起来直到进程被要求退出（Ctrl+C / systemd stop）。返回进程退出码。 */
-int RunBot(const Config& config);
+/** 跑起来直到进程被要求退出（Ctrl+C / systemd stop）。返回进程退出码。
+ *  configPath 用来在管理界面保存时把改动写回原文件。 */
+int RunBot(const Config& config, const std::string& configPath);
 
 }  // namespace dshbot
 }  // namespace dchat

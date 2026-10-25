@@ -360,8 +360,15 @@ if(DCHAT_DSH_BOT)
         plugins/dsh-bot/bot_chunk.cpp
         plugins/dsh-bot/bot_policy.cpp
         plugins/dsh-bot/bot_event.cpp
+        plugins/dsh-bot/bot_json.cpp
+        plugins/dsh-bot/bot_http.cpp
         plugins/dsh-bot/bot_process.cpp)
-    target_link_libraries(dchat_dsh_bot_core PUBLIC dchat_protocol Threads::Threads)
+    if(WIN32)
+        # bot_http.cpp 用了 socket_util（Winsock2）
+        target_link_libraries(dchat_dsh_bot_core PUBLIC dchat_protocol ws2_32 Threads::Threads)
+    else()
+        target_link_libraries(dchat_dsh_bot_core PUBLIC dchat_protocol Threads::Threads)
+    endif()
     target_include_directories(dchat_dsh_bot_core PUBLIC plugins/dsh-bot)
 
     add_executable(dchat-dsh-bot plugins/dsh-bot/main.cpp plugins/dsh-bot/bot.cpp)

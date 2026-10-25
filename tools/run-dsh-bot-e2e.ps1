@@ -11,6 +11,7 @@
 # 用法：powershell -NoProfile -ExecutionPolicy Bypass -File tools/run-dsh-bot-e2e.ps1
 param(
     [int]$Port = 5601,
+    [int]$UiPort = 5701,
     [string]$BuildDir = "$PSScriptRoot\..\build"
 )
 
@@ -135,6 +136,7 @@ function Write-BotConfig {
 server.host = 127.0.0.1
 server.port = $Port
 server.encrypt = auto
+ui.port = $UiPort
 bot.nick = 小d
 bot.password = botpass123
 bot.register = true
@@ -223,7 +225,9 @@ $setup = Invoke-Probe 'setup' @(
     ('GCREATE grp3 ' + (B64 '测试三群')),
     'GSET grp3 joinmode direct',
     ('GCREATE grp4 ' + (B64 '测试四群')),
-    'GSET grp4 joinmode direct'
+    'GSET grp4 joinmode direct',
+    ('GCREATE grp6 ' + (B64 '测试六群')),
+    'GSET grp6 joinmode direct'
 ) -mode register
 # 服务端的 LOGGEDIN 带时间前缀（`LOGGEDIN 09:45 alice`），所以用正则而不是子串
 Check ([regex]::IsMatch($setup, 'LOGGEDIN [0-9:]+ alice')) '注册并登录 alice' 'setup'
@@ -333,6 +337,75 @@ Check (-not $joined6.Contains('历史里的问题')) '历史里被 @ 的那条�
 $botLog5 = Read-Shared "$work\bot-p5.out"
 Check ($botLog5.Contains('忽略了')) '日志里说明了丢掉了几条回放消息' 'talk6'
 Stop-Bot $bot5
+
+# ---- 阶段 6：本机管理界面（白黑名单 / 接入的群都能点着改，改完立刻生效）----
+Write-Host "[6] 管理界面"
+$conf6 = Write-BotConfig 'p6' 'grp6' 'all' '' '' '--text 界面改完之后的行为。'
+$bot6 = Start-Bot 'p6' $conf6
+$ui = "http://127.0.0.1:$UiPort"
+$page = ''
+try { $page = (Invoke-WebRequest -Uri "$ui/" -UseBasicParsing -TimeoutSec 5).Content } catch { }
+Check ($page.Contains('dchat 机器人')) '首页能打开（GET / 返回页面）' 'ui'
+
+$state = $null
+try { $state = Invoke-RestMethod -Uri "$ui/api/state" -TimeoutSec 5 } catch { }
+Check ($null -ne $state -and $state.ok) '状态接口可用（GET /api/state）' 'ui'
+Check ($state.nick -eq '小d') '状态里带着机器人昵称' 'ui'
+Check (($state.rooms -join ',') -eq 'grp6') '状态里带着当前接入的群' 'ui'
+Check (($state.known | Where-Object { $_.id -eq 'grp6' }) -ne $null) '已加入的群出现在列表里' 'ui'
+
+# 先用界面把 alice 拉黑：这之后她在群里 @ 它就不该有回应
+$post = '{"replyMode":"blacklist","replyList":["alice"],"rooms":["grp6"]}'
+try {
+    $saved = Invoke-RestMethod -Method Post -Uri "$ui/api/config" -Headers @{ 'X-Dchat-Bot' = '1' } `
+        -ContentType 'application/json' -Body $post -TimeoutSec 8
+} catch {
+    $saved = $null
+}
+Check ($null -ne $saved -and $saved.ok) '保存接口可用（POST /api/config）' 'ui'
+Check ($saved.state.replyMode -eq 'blacklist') '保存后返回的状态是新值' 'ui'
+$confText = [IO.File]::ReadAllText((Join-Path $work 'p6.conf'), [Text.Encoding]::UTF8)
+Check ($confText.Contains('reply.mode = blacklist')) '改动写回了配置文件' 'ui'
+Check ($confText.Contains('reply.list = alice')) '白黑名单写回了配置文件' 'ui'
+Check ($confText.Contains('# 端到端测试生成的配置')) '写回时没把注释抹掉' 'ui'
+
+$talk7 = Invoke-Probe 'talk7' @(
+    'ROOM grp6',
+    '@sleep 600',
+    'MSG @小d 界面拉黑之后还回吗',
+    '@drain 6000'
+)
+$lines7 = BotLines $talk7 'grp6' '小d'
+Check ($lines7.Count -eq 0) ("界面改成黑名单后立刻不回了（实际 " + $lines7.Count + " 条）") 'talk7'
+
+# 再改回"谁都回"，验证方向反过来也立刻生效
+$post = '{"replyMode":"all","rooms":["grp6"]}'
+try {
+    $saved = Invoke-RestMethod -Method Post -Uri "$ui/api/config" -Headers @{ 'X-Dchat-Bot' = '1' } `
+        -ContentType 'application/json' -Body $post -TimeoutSec 8
+} catch {
+    $saved = $null
+}
+Check ($null -ne $saved -and $saved.ok) '改回 all 也成功' 'ui'
+$talk8 = Invoke-Probe 'talk8' @(
+    'ROOM grp6',
+    '@sleep 600',
+    'MSG @小d 现在回了吗',
+    '@drain 8000'
+)
+$lines8 = BotLines $talk8 'grp6' '小d'
+Check ($lines8.Count -ge 1) ("改回 all 之后立刻又回了（" + $lines8.Count + " 条）") 'talk8'
+
+# 没有自定义头的 POST 必须被拒（防止别的网站顺手改我们的配置）
+$blocked = $null
+try {
+    $blocked = Invoke-RestMethod -Method Post -Uri "$ui/api/config" -ContentType 'application/json' `
+        -Body '{"replyMode":"all"}' -TimeoutSec 5
+} catch {
+    $blocked = $null
+}
+Check ($null -eq $blocked) '缺自定义头的 POST 被拒（403）' 'ui'
+Stop-Bot $bot6
 
 # ---- 收尾 ----
 if ($null -ne $server) {

@@ -21,9 +21,11 @@
 #include <cstring>
 #include <ctime>
 #include <deque>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -34,12 +36,15 @@
 #include "bot_chunk.h"
 #include "bot_config.h"
 #include "bot_event.h"
+#include "bot_http.h"
+#include "bot_json.h"
 #include "bot_policy.h"
 #include "bot_process.h"
 #include "crypto.h"
 #include "file_transfer.h"
 #include "protocol.h"
 #include "render.h"
+#include "ui_page.h"
 
 namespace dchat {
 namespace dshbot {
@@ -102,13 +107,26 @@ bool Logger::Open(const std::string& path, bool verbose, std::string* error) {
 }
 
 void Logger::Write(const char* level, const std::string& text) {
-    const std::string line = NowText() + " [" + level + "] " + text + "\n";
-    std::fputs(line.c_str(), stdout);
-    std::fflush(stdout);
-    if (file_ != nullptr) {
-        std::fputs(line.c_str(), static_cast<std::FILE*>(file_));
-        std::fflush(static_cast<std::FILE*>(file_));
+    const std::string line = NowText() + " [" + level + "] " + text;
+    {
+        // 多线程同时写（接收线程/工作线程/发送线程/HTTP 线程）：
+        // 不加锁的话两行会交错成半行，日志本来就是拿来查问题的，交错等于白记。
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::fputs((line + "\n").c_str(), stdout);
+        std::fflush(stdout);
+        if (file_ != nullptr) {
+            std::fputs((line + "\n").c_str(), static_cast<std::FILE*>(file_));
+            std::fflush(static_cast<std::FILE*>(file_));
+        }
+        tail_.push_back(line);
+        if (tail_.size() > 300) tail_.pop_front();
     }
+}
+
+std::vector<std::string> Logger::Tail(std::size_t count) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::size_t begin = tail_.size() > count ? tail_.size() - count : 0;
+    return std::vector<std::string>(tail_.begin() + static_cast<std::ptrdiff_t>(begin), tail_.end());
 }
 
 void Logger::Info(const std::string& text) { Write("INFO", text); }
@@ -128,7 +146,8 @@ enum class ReadStatus { Line, Timeout, Closed, Failed };
 
 class Bot : public std::enable_shared_from_this<Bot> {
 public:
-    Bot(const Config& config, Logger& log) : cfg_(config), log_(log) {}
+    Bot(const Config& config, const std::string& configPath, Logger& log)
+        : config_(std::make_shared<const Config>(config)), configPath_(configPath), log_(log) {}
 
     void Run();
 
@@ -198,7 +217,35 @@ private:
     void StoreSessions();
     bool SleepMs(int ms);
 
-    Config cfg_;
+    // ---- 本机管理界面 ----
+    void StartUi();
+    HttpResponse HandleHttp(const HttpRequest& request);
+    std::string StateJson();
+    HttpResponse HandleSave(const std::string& body);
+    HttpResponse HandleSearch(const std::string& body);
+    HttpResponse HandleJoin(const std::string& body);
+    bool ApplyConfig(const Config& next);
+    /** 把界面管的那几个键写回配置文件（保留注释），失败只记日志 —— 内存里已经生效了。 */
+    void WriteConfigFile(const Config& next);
+
+    struct SearchHit {
+        std::string id;
+        std::string name;
+        std::string joinMode;
+        int members = 0;
+        int maxMembers = 0;
+    };
+
+    /**
+     * 配置在运行期是可改的（本地管理界面保存后立刻生效），所以存成**不可变快照**：
+     * 读的人拿一个 shared_ptr 走，写的人整份换掉。这样既不用给每条读加锁，
+     * 也不会读到"改了一半"的配置（比如 mode 已经是 blacklist 但名单还没写进去）。
+     */
+    std::shared_ptr<const Config> Cfg() const;
+
+    mutable std::mutex configMutex_;
+    std::shared_ptr<const Config> config_;
+    std::string configPath_;
     Logger& log_;
 
     sock::Handle sock_ = sock::kInvalid;
@@ -215,8 +262,9 @@ private:
     std::atomic<bool> loggedIn_{false};
     std::atomic<int> generation_{0};
     std::atomic<int> chatIntervalMs_{0};
-    // 登录后的"历史回放静默期"（只在接收线程里读写）
-    std::chrono::steady_clock::time_point liveFrom_{};
+    // 登录时的历史回放静默期（只在接收线程里读写）
+    bool historyMode_ = false;
+    std::chrono::steady_clock::time_point historyQuietUntil_{};
     int droppedHistory_ = 0;
 
     std::mutex outMutex_;
@@ -232,7 +280,20 @@ private:
 
     std::mutex sessionMutex_;
     std::map<std::string, std::string> sessions_;
+
+    // ---- 管理界面 ----
+    HttpServer ui_;
+    mutable std::mutex searchMutex_;
+    std::condition_variable searchCv_;
+    bool searchPending_ = false;
+    bool searchDone_ = false;
+    std::vector<SearchHit> searchHits_;
 };
+
+std::shared_ptr<const Config> Bot::Cfg() const {
+    std::lock_guard<std::mutex> lock(configMutex_);
+    return config_;
+}
 
 std::string Bot::RoomDisplayName(const std::string& room) {
     std::lock_guard<std::mutex> lock(stateMutex_);
@@ -247,7 +308,7 @@ Bot::RoomState* Bot::FindRoomLocked(const std::string& id) {
 }
 
 bool Bot::RoomConfigured(const std::string& room) const {
-    for (const std::string& configured : cfg_.rooms) {
+    for (const std::string& configured : Cfg()->rooms) {
         if (SameRoomId(configured, room)) return true;
     }
     return false;
@@ -278,10 +339,10 @@ bool Bot::ConnectSocket(std::string* error) {
     hints.ai_family = AF_INET;  // 服务端只监听 IPv4
     hints.ai_socktype = SOCK_STREAM;
     struct addrinfo* result = nullptr;
-    const std::string portText = std::to_string(cfg_.port);
-    if (::getaddrinfo(cfg_.host.c_str(), portText.c_str(), &hints, &result) != 0 ||
+    const std::string portText = std::to_string(Cfg()->port);
+    if (::getaddrinfo(Cfg()->host.c_str(), portText.c_str(), &hints, &result) != 0 ||
         result == nullptr) {
-        if (error != nullptr) *error = "解析不了主机：" + cfg_.host;
+        if (error != nullptr) *error = "解析不了主机：" + Cfg()->host;
         return false;
     }
     sockaddr_in address{};
@@ -300,7 +361,7 @@ bool Bot::ConnectSocket(std::string* error) {
     sock::SetReceiveTimeout(sock_, 200);
     if (::connect(sock_, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
         if (error != nullptr) {
-            *error = "连不上 " + cfg_.host + ":" + std::to_string(cfg_.port) + "（错误码 " +
+            *error = "连不上 " + Cfg()->host + ":" + std::to_string(Cfg()->port) + "（错误码 " +
                      std::to_string(sock::LastError()) + "）";
         }
         sock::Close(sock_);
@@ -402,7 +463,7 @@ bool Bot::DoHandshake() {
         skipped.push_back(line);
     }
     if (!gotHelloOk) {
-        if (cfg_.encrypt == "require") {
+        if (Cfg()->encrypt == "require") {
             log_.Error("服务器没有回应加密握手，但 server.encrypt = require，不连了");
             return false;
         }
@@ -439,9 +500,9 @@ bool Bot::DoHandshake() {
     encrypted_ = true;
 
     const std::string fingerprint = PublicKeyFingerprint(serverPublic);
-    if (!cfg_.fingerprint.empty()) {
-        if (!SameNick(cfg_.fingerprint, fingerprint)) {
-            log_.Error("服务器公钥指纹和配置里的不一致：配置 " + cfg_.fingerprint + "，实际 " +
+    if (!Cfg()->fingerprint.empty()) {
+        if (!SameNick(Cfg()->fingerprint, fingerprint)) {
+            log_.Error("服务器公钥指纹和配置里的不一致：配置 " + Cfg()->fingerprint + "，实际 " +
                        fingerprint + "（可能是换了服务器，也可能是中间人）");
             return false;
         }
@@ -455,7 +516,7 @@ bool Bot::DoHandshake() {
 
 bool Bot::ConnectAndLogin(std::string* error) {
     if (!ConnectSocket(error)) return false;
-    if (cfg_.encrypt != "off") {
+    if (Cfg()->encrypt != "off") {
         if (!DoHandshake()) {
             if (error != nullptr) *error = "加密握手失败";
             return false;
@@ -471,9 +532,9 @@ bool Bot::ConnectAndLogin(std::string* error) {
     loggedIn_ = false;
 
     SendRaw(BuildLine("FEATURES", "rooms1"));
-    const bool registering = cfg_.registerFirst;
-    SendRaw(BuildLine(registering ? "REGISTER" : "LOGIN", cfg_.nick + " " + cfg_.password));
-    log_.Info(std::string(registering ? "注册并登录" : "登录") + "：" + cfg_.nick);
+    const bool registering = Cfg()->registerFirst;
+    SendRaw(BuildLine(registering ? "REGISTER" : "LOGIN", Cfg()->nick + " " + Cfg()->password));
+    log_.Info(std::string(registering ? "注册并登录" : "登录") + "：" + Cfg()->nick);
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(8000);
     bool retriedLogin = false;
@@ -498,7 +559,7 @@ bool Bot::ConnectAndLogin(std::string* error) {
             const Message message = ParseLine(plain);
             if (message.command == "ERROR" && message.rest.find("已存在") != std::string::npos) {
                 retriedLogin = true;
-                SendRaw(BuildLine("LOGIN", cfg_.nick + " " + cfg_.password));
+                SendRaw(BuildLine("LOGIN", Cfg()->nick + " " + Cfg()->password));
                 continue;
             }
         }
@@ -523,12 +584,10 @@ bool Bot::ConnectAndLogin(std::string* error) {
     }
 
     JoinRooms();
-    // 从现在开始算"实时"，之前收到的聊天行都是历史回放
-    liveFrom_ = std::chrono::steady_clock::now() +
-                std::chrono::milliseconds(cfg_.historySettleMs);
+    historyMode_ = false;
     droppedHistory_ = 0;
     std::string roomList;
-    for (const std::string& room : cfg_.rooms) {
+    for (const std::string& room : Cfg()->rooms) {
         if (!roomList.empty()) roomList += ", ";
         roomList += room;
     }
@@ -540,7 +599,7 @@ bool Bot::ConnectAndLogin(std::string* error) {
 }
 
 void Bot::JoinRooms() {
-    for (const std::string& room : cfg_.rooms) {
+    for (const std::string& room : Cfg()->rooms) {
         if (SameRoomId(room, "hall")) continue;
         bool member = false;
         {
@@ -549,7 +608,7 @@ void Bot::JoinRooms() {
             member = state != nullptr && state->member;
         }
         if (member) continue;
-        if (!cfg_.autoJoin) {
+        if (!Cfg()->autoJoin) {
             log_.Warn("不在会话 " + room + " 里，且 rooms.autojoin = false，不会回复该会话");
             continue;
         }
@@ -599,6 +658,8 @@ void Bot::Disconnect() {
 void Bot::HandleLine(const std::string& line) {
     const Message message = ParseLine(line);
     if (message.command.empty()) return;
+    // 回放模式下要不要丢掉某条消息，判断在 HandleChat 里（那里顺便把窗口往后延）。
+    if (message.command.empty()) return;
     std::vector<std::string> words = message.Words();
     // ⚠️ 服务端所有带时间的行都是 `命令 hh:mm 其余…`（Timed() 把时间拼在**最前面**）。
     // 不先摘掉的话，`LOGGEDIN 09:37 alice` 会被读成"我叫 09:37"，后面所有
@@ -634,14 +695,16 @@ void Bot::HandleLine(const std::string& line) {
         return;
     }
     if (message.command == "SYS") {
-        // 服务端开始回放历史了：把静默期往后延，免得"历史还没收完就开始回话"
+        // 服务端开始回放历史了：进入"回放模式"，收到的聊天行先不算实时。
+        // 结束不靠固定计时，而是靠"安静了多久"——回放是服务端一口气写完的，
+        // 中间不会有几百毫秒的空档；固定 2 秒会让刚上线的机器人头两秒完全不理人。
         const std::string text = JoinFrom(words, first);
         if (text.find("以下是加入之前的聊天记录") != std::string::npos ||
             text.find("你不在的时候有") != std::string::npos) {
-            const auto until =
-                std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.historySettleMs);
-            if (until > liveFrom_) liveFrom_ = until;
-            log_.Debug("服务端在回放历史，静默期已延后");
+            historyMode_ = true;
+            historyQuietUntil_ = std::chrono::steady_clock::now() +
+                                 std::chrono::milliseconds(Cfg()->historySettleMs);
+            log_.Debug("服务端开始回放历史");
         }
         return;
     }
@@ -657,6 +720,30 @@ void Bot::HandleLine(const std::string& line) {
         if (words.size() > first) {
             HandleChat("hall", words[first], JoinFrom(words, first + 1));
         }
+        return;
+    }
+    if (message.command == "GHIT") {
+        // GHIT <房间ID> <群名B64> <成员数> <最大人数> <加群方式>
+        if (words.size() >= 5) {
+            std::lock_guard<std::mutex> lock(searchMutex_);
+            if (searchPending_) {
+                SearchHit hit;
+                hit.id = words[0];
+                hit.name = DecodeBase64Text(words[1]);
+                hit.members = std::atoi(words[2].c_str());
+                hit.maxMembers = std::atoi(words[3].c_str());
+                hit.joinMode = words[4];
+                searchHits_.push_back(hit);
+            }
+        }
+        return;
+    }
+    if (message.command == "GHIT_END") {
+        {
+            std::lock_guard<std::mutex> lock(searchMutex_);
+            searchDone_ = true;
+        }
+        searchCv_.notify_all();
         return;
     }
     if (message.command == "RULES") {
@@ -712,24 +799,31 @@ void Bot::HandleChat(const std::string& room, const std::string& nick, const std
     }
     // 登录瞬间服务端会用**原始 SAY/RMSG 行**重放错过的历史（keepchathistory /
     // offlinemessages）。不丢掉的话，机器人一上线就把几小时前 @ 过它的消息
-    // 逐条回答一遍 —— 群里看到的是一串答非所问。协议上没法区分历史与实时
-    // （历史行没有序号），只能靠登录后的静默期，见 BotConfig::historySettleMs。
-    if (std::chrono::steady_clock::now() < liveFrom_) {
-        ++droppedHistory_;
-        log_.Debug("静默期内丢掉一条回放消息（" + nick + "）：" + UnescapeText(rawText));
-        return;
-    }
-    if (droppedHistory_ > 0) {
-        log_.Info("登录时忽略了 " + std::to_string(droppedHistory_) + " 条历史回放消息");
-        droppedHistory_ = 0;
+    // 逐条回答一遍 —— 群里看到的是一串答非所问。历史行没有序号，协议上分不出来，
+    // 所以用"服务端发回放提示之后、直到它安静下来"这段时间来界定，见 HandleLine 的 SYS。
+    if (historyMode_) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now < historyQuietUntil_) {
+            // 丢掉的同时**把窗口往后推**：服务端是一口气写完历史的，
+            // 只要它还在出聊天行，就还在回放。等它安静够久，下一条就是实时的。
+            historyQuietUntil_ = now + std::chrono::milliseconds(Cfg()->historySettleMs);
+            ++droppedHistory_;
+            log_.Debug("静默期内丢掉一条回放消息（" + nick + "）：" + UnescapeText(rawText));
+            return;
+        }
+        historyMode_ = false;
+        if (droppedHistory_ > 0) {
+            log_.Info("登录时忽略了 " + std::to_string(droppedHistory_) + " 条历史回放消息");
+            droppedHistory_ = 0;
+        }
     }
 
     const std::string text = UnescapeText(rawText);
-    const TriggerMatch match = MatchTrigger(text, cfg_.nick, cfg_.trigger);
+    const TriggerMatch match = MatchTrigger(text, Cfg()->nick, Cfg()->trigger);
     if (!match.matched) return;
 
-    if (!ReplyAllowed(cfg_.reply, nick)) {
-        const char* why = (cfg_.reply.mode == ReplyMode::Whitelist) ? "不在白名单" : "在黑名单";
+    if (!ReplyAllowed(Cfg()->reply, nick)) {
+        const char* why = (Cfg()->reply.mode == ReplyMode::Whitelist) ? "不在白名单" : "在黑名单";
         log_.Info("跳过 " + nick + " 的 @" + "（" + why + "）");
         return;
     }
@@ -740,7 +834,7 @@ void Bot::HandleChat(const std::string& room, const std::string& nick, const std
         std::lock_guard<std::mutex> lock(jobMutex_);
         pending = jobsPending_;
     }
-    if (pending >= cfg_.brain.maxQueue + std::max(1, cfg_.brain.maxConcurrent)) {
+    if (pending >= Cfg()->brain.maxQueue + std::max(1, Cfg()->brain.maxConcurrent)) {
         EnqueueOut(generation, room,
                    "（手头还有 " + std::to_string(pending) + " 个问题在排队，等我一下）");
         log_.Warn("队列已满（" + std::to_string(pending) + "），拒绝 " + nick);
@@ -752,10 +846,10 @@ void Bot::HandleChat(const std::string& room, const std::string& nick, const std
     job.room = room;
     job.roomName = RoomDisplayName(room);
     job.nick = nick;
-    job.prompt = BuildPrompt(cfg_.brain, job.roomName, room, nick, match.text);
+    job.prompt = BuildPrompt(Cfg()->brain, job.roomName, room, nick, match.text);
     // ⚠️ 回执必须**在**投递任务之前进队列：反过来的话工作线程可能先把第一段回答
     // 塞进队列，群里的顺序就变成"第一句 / （正在想…）/ 第二句"，看起来像答非所问。
-    if (!cfg_.ackText.empty()) EnqueueOut(generation, room, cfg_.ackText);
+    if (!Cfg()->ackText.empty()) EnqueueOut(generation, room, Cfg()->ackText);
     {
         std::lock_guard<std::mutex> lock(jobMutex_);
         jobs_.push_back(job);
@@ -781,7 +875,7 @@ void Bot::EnqueueOut(int generation, const std::string& room, const std::string&
 }
 
 void Bot::EmitText(int generation, const std::string& room, const std::string& text) {
-    for (const std::string& chunk : SplitForChat(text, cfg_.typing)) {
+    for (const std::string& chunk : SplitForChat(text, Cfg()->typing)) {
         EnqueueOut(generation, room, chunk);
     }
 }
@@ -808,7 +902,7 @@ void Bot::SenderLoop() {
         }
         if (!SendRaw(BuildLine("MSG", EscapeText(item.text)))) return;
 
-        int delay = ChunkDelayMs(item.text, cfg_.typing);
+        int delay = ChunkDelayMs(item.text, Cfg()->typing);
         const int interval = chatIntervalMs_.load();
         if (interval > 0 && delay < interval + 40) delay = interval + 40;
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(delay);
@@ -839,10 +933,10 @@ void Bot::WorkerLoop() {
 Bot::Attempt Bot::RunAttempt(const Job& job, const std::string& session) {
     Attempt attempt;
     ProcessSpec spec;
-    spec.cwd = cfg_.brain.cwd;
-    spec.timeoutMs = cfg_.brain.timeoutMs;
-    spec.argv = BuildArgv(cfg_.brain.command, job.prompt, session);
-    if (!cfg_.brain.patch.empty()) {
+    spec.cwd = Cfg()->brain.cwd;
+    spec.timeoutMs = Cfg()->brain.timeoutMs;
+    spec.argv = BuildArgv(Cfg()->brain.command, job.prompt, session);
+    if (!Cfg()->brain.patch.empty()) {
         // dsh 的启动器要求 `--patch` 排在 **profile 名之后**：
         //   dsh headless --patch ./x.yml --json -      ✅
         //   dsh --patch ./x.yml headless --json -      ❌ "--profile <name> is required"
@@ -855,11 +949,11 @@ Bot::Attempt Bot::RunAttempt(const Job& job, const std::string& session) {
             }
         }
         spec.argv.insert(spec.argv.begin() + static_cast<std::ptrdiff_t>(insertAt),
-                         cfg_.brain.patch);
+                         Cfg()->brain.patch);
         spec.argv.insert(spec.argv.begin() + static_cast<std::ptrdiff_t>(insertAt), "--patch");
     }
-    if (!cfg_.brain.permissionMode.empty()) {
-        spec.env.push_back({"DSH_PERMISSION_MODE", cfg_.brain.permissionMode});
+    if (!Cfg()->brain.permissionMode.empty()) {
+        spec.env.push_back({"DSH_PERMISSION_MODE", Cfg()->brain.permissionMode});
     }
 
     std::string answerSession;
@@ -905,14 +999,14 @@ Bot::Attempt Bot::RunAttempt(const Job& job, const std::string& session) {
         EmitText(job.generation, job.room, finalText);
         attempt.producedText = true;
     }
-    if (!answerSession.empty() && cfg_.brain.sessionPerRoom) {
+    if (!answerSession.empty() && Cfg()->brain.sessionPerRoom) {
         SaveSession(job.room, answerSession);
     }
     return attempt;
 }
 
 void Bot::RunJob(const Job& job) {
-    const std::string session = cfg_.brain.sessionPerRoom ? SessionFor(job.room) : std::string();
+    const std::string session = Cfg()->brain.sessionPerRoom ? SessionFor(job.room) : std::string();
     Attempt attempt = RunAttempt(job, session);
     // 会话 id 失效（会话文件被清、HOME 换了）时 dsh 直接报错、一个字都不出。
     // 这种情况重来一次（不带会话）比回一句"出错了"有用得多。
@@ -944,7 +1038,7 @@ void Bot::RunJob(const Job& job) {
 void Bot::StartThreads() {
     auto self = shared_from_this();
     std::thread([self] { self->SenderLoop(); }).detach();
-    const int workers = std::max(1, cfg_.brain.maxConcurrent);
+    const int workers = std::max(1, Cfg()->brain.maxConcurrent);
     for (int i = 0; i < workers; ++i) {
         std::thread([self] { self->WorkerLoop(); }).detach();
     }
@@ -982,8 +1076,8 @@ void Bot::SaveSession(const std::string& room, const std::string& session) {
 }
 
 void Bot::LoadSessions() {
-    if (cfg_.sessionFile.empty()) return;
-    std::FILE* file = std::fopen(cfg_.sessionFile.c_str(), "r");
+    if (Cfg()->sessionFile.empty()) return;
+    std::FILE* file = std::fopen(Cfg()->sessionFile.c_str(), "r");
     if (file == nullptr) return;
     char buffer[1024];
     std::lock_guard<std::mutex> lock(sessionMutex_);
@@ -998,9 +1092,9 @@ void Bot::LoadSessions() {
 }
 
 void Bot::StoreSessions() {
-    if (cfg_.sessionFile.empty()) return;
+    if (Cfg()->sessionFile.empty()) return;
     std::lock_guard<std::mutex> lock(sessionMutex_);
-    std::FILE* file = std::fopen(cfg_.sessionFile.c_str(), "w");
+    std::FILE* file = std::fopen(Cfg()->sessionFile.c_str(), "w");
     if (file == nullptr) return;
     for (const auto& pair : sessions_) {
         std::fprintf(file, "%s\t%s\n", pair.first.c_str(), pair.second.c_str());
@@ -1008,14 +1102,367 @@ void Bot::StoreSessions() {
     std::fclose(file);
 }
 
+// ---------------------------------------------------------------------------
+// 本机管理界面
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::string JoinList(const std::vector<std::string>& items) {
+    std::string out;
+    for (const std::string& item : items) {
+        if (!out.empty()) out += ",";
+        out += item;
+    }
+    return out;
+}
+
+HttpResponse JsonError(int status, const std::string& message) {
+    HttpResponse response;
+    response.status = status;
+    response.body = "{\"ok\":false,\"error\":" + JsonQuote(message) + "}";
+    return response;
+}
+
+}  // namespace
+
+void Bot::StartUi() {
+    const int port = Cfg()->uiPort;
+    if (port <= 0) return;
+    auto self = shared_from_this();
+    std::string error;
+    if (!ui_.Start(
+            "127.0.0.1", port,
+            [self](const HttpRequest& request) { return self->HandleHttp(request); }, &error)) {
+        // 端口被占用不该让机器人起不来：它照样能聊天，只是没界面
+        log_.Warn("管理界面没起来：" + error + "（机器人照常工作）");
+        return;
+    }
+    log_.Info("管理界面：http://127.0.0.1:" + std::to_string(ui_.BoundPort()) + "/");
+}
+
+HttpResponse Bot::HandleHttp(const HttpRequest& request) {
+    // 只给本机浏览器用。POST 必须带自定义头：跨站页面发不出这个头
+    // （带自定义头的跨域请求会先进 OPTIONS 预检，而我们对 OPTIONS 一律 405）。
+    if (request.method == "POST" &&
+        request.headers.find("x-dchat-bot") == request.headers.end()) {
+        return JsonError(403, "forbidden");
+    }
+    if (request.method == "GET" && (request.path == "/" || request.path == "/index.html")) {
+        HttpResponse response;
+        response.contentType = "text/html; charset=utf-8";
+        response.body = kUiPage;
+        return response;
+    }
+    if (request.method == "GET" && request.path == "/api/state") {
+        HttpResponse response;
+        response.body = StateJson();
+        return response;
+    }
+    if (request.method == "POST" && request.path == "/api/config") return HandleSave(request.body);
+    if (request.method == "POST" && request.path == "/api/search") return HandleSearch(request.body);
+    if (request.method == "POST" && request.path == "/api/join") return HandleJoin(request.body);
+    return JsonError(404, "not found");
+}
+
+std::string Bot::StateJson() {
+    const auto cfg = Cfg();
+    std::string json = "{\"ok\":true";
+    json += ",\"online\":";
+    json += (loggedIn_.load() && sock_ != sock::kInvalid) ? "true" : "false";
+    json += ",\"nick\":" + JsonQuote(cfg->nick);
+    json += ",\"server\":" + JsonQuote(cfg->host + ":" + std::to_string(cfg->port));
+    json += ",\"rooms\":" + JsonQuoteArray(cfg->rooms);
+
+    // known = 我已经加入的群 + 配置里写了但还没加入的（后者标 joined:false，
+    // 这样界面上仍然能看到它、也能把它关掉 —— 否则配错一个群 ID 就再也删不掉了）
+    std::vector<RoomState> known;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        for (const auto& pair : rooms_) known.push_back(pair.second);
+    }
+    for (const std::string& configured : cfg->rooms) {
+        bool present = false;
+        for (const RoomState& room : known) {
+            if (SameRoomId(room.id, configured)) {
+                present = true;
+                break;
+            }
+        }
+        if (!present) {
+            RoomState ghost;
+            ghost.id = configured;
+            ghost.name = configured;
+            ghost.kind = "unknown";
+            ghost.member = false;
+            known.push_back(ghost);
+        }
+    }
+    // 大厅排最前，其余按 ID 排 —— 界面上顺序稳定，找起来快
+    std::sort(known.begin(), known.end(), [](const RoomState& a, const RoomState& b) {
+        if (a.id == "hall") return b.id != "hall";
+        if (b.id == "hall") return false;
+        return a.id < b.id;
+    });
+    json += ",\"known\":[";
+    for (std::size_t i = 0; i < known.size(); ++i) {
+        if (i > 0) json += ",";
+        json += "{\"id\":" + JsonQuote(known[i].id);
+        json += ",\"name\":" + JsonQuote(known[i].name.empty() ? known[i].id : known[i].name);
+        json += ",\"kind\":" + JsonQuote(known[i].kind);
+        json += ",\"joined\":";
+        json += known[i].member ? "true" : "false";
+        json += "}";
+    }
+    json += "]";
+
+    const char* mode = "all";
+    if (cfg->reply.mode == ReplyMode::Whitelist) mode = "whitelist";
+    if (cfg->reply.mode == ReplyMode::Blacklist) mode = "blacklist";
+    json += ",\"replyMode\":" + JsonQuote(mode);
+    json += ",\"replyList\":" + JsonQuoteArray(cfg->reply.nicks);
+    json += ",\"mentionOnly\":";
+    json += cfg->trigger.mentionOnly ? "true" : "false";
+    json += ",\"aliases\":" + JsonQuoteArray(cfg->trigger.aliases);
+    json += ",\"ackText\":" + JsonQuote(cfg->ackText);
+    json += ",\"typing\":{";
+    json += "\"maxChars\":" + std::to_string(cfg->typing.maxChars);
+    json += ",\"minChars\":" + std::to_string(cfg->typing.minChars);
+    json += ",\"minGapMs\":" + std::to_string(cfg->typing.minGapMs);
+    json += ",\"perCharMs\":" + std::to_string(cfg->typing.perCharMs);
+    json += ",\"maxGapMs\":" + std::to_string(cfg->typing.maxGapMs);
+    json += "}";
+
+    const std::vector<std::string> tail = log_.Tail(80);
+    json += ",\"log\":[";
+    for (std::size_t i = 0; i < tail.size(); ++i) {
+        if (i > 0) json += ",";
+        json += JsonQuote(tail[i]);
+    }
+    json += "]}";
+    return json;
+}
+
+HttpResponse Bot::HandleSave(const std::string& body) {
+    FlatJson input;
+    std::string error;
+    if (!ParseFlatJson(body, &input, &error)) return JsonError(400, error);
+
+    auto current = Cfg();
+    Config next = *current;
+    std::vector<std::string> values;
+
+    if (input.GetArray("rooms", &values)) {
+        next.rooms.clear();
+        for (const std::string& raw : values) {
+            std::string room = raw;
+            for (char& ch : room) {
+                if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+            }
+            if (room.empty()) continue;
+            bool duplicate = false;
+            for (const std::string& existing : next.rooms) {
+                if (SameRoomId(existing, room)) duplicate = true;
+            }
+            if (!duplicate) next.rooms.push_back(room);
+        }
+    }
+    if (input.Has("mentionOnly")) next.trigger.mentionOnly = input.GetBool("mentionOnly", true);
+    if (input.GetArray("aliases", &values)) next.trigger.aliases = values;
+    if (input.Has("replyMode")) {
+        const std::string mode = input.GetString("replyMode", "all");
+        if (mode == "all") {
+            next.reply.mode = ReplyMode::All;
+        } else if (mode == "whitelist") {
+            next.reply.mode = ReplyMode::Whitelist;
+        } else if (mode == "blacklist") {
+            next.reply.mode = ReplyMode::Blacklist;
+        } else {
+            return JsonError(400, "replyMode 只能是 all / whitelist / blacklist");
+        }
+    }
+    if (input.GetArray("replyList", &values)) next.reply.nicks = values;
+    if (input.Has("ackText")) next.ackText = input.GetString("ackText", std::string());
+    if (input.Has("maxChars")) next.typing.maxChars = input.GetInt("maxChars", next.typing.maxChars);
+    if (input.Has("minChars")) next.typing.minChars = input.GetInt("minChars", next.typing.minChars);
+    if (input.Has("minGapMs")) next.typing.minGapMs = input.GetInt("minGapMs", next.typing.minGapMs);
+    if (input.Has("perCharMs")) next.typing.perCharMs = input.GetInt("perCharMs", next.typing.perCharMs);
+    if (input.Has("maxGapMs")) next.typing.maxGapMs = input.GetInt("maxGapMs", next.typing.maxGapMs);
+
+    if (!ValidateConfig(&next, &error)) return JsonError(400, error);
+    ApplyConfig(next);
+    WriteConfigFile(next);
+
+    HttpResponse response;
+    response.body = "{\"ok\":true,\"state\":" + StateJson() + "}";
+    return response;
+}
+
+HttpResponse Bot::HandleSearch(const std::string& body) {
+    FlatJson input;
+    std::string error;
+    if (!ParseFlatJson(body, &input, &error)) return JsonError(400, error);
+    const std::string query = input.GetString("q", std::string());
+    if (query.empty()) return JsonError(400, "搜索关键词不能为空");
+    if (sock_ == sock::kInvalid || !loggedIn_.load()) return JsonError(409, "机器人还没连上服务器");
+
+    {
+        std::lock_guard<std::mutex> lock(searchMutex_);
+        searchHits_.clear();
+        searchDone_ = false;
+        searchPending_ = true;
+    }
+    if (!SendRaw(BuildLine("GSEARCH", Base64Encode(query)))) {
+        return JsonError(502, "发给服务器失败");
+    }
+    std::vector<SearchHit> hits;
+    {
+        std::unique_lock<std::mutex> lock(searchMutex_);
+        // 服务端是同步回一屏结果，正常几十毫秒；3 秒还没收全就当没有
+        searchCv_.wait_for(lock, std::chrono::seconds(3), [&] { return searchDone_; });
+        hits = searchHits_;
+        searchPending_ = false;
+    }
+    std::string json = "{\"ok\":true,\"hits\":[";
+    for (std::size_t i = 0; i < hits.size(); ++i) {
+        if (i > 0) json += ",";
+        json += "{\"id\":" + JsonQuote(hits[i].id);
+        json += ",\"name\":" + JsonQuote(hits[i].name);
+        json += ",\"members\":" + std::to_string(hits[i].members);
+        json += ",\"maxMembers\":" + std::to_string(hits[i].maxMembers);
+        json += ",\"joinMode\":" + JsonQuote(hits[i].joinMode) + "}";
+    }
+    json += "]}";
+    HttpResponse response;
+    response.body = json;
+    return response;
+}
+
+HttpResponse Bot::HandleJoin(const std::string& body) {
+    FlatJson input;
+    std::string error;
+    if (!ParseFlatJson(body, &input, &error)) return JsonError(400, error);
+    std::string room = input.GetString("room", std::string());
+    for (char& ch : room) {
+        if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+    }
+    if (room.empty()) return JsonError(400, "群 ID 不能为空");
+    for (char ch : room) {
+        const bool ok = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-';
+        if (!ok) return JsonError(400, "群 ID 只能用字母、数字、下划线和减号");
+    }
+
+    Config next = *Cfg();
+    bool present = false;
+    for (const std::string& existing : next.rooms) {
+        if (SameRoomId(existing, room)) present = true;
+    }
+    if (!present) next.rooms.push_back(room);
+    ApplyConfig(next);  // 里面会给新群发 GJOIN
+    WriteConfigFile(next);
+
+    HttpResponse response;
+    response.body = "{\"ok\":true,\"note\":" +
+                    JsonQuote("已把 " + room + " 加进接入列表；需要审核的群要等群主同意后才会回复") +
+                    ",\"state\":" + StateJson() + "}";
+    return response;
+}
+
+bool Bot::ApplyConfig(const Config& next) {
+    std::vector<std::string> added;
+    {
+        const auto current = Cfg();
+        for (const std::string& room : next.rooms) {
+            bool present = false;
+            for (const std::string& old : current->rooms) {
+                if (SameRoomId(old, room)) present = true;
+            }
+            if (!present) added.push_back(room);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        config_ = std::make_shared<const Config>(next);
+    }
+    std::string rooms;
+    for (const std::string& room : next.rooms) {
+        if (!rooms.empty()) rooms += ",";
+        rooms += room;
+    }
+    log_.Info("配置已更新：接入 " + rooms + "；回复范围 " +
+              std::string(next.reply.mode == ReplyMode::All
+                              ? "all"
+                              : (next.reply.mode == ReplyMode::Whitelist ? "whitelist" : "blacklist")));
+    // 新加进来的群立刻申请加入（已在群里的不会重复申请）
+    for (const std::string& room : added) {
+        if (SameRoomId(room, "hall")) continue;
+        if (sock_ == sock::kInvalid || !loggedIn_.load()) continue;
+        log_.Info("申请加入会话：" + room);
+        SendRaw(BuildLine("GJOIN", room));
+    }
+    return true;
+}
+
+void Bot::WriteConfigFile(const Config& next) {
+    if (configPath_.empty()) return;
+    std::string text;
+    {
+        std::ifstream file(configPath_, std::ios::binary);
+        if (file) {
+            std::ostringstream buffer;
+            buffer << file.rdbuf();
+            text = buffer.str();
+        }
+    }
+    const char* mode = "all";
+    if (next.reply.mode == ReplyMode::Whitelist) mode = "whitelist";
+    if (next.reply.mode == ReplyMode::Blacklist) mode = "blacklist";
+    const std::vector<std::pair<std::string, std::string>> changes = {
+        {"rooms", JoinList(next.rooms)},
+        {"rooms.autojoin", next.autoJoin ? "true" : "false"},
+        {"trigger.mentiononly", next.trigger.mentionOnly ? "true" : "false"},
+        {"trigger.aliases", JoinList(next.trigger.aliases)},
+        {"reply.mode", mode},
+        {"reply.list", JoinList(next.reply.nicks)},
+        {"reply.acktext", EscapeConfigValue(next.ackText)},
+        {"typing.maxchars", std::to_string(next.typing.maxChars)},
+        {"typing.minchars", std::to_string(next.typing.minChars)},
+        {"typing.mingapms", std::to_string(next.typing.minGapMs)},
+        {"typing.percharms", std::to_string(next.typing.perCharMs)},
+        {"typing.maxgapms", std::to_string(next.typing.maxGapMs)},
+    };
+    const std::string updated = UpdateConfigText(text, changes);
+    // 先写临时文件再改名：直接覆盖写，写一半断电会留下半份配置，下次启动直接报错。
+    const std::string temp = configPath_ + ".tmp";
+    {
+        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            log_.Warn("保存配置失败：写不了 " + temp + "（改动已在内存里生效，重启会丢）");
+            return;
+        }
+        out.write(updated.data(), static_cast<std::streamsize>(updated.size()));
+        if (!out) {
+            log_.Warn("保存配置失败：写 " + temp + " 出错");
+            return;
+        }
+    }
+    std::remove(configPath_.c_str());
+    if (std::rename(temp.c_str(), configPath_.c_str()) != 0) {
+        log_.Warn("保存配置失败：改名到 " + configPath_ + " 失败");
+        return;
+    }
+    log_.Info("配置已写回 " + configPath_);
+}
+
 void Bot::Run() {
     LoadSessions();
+    StartUi();
     StartThreads();
-    int backoff = cfg_.reconnectMinMs;
+    int backoff = Cfg()->reconnectMinMs;
     while (!g_requestStop.load()) {
         std::string error;
         if (ConnectAndLogin(&error)) {
-            backoff = cfg_.reconnectMinMs;
+            backoff = Cfg()->reconnectMinMs;
             ReceiveLoop();
         } else {
             log_.Error("连接失败：" + error);
@@ -1024,9 +1471,10 @@ void Bot::Run() {
         if (g_requestStop.load()) break;
         log_.Info(std::to_string(backoff / 1000) + " 秒后重连");
         if (!SleepMs(backoff)) break;
-        backoff = std::min(cfg_.reconnectMaxMs, backoff * 2);
+        backoff = std::min(Cfg()->reconnectMaxMs, backoff * 2);
     }
     StopThreads();
+    ui_.Stop();
     // 给工作线程一点收尾时间（它们可能在等子进程）。进程随后退出，
     // 还没结束的回答本来也没人收得到了。
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -1035,7 +1483,7 @@ void Bot::Run() {
 
 }  // namespace
 
-int RunBot(const Config& config) {
+int RunBot(const Config& config, const std::string& configPath) {
     // 故意 new 出来不释放：工作线程是 detach 的，进程退出前最后一刻它可能还在写日志。
     // 放在栈上会在 Run 返回时析构，然后被那条线程用到 —— 这是典型的退出期 use-after-free
     // （平时看不出来，偶尔崩在退出路径上，还查不到是谁）。
@@ -1054,7 +1502,7 @@ int RunBot(const Config& config) {
 #endif
 
     sock::Startup();
-    auto bot = std::make_shared<Bot>(config, *logger);
+    auto bot = std::make_shared<Bot>(config, configPath, *logger);
     bot->Run();
     sock::Cleanup();
     return 0;
