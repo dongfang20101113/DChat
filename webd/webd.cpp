@@ -191,10 +191,69 @@ void RememberDownloaded(const std::string& id, const std::string& path) {
     g_downloadedFiles[id] = path;
 }
 
+/** 忽略大小写比较两个字符串（附件 id 是 F1 这种，用户可能手打小写）。 */
+bool SameTextIgnoringCase(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        const unsigned char x = static_cast<unsigned char>(a[i]);
+        const unsigned char y = static_cast<unsigned char>(b[i]);
+        if (std::toupper(x) != std::toupper(y)) return false;
+    }
+    return true;
+}
+
 std::string DownloadedPath(const std::string& id) {
     std::lock_guard<std::mutex> lock(g_filesMutex);
     const auto it = g_downloadedFiles.find(id);
-    return (it == g_downloadedFiles.end()) ? std::string() : it->second;
+    if (it != g_downloadedFiles.end()) return it->second;
+    // 精确没找到再按忽略大小写找：用户在聊天框里敲的是 `/get f1`，
+    // 而附件 id 是 F1 —— 之前这里会回 404「还没下载到网关」，看着就像没下成。
+    for (const auto& entry : g_downloadedFiles) {
+        if (SameTextIgnoringCase(entry.first, id)) return entry.second;
+    }
+    return std::string();
+}
+
+/** 路径里的文件名部分。 */
+std::string FileNameOf(const std::string& path) {
+    const std::size_t slash = path.find_last_of("/\\");
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+/**
+ * Content-Disposition 里只能放 ASCII。中文名走 RFC 5987 的 `filename*`，
+ * 同时给一个 ASCII 兜底名（老浏览器只认 filename="..."）。
+ *
+ * 为什么需要这一整段：以前这里直接用附件 id 当文件名，浏览器存下来就是
+ * 一个叫 `F1`、没有扩展名的"文件"——双击打不开，用户只能自己猜它是什么。
+ */
+std::string AsciiFileNameFallback(const std::string& name) {
+    std::string out;
+    for (const char raw : name) {
+        const unsigned char ch = static_cast<unsigned char>(raw);
+        out.push_back((ch >= 0x20 && ch < 0x7F && ch != '"' && ch != '\\') ? static_cast<char>(ch)
+                                                                           : '_');
+    }
+    return out.empty() ? std::string("download") : out;
+}
+
+std::string Rfc5987Encode(const std::string& text) {
+    static constexpr char kHex[] = "0123456789ABCDEF";
+    std::string out;
+    for (const char raw : text) {
+        const unsigned char ch = static_cast<unsigned char>(raw);
+        const bool safe = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                          (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' ||
+                          ch == '~';
+        if (safe) {
+            out.push_back(static_cast<char>(ch));
+            continue;
+        }
+        out.push_back('%');
+        out.push_back(kHex[ch >> 4]);
+        out.push_back(kHex[ch & 0x0F]);
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------- 一个浏览器会话
@@ -2468,7 +2527,8 @@ void ServeConnection(dchat::sock::Handle handle) {
         }
     } else if (path.rfind("/file/", 0) == 0) {
         // 浏览器取一个已经从 dchat 服务器下载到网关本机的附件。
-        // 文件名用附件 ID（不是原始文件名），避免中文/空格在头里出问题。
+        // 文件名用**原始文件名**（落盘时用的就是它），不是附件 ID —— 用 ID 的话
+        // 浏览器存下来是个叫 `F1`、没扩展名的文件，双击打不开。
         std::string id = path.substr(6);
         const std::size_t q = id.find('?');
         if (q != std::string::npos) id = id.substr(0, q);
@@ -2481,11 +2541,13 @@ void ServeConnection(dchat::sock::Handle handle) {
             std::fseek(file, 0, SEEK_END);
             const long size = std::ftell(file);
             std::fseek(file, 0, SEEK_SET);
-            const std::string head = "HTTP/1.1 200 OK\r\n"
-                                     "Content-Type: application/octet-stream\r\n"
-                                     "Content-Disposition: attachment; filename=\"" + id +
-                                     "\"\r\nContent-Length: " + std::to_string(size) +
-                                     "\r\nConnection: close\r\n\r\n";
+            const std::string name = FileNameOf(full);
+            const std::string head =
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: application/octet-stream\r\n"
+                "Content-Disposition: attachment; filename=\"" + AsciiFileNameFallback(name) +
+                "\"; filename*=UTF-8''" + Rfc5987Encode(name) +
+                "\r\nContent-Length: " + std::to_string(size) + "\r\nConnection: close\r\n\r\n";
             SendAll(handle, head.data(), head.size());
             char chunk[65536];
             std::size_t left = static_cast<std::size_t>(size);

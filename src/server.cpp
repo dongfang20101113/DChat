@@ -814,11 +814,31 @@ void EnforceTempBudget() {
     }
 }
 
+/** 把附件 id 比较用的两部分统一成大写（只影响"找人输入"这条路径）。 */
+bool SameFileId(const std::string& a, const std::string& b) {
+    if (a == b) return true;
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (std::toupper(static_cast<unsigned char>(a[i])) !=
+            std::toupper(static_cast<unsigned char>(b[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::shared_ptr<StoredFile> FindStoredFile(const std::string& id) {
     std::lock_guard<std::mutex> lock(g_filesMutex);
     for (const std::string& line : ExpireFilesLocked()) Log("stored file expired: " + line);
     for (const auto& file : g_files) {
         if (file->id == id) return file;
+    }
+    // 精确匹配没有就再按**忽略大小写**找一遍：附件 id 是 F1、F2 这种很短、
+    // 用户会手动敲的东西，在聊天框里打 `/get f1` 不该被判"文件不存在"
+    //（实测就踩了：/get f1 失败、/get F1 成功，同一个文件）。
+    // id 全是大写字母+数字，大小写不同不可能是两个不同的文件，所以没有歧义。
+    for (const auto& file : g_files) {
+        if (SameFileId(file->id, id)) return file;
     }
     return nullptr;
 }
@@ -3864,9 +3884,9 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
                     reinterpret_cast<const unsigned char*>(thumbFile->thumb.data() + offset),
                     length);
                 thumbOk = client->SendLine(dchat::BuildLine("FILE_THUMB_DATA",
-                                                           thumbFile->id + " " + piece));
+                                                           words[0] + " " + piece));
             }
-            if (thumbOk) client->SendLine(dchat::BuildLine("FILE_THUMB_END", thumbFile->id));
+            if (thumbOk) client->SendLine(dchat::BuildLine("FILE_THUMB_END", words[0]));
             return true;
         }
 
@@ -3961,8 +3981,12 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
         // 如果这里报的是密文大小，客户端会一直等那些永远不来的字节 ——
         // 看着像"下载卡在 99%"，而且不报错。
         const unsigned long long sendSize = encryptedFile ? plainCache.size() : file->size;
+        // 回给客户端的 id 用**它请求的那个写法**（它敲的是 f1 就回 f1）：
+        // 客户端按自己请求的 id 建下载任务、算续传位置，回一个大小写不同的 id
+        // 它就对不上号了（下载会静默不动）。发哪个文件由上面的忽略大小写查找决定。
+        const std::string replyId = words[0];
         bool ok = client->SendLine(dchat::BuildLine(
-            "FILE_BEGIN", file->id + " " + file->nameB64 + " " + std::to_string(sendSize)));
+            "FILE_BEGIN", replyId + " " + file->nameB64 + " " + std::to_string(sendSize)));
 
         std::ifstream in;
         if (!encryptedFile) {
@@ -3998,9 +4022,9 @@ bool HandleLine(const std::shared_ptr<Client>& client, const std::string& line) 
                 reinterpret_cast<const unsigned char*>(buffer.data()), length);
             // downloadrate：按限速睡够再发下一块（阻塞形成背压，不丢数据）
             client->Throttle(&client->downloadLimiter, length, CurrentRules().downloadRateKbps);
-            ok = client->SendLine(dchat::BuildLine("FILE_DATA", file->id + " " + chunk));
+            ok = client->SendLine(dchat::BuildLine("FILE_DATA", replyId + " " + chunk));
         }
-        if (ok) client->SendLine(dchat::BuildLine("FILE_END", file->id));
+        if (ok) client->SendLine(dchat::BuildLine("FILE_END", replyId));
         return true;
     }
 
