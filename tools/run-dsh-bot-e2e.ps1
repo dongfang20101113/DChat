@@ -72,6 +72,13 @@ $work = Join-Path $BuildDir 'dsh-bot-e2e'
 if (Test-Path $work) { Remove-Item $work -Recurse -Force }
 New-Item -ItemType Directory -Path $work | Out-Null
 
+# 打开 keepchathistory + offlinemessages：线上就是这么配的，而**登录时服务端会用
+# 原始 SAY/RMSG 行重放历史**——这正是"机器人一上线就对着老消息逐条回答"的来源。
+# 阶段 5 专门验证它不会那么干。
+[IO.File]::WriteAllText("$work\dchat-rules.txt",
+    "keepchathistory true`nofflinemessages 50`n",
+    (New-Object Text.UTF8Encoding($false)))
+
 $server = Start-Process -FilePath $serverExe -ArgumentList @('--port', "$Port") `
     -WorkingDirectory $work -RedirectStandardOutput "$work\server.out" `
     -RedirectStandardError "$work\server.err" -NoNewWindow -PassThru
@@ -302,6 +309,30 @@ $talk5 = Invoke-Probe 'talk5' @(
 $lines5 = BotLines $talk5 'hall' '小d'
 Check ($lines5.Count -ge 1) ("大厅是配置里的，会回（" + $lines5.Count + " 条）") 'talk5'
 Stop-Bot $bot4
+
+# ---- 阶段 5：登录时回放的历史消息不能被当成"有人刚 @ 我" ----
+Write-Host "[5] 历史回放不触发回答"
+# 机器人不在线时，有人在它被 @ 过：这条会进大厅历史，登录时被重放回来
+$hist = Invoke-Probe 'hist' @(
+    'MSG @小d 历史里的问题'
+)
+Check ($hist.Contains('历史里的问题')) '先把一条 @ 消息留在历史里' 'hist'
+$conf5 = Write-BotConfig 'p5' 'hall' 'all' '' '' '--echo'
+$bot5 = Start-Bot 'p5' $conf5
+# 3 秒后才发实时消息：登录后的静默期是 2 秒（history.settlems）
+$talk6 = Invoke-Probe 'talk6' @(
+    '@sleep 3000',
+    'MSG @小d 实时问题',
+    '@drain 12000'
+)
+$lines6 = BotLines $talk6 'hall' '小d'
+$joined6 = $lines6 -join ''
+Check ($lines6.Count -ge 1) ("实时消息照常回（" + $lines6.Count + " 条）") 'talk6'
+Check ($joined6.Contains('实时问题')) '回的是实时那条（提示词里带着它的正文）' 'talk6'
+Check (-not $joined6.Contains('历史里的问题')) '历史里被 @ 的那条没有被回答' 'talk6'
+$botLog5 = Read-Shared "$work\bot-p5.out"
+Check ($botLog5.Contains('忽略了')) '日志里说明了丢掉了几条回放消息' 'talk6'
+Stop-Bot $bot5
 
 # ---- 收尾 ----
 if ($null -ne $server) {

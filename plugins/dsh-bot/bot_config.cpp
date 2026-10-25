@@ -222,6 +222,8 @@ bool ParseConfig(const std::string& text, Config* out, std::string* error) {
             config.reply.nicks = SplitList(value);
         } else if (key == "reply.acktext") {
             config.ackText = UnescapeValue(value);
+        } else if (key == "history.settlems") {
+            if (!ParseInt(value, 0, 60000, &config.historySettleMs)) return bad("要在 0-60000 之间");
         } else if (key == "typing.maxchars") {
             if (!ParseInt(value, 8, 4000, &config.typing.maxChars)) return bad("要在 8-4000 之间");
         } else if (key == "typing.minchars") {
@@ -375,6 +377,10 @@ std::string ExampleConfig() {
         "reply.list =\n"
         "# 被 @ 之后先说一句（空 = 不说）。起 DSH 要几秒，没反馈像卡死了。\n"
         "reply.acktext = （正在想…）\n"
+        "# 登录后多久内收到的聊天消息当成历史回放丢掉（毫秒）。线上开着\n"
+        "# keepchathistory / offlinemessages 时会重放历史，不丢的话机器人会\n"
+        "# 对着几小时前 @ 过它的老消息逐条回答。慢网络可以调大。\n"
+        "history.settlems = 2000\n"
         "\n"
         "# ---- 回答怎么分条发 ----\n"
         "typing.maxchars = 45\n"

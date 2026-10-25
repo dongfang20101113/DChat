@@ -215,6 +215,9 @@ private:
     std::atomic<bool> loggedIn_{false};
     std::atomic<int> generation_{0};
     std::atomic<int> chatIntervalMs_{0};
+    // 登录后的"历史回放静默期"（只在接收线程里读写）
+    std::chrono::steady_clock::time_point liveFrom_{};
+    int droppedHistory_ = 0;
 
     std::mutex outMutex_;
     std::condition_variable outCv_;
@@ -520,6 +523,10 @@ bool Bot::ConnectAndLogin(std::string* error) {
     }
 
     JoinRooms();
+    // 从现在开始算"实时"，之前收到的聊天行都是历史回放
+    liveFrom_ = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(cfg_.historySettleMs);
+    droppedHistory_ = 0;
     std::string roomList;
     for (const std::string& room : cfg_.rooms) {
         if (!roomList.empty()) roomList += ", ";
@@ -626,6 +633,18 @@ void Bot::HandleLine(const std::string& line) {
         }
         return;
     }
+    if (message.command == "SYS") {
+        // 服务端开始回放历史了：把静默期往后延，免得"历史还没收完就开始回话"
+        const std::string text = JoinFrom(words, first);
+        if (text.find("以下是加入之前的聊天记录") != std::string::npos ||
+            text.find("你不在的时候有") != std::string::npos) {
+            const auto until =
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.historySettleMs);
+            if (until > liveFrom_) liveFrom_ = until;
+            log_.Debug("服务端在回放历史，静默期已延后");
+        }
+        return;
+    }
     if (message.command == "RMSG") {
         // RMSG <时间> <房间ID> <昵称> <文本>
         if (words.size() > first + 1) {
@@ -690,6 +709,19 @@ void Bot::HandleChat(const std::string& room, const std::string& nick, const std
     if (!IsMember(room)) {
         log_.Debug("收到 " + room + " 的消息但我不在里面，忽略");
         return;
+    }
+    // 登录瞬间服务端会用**原始 SAY/RMSG 行**重放错过的历史（keepchathistory /
+    // offlinemessages）。不丢掉的话，机器人一上线就把几小时前 @ 过它的消息
+    // 逐条回答一遍 —— 群里看到的是一串答非所问。协议上没法区分历史与实时
+    // （历史行没有序号），只能靠登录后的静默期，见 BotConfig::historySettleMs。
+    if (std::chrono::steady_clock::now() < liveFrom_) {
+        ++droppedHistory_;
+        log_.Debug("静默期内丢掉一条回放消息（" + nick + "）：" + UnescapeText(rawText));
+        return;
+    }
+    if (droppedHistory_ > 0) {
+        log_.Info("登录时忽略了 " + std::to_string(droppedHistory_) + " 条历史回放消息");
+        droppedHistory_ = 0;
     }
 
     const std::string text = UnescapeText(rawText);
