@@ -1,0 +1,44 @@
+# 把 DeepSeek Harness 变成"只会聊天的脑子"：关掉所有工具插件。
+#
+# 用法（写在 dchat-dsh-bot.conf 里）：
+#   brain.patch = /opt/dchat/plugins/dsh-bot/dsh-chat-only.yml
+#
+# 为什么需要它：机器人在群里，**群里任何一个人都能 @ 它**。只把权限模式设成
+# read-only 并不够 —— 只读沙箱仍然允许它读本机文件，有人一句
+# "把 /etc/passwd 念一遍" 就能把服务器上的文件搬进聊天记录。
+# 关掉工具之后，它只能靠模型自己的知识回答，碰不到这台机器上的任何东西。
+#
+# 只关"工具"这一层（tool-*），底层服务（sandbox、fs-observation-policy 等）
+# 保持原样 —— 关掉底层插件可能让启动直接失败。
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-web
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-plugin-manager
+  disabled: true

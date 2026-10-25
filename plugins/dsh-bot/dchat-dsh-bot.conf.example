@@ -1,0 +1,72 @@
+# dchat DeepSeek Harness 机器人（dchat-dsh-bot）配置
+#
+# 一行一条 `键 = 值`，# 开头是注释。值里可以写 \n 表示换行。
+# 这份文件里有密码：chmod 600，别提交进 git。
+
+# ---- 连哪个服务器 ----
+server.host = 127.0.0.1
+server.port = 5555
+# auto = 能加密就加密（推荐）；off = 明文；require = 必须加密，握手失败就不连
+server.encrypt = auto
+# 钉住服务器公钥指纹（首次连接时日志里会打出来）。留空 = 只记日志不校验。
+server.fingerprint =
+
+# ---- 机器人账号 ----
+bot.nick = 小d
+bot.password = 换成你自己的密码
+# 账号不存在时自动注册一次（第一次启动方便；之后建议改回 false）
+bot.register = true
+
+# ---- 接入哪些会话（只回这里列的；没列的群一律不理）----
+# hall 表示大厅。多个用逗号分隔。
+rooms = hall
+# 不在群里时自动申请加入（需要审核的群会排队等群主同意）
+rooms.autojoin = true
+
+# ---- 什么情况下回话 ----
+# true = 只有被 @ 才回；false = 房间里每句话都回（调试用）
+trigger.mentiononly = true
+# 额外别名（不带 @）。主名就是 bot.nick。
+trigger.aliases =
+
+# ---- 谁能让它开口 ----
+# all = 谁都回；whitelist = 只回名单里的人；blacklist = 名单里的人不回
+reply.mode = all
+reply.list =
+# 被 @ 之后先说一句（空 = 不说）。起 DSH 要几秒，没反馈像卡死了。
+reply.acktext = （正在想…）
+
+# ---- 回答怎么分条发 ----
+typing.maxchars = 45
+typing.minchars = 10
+typing.maxchunks = 24
+typing.mingapms = 350
+typing.percharms = 55
+typing.maxgapms = 1500
+typing.stripmarkdown = true
+
+# ---- 大脑：DeepSeek Harness ----
+# {prompt} / {session} 会被替换；默认从 stdin 喂提示词（最安全，不怕引号）。
+# {session} 展开成 --session-id <id>，用来让同一个群记住上文。
+brain.command = dsh headless --json {session} -
+# 子进程工作目录（留空 = 当前目录）
+brain.cwd =
+# read-only / workspace-write / danger-full-access
+# 群里任何人都能 @ 它，**别用 danger-full-access**
+brain.permissionmode = read-only
+# 关掉工具插件的补丁文件（推荐：插件目录下的 dsh-chat-only.yml）
+brain.patch =
+brain.timeoutms = 120000
+brain.sessionperroom = true
+brain.maxconcurrent = 1
+brain.maxqueue = 8
+brain.prompttemplate = 你在 dchat 的群聊「{room}」里被 {nick} @ 了。请用简体中文、口语化、简短地回复；这是聊天消息，不要用 Markdown 标题、表格或代码块。\n{nick} 说：{text}
+
+# ---- 日志与状态 ----
+log.path = dchat-dsh-bot.log
+log.verbose = false
+state.sessionfile = dchat-dsh-bot-sessions.txt
+
+# ---- 断线重连 ----
+reconnect.minms = 3000
+reconnect.maxms = 60000

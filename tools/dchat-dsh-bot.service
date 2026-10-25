@@ -1,0 +1,34 @@
+[Unit]
+# dchat × DeepSeek Harness 机器人（可选组件）。详细说明见 docs/dsh-bot.md。
+#
+# 不装它 = 服务端一个字节都不变。装上它 = 群里多一个能被 @ 的机器人。
+Description=dchat DeepSeek Harness bot (dchat-dsh-bot)
+After=network-online.target dchat.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dchat
+Group=dchat
+# 配置、日志、会话 id 都在这个目录里。配置文件里有机器人密码：chmod 600。
+WorkingDirectory=/var/lib/dchat/dsh-bot
+ExecStart=/opt/dchat/dchat-dsh-bot --config /var/lib/dchat/dsh-bot/dchat-dsh-bot.conf
+
+Restart=always
+RestartSec=5
+
+# 机器人要起 dsh 子进程，所以不能 ProtectHome / PrivateTmp 到这个程度；
+# 但仍然收掉提权与内核面。DSH 需要读写自己的 HOME（会话、凭据），
+# 因此 HOME 指到 /var/lib/dchat/dsh-bot/home。
+Environment=HOME=/var/lib/dchat/dsh-bot/home
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

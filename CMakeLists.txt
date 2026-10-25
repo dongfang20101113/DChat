@@ -344,10 +344,52 @@ if(WIN32)
 else()
     target_link_libraries(room_probe PRIVATE dchat_protocol Threads::Threads)
 endif()
+# ---------------------------------------------------------------------------
+# DeepSeek Harness ↔ dchat 机器人插件（**可选**，默认构建但完全独立）
+#
+# 它不在服务端进程里：一个普通账号 + 一套自己的协议客户端，装不装、启不启都不影响
+# dchat_server。关掉它的构建：cmake -DDCHAT_DSH_BOT=OFF
+#
+# 纯逻辑部分（配置 / 分条 / 白黑名单 / 事件解析 / 子进程）单独成一个库，
+# 这样单测不用起 socket、也不用起模型。
+# ---------------------------------------------------------------------------
+option(DCHAT_DSH_BOT "构建 DeepSeek Harness 机器人插件（dchat-dsh-bot）" ON)
+if(DCHAT_DSH_BOT)
+    add_library(dchat_dsh_bot_core STATIC
+        plugins/dsh-bot/bot_config.cpp
+        plugins/dsh-bot/bot_chunk.cpp
+        plugins/dsh-bot/bot_policy.cpp
+        plugins/dsh-bot/bot_event.cpp
+        plugins/dsh-bot/bot_process.cpp)
+    target_link_libraries(dchat_dsh_bot_core PUBLIC dchat_protocol Threads::Threads)
+    target_include_directories(dchat_dsh_bot_core PUBLIC plugins/dsh-bot)
+
+    add_executable(dchat-dsh-bot plugins/dsh-bot/main.cpp plugins/dsh-bot/bot.cpp)
+    if(WIN32)
+        # dchat_protocol 必须排在 ws2_32 **前面**：静态库是按顺序解析的，
+        # 反过来的话 socket_util.cpp 里的 WSAStartup 之类会找不到定义。
+        target_link_libraries(dchat-dsh-bot PRIVATE dchat_dsh_bot_core dchat_protocol ws2_32
+                                  Threads::Threads)
+    else()
+        target_link_libraries(dchat-dsh-bot PRIVATE dchat_dsh_bot_core Threads::Threads)
+    endif()
+
+    # 端到端测试用的"假大脑"：只吐 DSH 的 NDJSON，不联网不调模型
+    add_executable(fake_dsh_brain tests/fake_dsh_brain.cpp)
+    if(WIN32)
+        # shell32：CommandLineToArgvW（取 UTF-8 的 argv，见文件里的说明）
+        target_link_libraries(fake_dsh_brain PRIVATE shell32)
+    endif()
+
+    add_executable(test_dsh_bot tests/test_dsh_bot.cpp)
+    target_link_libraries(test_dsh_bot PRIVATE dchat_dsh_bot_core)
+endif()
+
 # ---- 编译告警选项：跨平台目标（用 if(TARGET) 兜住两端差异）----
 foreach(target_name dchat_protocol dchat_server test_protocol test_render test_server_rules
                      test_history test_server_command test_auth test_file_transfer test_crypto
-                     test_register_guard test_history_store test_room test_room_registry)
+                     test_register_guard test_history_store test_room test_room_registry
+                     dchat_dsh_bot_core dchat-dsh-bot test_dsh_bot fake_dsh_brain)
     if(NOT TARGET ${target_name})
         continue()
     endif()
@@ -396,6 +438,7 @@ dchat_add_test(register_guard_tests test_register_guard)
 dchat_add_test(history_store_tests test_history_store)
 dchat_add_test(room_tests test_room)
 dchat_add_test(room_registry_tests test_room_registry)
+dchat_add_test(dsh_bot_tests test_dsh_bot)
 dchat_add_test(voice_notes_tests test_voice_notes)
 dchat_add_test(ui_layout_tests test_ui_layout)
 dchat_add_test(chat_color_tests test_chat_color)
