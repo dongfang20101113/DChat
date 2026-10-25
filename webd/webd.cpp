@@ -1017,6 +1017,14 @@ function onLoginRejected(text) {
     } catch (e) { /* 隐私模式忽略 */ }
     add('err', '记住的密码已失效，请重新输入密码登录');
   }
+  // 这条连接已经是死的（登录没通过），直接关掉并摘掉所有回调：
+  // 不关的话用户重新输入密码时会开出第二条连接，旧那条的帧还会继续往同一个
+  // 日志区里写，看起来像两个人在说话。
+  if (ws) {
+    ws.onopen = null; ws.onmessage = null; ws.onclose = null; ws.onerror = null;
+    try { ws.close(); } catch (e) { /* 已经关了 */ }
+    ws = null;
+  }
   document.getElementById('login').style.display = '';
   setState('未登录', false);
   return true;
@@ -1948,6 +1956,12 @@ function connect(host, user, pass) {
           }
         } catch (e) { /* 隐私模式忽略 */ }
         el('login').style.display = '';
+        // 这条连接已经死了，摘掉回调再关：否则重新登录时会多出一条连接
+        if (ws) {
+          ws.onopen = null; ws.onmessage = null; ws.onclose = null; ws.onerror = null;
+          try { ws.close(); } catch (e) { /* 已关 */ }
+          ws = null;
+        }
       }
       return;
     }
