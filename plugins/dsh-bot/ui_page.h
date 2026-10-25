@@ -124,6 +124,20 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
   </div>
 
   <div class="card">
+    <h2>本机操作</h2>
+    <p class="hint">打开后它能在这个目录里读文件、改文件、改名、跑命令，也能把目录里的文件发到群里。
+      群里<strong>任何能 @ 它的人</strong>都能让它做这些 —— 只在信任这个群的时候打开。</p>
+    <div class="row">
+      <span class="name">允许改本机文件（关掉 = 只能聊天）</span>
+      <div id="brainMode" class="switch"></div>
+    </div>
+    <div class="row"><span class="name">工作目录（它能碰到的全部范围）</span><input id="workDir" type="text" placeholder="例如 D:\codes\dchat-bot\work"></div>
+    <div class="row"><span class="name">单文件上限（MB，0 = 不许发文件）</span><input id="fileMaxMb" type="number" min="0" max="256"></div>
+    <div class="row"><span class="name">额外可发送的目录（只读，分号分隔）</span><input id="fileRoots" type="text" placeholder="例如 C:\Users\你\Desktop"></div>
+    <p class="hint" id="patchHint" style="margin-top:10px"></p>
+  </div>
+
+  <div class="card">
     <h2>回答怎么分条发</h2>
     <p class="hint">字太多会刷屏，字太少像卡壳。改动保存后立刻生效。</p>
     <div class="row"><span class="name">每条最多几个字</span><input id="maxChars" type="number" min="8" max="4000"></div>
@@ -212,6 +226,13 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
       render(); markDirty();
     });
     el('mentionOnly').className = 'switch' + (state.mentionOnly ? ' on' : '');
+    el('brainMode').className = 'switch' + (state.brainMode === 'local' ? ' on' : '');
+    el('workDir').value = state.workDir || '';
+    el('fileMaxMb').value = state.fileMaxMb;
+    el('fileRoots').value = (state.fileRoots || []).join(';');
+    el('patchHint').textContent = state.patch
+      ? '当前生效的 DSH 补丁：' + state.patch
+      : '没有生效的补丁：headless 下没人能点"允许"，需要补丁才能让工具真的执行。';
     el('maxChars').value = state.typing.maxChars;
     el('minChars').value = state.typing.minChars;
     el('minGap').value = state.typing.minGapMs;
@@ -239,6 +260,11 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     el('mentionOnly').className = 'switch' + (state.mentionOnly ? ' on' : '');
     markDirty();
   };
+  el('brainMode').onclick = function () {
+    state.brainMode = (state.brainMode === 'local') ? 'chat' : 'local';
+    el('brainMode').className = 'switch' + (state.brainMode === 'local' ? ' on' : '');
+    markDirty();
+  };
   function collect() {
     return {
       rooms: state.rooms,
@@ -247,6 +273,11 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
       replyMode: state.replyMode,
       replyList: state.replyList,
       ackText: el('ack').value,
+      brainMode: state.brainMode,
+      workDir: el('workDir').value,
+      fileMaxMb: parseInt(el('fileMaxMb').value, 10),
+      fileRoots: el('fileRoots').value.split(';').map(function (s) { return s.trim(); })
+                   .filter(function (s) { return s.length > 0; }),
       maxChars: parseInt(el('maxChars').value, 10),
       minChars: parseInt(el('minChars').value, 10),
       minGapMs: parseInt(el('minGap').value, 10),

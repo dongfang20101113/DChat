@@ -224,6 +224,21 @@ bool ParseConfig(const std::string& text, Config* out, std::string* error) {
             config.ackText = UnescapeValue(value);
         } else if (key == "history.settlems") {
             if (!ParseInt(value, 0, 60000, &config.historySettleMs)) return bad("要在 0-60000 之间");
+        } else if (key == "file.maxmb") {
+            if (!ParseInt(value, 0, 256, &config.fileMaxMb)) return bad("要在 0-256 之间（0 = 不许发文件）");
+        } else if (key == "file.roots") {
+            // 用分号分隔：Windows 路径里很少出现 ';'，而逗号在文件名里更常见
+            config.fileRoots.clear();
+            std::size_t start = 0;
+            while (start <= value.size()) {
+                const std::size_t semi = value.find(';', start);
+                const std::string item = Trim((semi == std::string::npos)
+                                                  ? value.substr(start)
+                                                  : value.substr(start, semi - start));
+                if (!item.empty()) config.fileRoots.push_back(item);
+                if (semi == std::string::npos) break;
+                start = semi + 1;
+            }
         } else if (key == "typing.maxchars") {
             if (!ParseInt(value, 8, 4000, &config.typing.maxChars)) return bad("要在 8-4000 之间");
         } else if (key == "typing.minchars") {
@@ -458,6 +473,11 @@ std::string ExampleConfig() {
         "# 登录时服务端会重放历史（keepchathistory / offlinemessages），\n"
         "# 那一段不当作实时消息：连续这么多毫秒没有新行就算回放结束。\n"
         "history.settlems = 300\n"
+        "# 允许机器人发给群里的单个文件上限（MB），0 = 不许发文件\n"
+        "file.maxmb = 32\n"
+        "# 额外允许**发送**（只读）的目录，分号分隔。和 brain.cwd 的区别：\n"
+        "# brain.cwd 里它能改文件，这里只是能读出来发出去。\n"
+        "file.roots =\n"
         "\n"
         "# ---- 回答怎么分条发 ----\n"
         "typing.maxchars = 45\n"
@@ -483,7 +503,7 @@ std::string ExampleConfig() {
         "brain.sessionperroom = true\n"
         "brain.maxconcurrent = 1\n"
         "brain.maxqueue = 8\n"
-        "brain.prompttemplate = 你在 dchat 的群聊「{room}」里被 {nick} @ 了。请用简体中文、口语化、简短地回复；这是聊天消息，不要用 Markdown 标题、表格或代码块。\\n{nick} 说：{text}\n"
+        "brain.prompttemplate = 你在 dchat 的群聊「{room}」里被 {nick} @ 了。\\n你能在这个目录里读写文件、改名、建目录、跑命令：{workdir}\\n想把这个目录里的文件发给对方，就在回答最后单独写一行：[[file: 相对路径]]\\n请用简体中文、口语化、简短地回复；这是聊天消息，不要用 Markdown 标题、表格或代码块。\\n{nick} 说：{text}\n"
         "\n"
         "# ---- 日志与状态 ----\n"
         "log.path = dchat-dsh-bot.log\n"

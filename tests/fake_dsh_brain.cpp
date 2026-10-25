@@ -108,6 +108,11 @@ int main(int argc, char** argv) {
             session = args[++i];
         } else if (arg == "--delay" && i + 1 < args.size()) {
             delayMs = std::atoi(args[++i].c_str());
+        } else if (arg == "--patch" && i + 1 < args.size()) {
+            // dsh 的 --patch：机器人会按权限模式自动挂上补丁文件。
+            // 假大脑不加载任何补丁，但必须认这个参数 —— 否则整条调用链会以
+            // "未知参数"退出，测试就变成在验参数解析，而不是验机器人。
+            ++i;
         } else if (arg == "--fail") {
             fail = true;
         } else if (arg == "--echo") {

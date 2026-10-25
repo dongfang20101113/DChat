@@ -102,20 +102,21 @@ cmake --build build --target dchat-dsh-bot
 | `reply.mode` | `all` | `all` / `whitelist` / `blacklist` |
 | `reply.list` | 空 | 昵称列表，逗号分隔（`whitelist`/`blacklist` 时必填） |
 | `reply.acktext` | `（正在想…）` | 被 @ 后先说一句；留空 = 不说 |
+| `file.maxmb` | `32` | 允许发到群里的单个文件上限（MB），`0` = 不许发文件 |
 
 ### 历史回放
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `history.settlems` | `2000` | 登录后多久之内收到的聊天消息当成**历史回放**丢掉 |
+| `history.settlems` | `300` | 服务端回放历史时，"安静"多久算回放结束 |
 
 为什么需要这一条：线上服务器一般开着 `keepchathistory` / `offlinemessages`，
 **登录那一刻服务端会用原始 `SAY`/`RMSG` 行把错过的历史重放一遍**，
-里面完全可能有人几个小时前 @ 过机器人。协议上区分不出历史和实时（历史行没序号），
-所以只能"登录后这一小段时间内的不算"。服务端发「以下是加入之前的聊天记录」这类
-提示时，这个窗口会**自动往后延**，慢网络下也能盖住整段回放。
+里面完全可能有人几个小时前 @ 过机器人。历史行没有序号，协议上分不出历史和实时，
+所以用"服务端开始回放后、连续这么久没有新的聊天行"来界定回放结束。
 
-群聊不受影响：群历史走的是 `RHIST`（带序号、和实时消息不同命令名），一眼就能分。
+> 别把这个值调大：它同时是"机器人上线后多久开始理人"。曾经用固定 2 秒，
+> 结果刚上线那两秒里有人 @ 它，它完全不吭声。
 
 ### 分条节奏
 
@@ -137,14 +138,14 @@ cmake --build build --target dchat-dsh-bot
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
 | `brain.command` | `dsh headless --json {session} -` | 见下面的说明 |
-| `brain.cwd` | 空 | 子进程工作目录 |
-| `brain.permissionmode` | `read-only` | 写到子进程的 `DSH_PERMISSION_MODE`。**别用 `danger-full-access`** |
-| `brain.patch` | 空 | 额外 `--patch` 文件；强烈建议指向 `plugins/dsh-bot/dsh-chat-only.yml`（关掉工具） |
+| `brain.cwd` | 空 | **它能动手的范围**（子进程工作目录 = 沙箱根目录）。空 = 机器人进程的当前目录 |
+| `brain.permissionmode` | `read-only` | `read-only` 只能聊天 / `workspace-write` 能在 `brain.cwd` 里改文件。**别用 `danger-full-access`** |
+| `brain.patch` | 空 | 额外 `--patch` 文件；留空会**自动**用随程序附带的那份（见下） |
 | `brain.timeoutms` | `120000` | 一次回答最多等多久，超时就杀掉子进程并回一句 |
 | `brain.sessionperroom` | `true` | 每个房间一个 DSH 会话，能记住上文 |
 | `brain.maxconcurrent` | `1` | 同时跑几个 `dsh` 进程 |
 | `brain.maxqueue` | `8` | 排队上限，超了明确回"等我一下" |
-| `brain.prompttemplate` | 见示例 | 占位符 `{room}` `{roomId}` `{nick}` `{text}` |
+| `brain.prompttemplate` | 见示例 | 占位符 `{room}` `{roomId}` `{nick}` `{text}` `{workdir}` |
 
 `brain.command` 的写法：
 
@@ -154,6 +155,17 @@ cmake --build build --target dchat-dsh-bot
 - **默认从 stdin 喂提示词**（`-` 就是 stdin）。聊天内容里的引号、换行、反斜杠
   都不需要转义，这是最不容易出错的方式。
 
+`brain.patch` 留空时按权限模式**自动**挂上随程序附带的补丁（先找可执行文件旁边，
+再找 `dsh-bot/`，再找仓库里的 `../plugins/dsh-bot/`）：
+
+| 权限模式 | 自动用的补丁 | 效果 |
+| --- | --- | --- |
+| `read-only`（默认） | `dsh-chat-only.yml` | 关掉全部工具，只能聊天 |
+| `workspace-write` | `dsh-local-ops.yml` | 工具可用、不再等审批，**只能在 `brain.cwd` 里动手** |
+
+为什么本机操作必须带补丁：headless 下没有人能点"允许"，而 DSH 默认的审批策略是
+`ask` —— 模型一要写文件就卡在那里等人批准，直到超时。
+
 ### 日志与状态
 
 | 键 | 默认 | 说明 |
@@ -162,6 +174,47 @@ cmake --build build --target dchat-dsh-bot
 | `log.verbose` | `false` | 打开后连"忽略：RSET"这种也记 |
 | `state.sessionfile` | `dchat-dsh-bot-sessions.txt` | 房间 → DSH 会话 id，重启后还能接上话 |
 | `ui.port` | `8731` | 本机管理界面的端口（只监听 127.0.0.1，`0` = 不开） |
+
+---
+
+## 五、本机操作（改文件 / 改名 / 发文件）
+
+默认是**只聊天**：工具全关，它碰不到这台机器。要让它动手，在管理界面把
+「允许改本机文件」打开（或者把配置改成 `brain.permissionmode = workspace-write`
+并把 `brain.cwd` 指向允许它操作的目录）。
+
+### 它能做什么
+
+- 读、写、改、改名、删 `brain.cwd` 里的文件，建子目录；
+- 跑命令（Windows 上是 pwsh，Linux 上是 bash）——**工作目录同样受限**；
+- 把 `brain.cwd` 里的文件**发到群里**。
+
+### 发文件是怎么接上的
+
+模型不需要懂 dchat 协议。约定只有一条：**想发文件，在回答最后单独写一行**
+
+```
+[[file: 相对路径]]
+```
+
+机器人会把这一行抠掉（群里看不到），读文件、按 dchat 的上传协议送到当前会话，
+群里收到的是一张正常的附件卡片。一条回答里可以写多个。
+
+三道闸门，缺一不可：
+
+1. **路径必须在 `brain.cwd` 里面**（`../` 之类会被解析后拒绝），
+   这样它没法把机器上任意文件搬进聊天记录；
+2. **单个文件 ≤ `file.maxmb`**，同时不超过服务器的 `documentsize`；
+3. **只发普通文件**：目录、空文件、不存在的路径都会被明确回一句"发不了"。
+
+### 风险提示
+
+打开本机操作 = **群里任何能 @ 它的人，都可以让它改这台机器上（`brain.cwd` 范围内）
+的文件、跑命令**。所以：
+
+- `brain.cwd` 用一个**专门的工作目录**，不要指到家目录或系统盘根；
+- 群不可信时保持默认（只聊天）；
+- 真要放开更多，改 `brain.cwd` 就行 —— 但要清楚那就是放开到那个范围。
 
 ---
 

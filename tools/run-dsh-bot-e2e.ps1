@@ -129,7 +129,8 @@ function Invoke-Probe {
 
 function Write-BotConfig {
     param([string]$tag, [string]$rooms, [string]$mode, [string]$list,
-          [string]$ack, [string]$brainArgs)
+          [string]$ack, [string]$brainArgs, [string]$cwd = '', [string]$perm = 'read-only',
+          [string]$roots = '')
     $path = Join-Path $work "$tag.conf"
     $config = @"
 # 端到端测试生成的配置（$tag）
@@ -154,7 +155,10 @@ typing.percharms = 30
 typing.maxgapms = 800
 typing.stripmarkdown = true
 brain.command = "$brainExe" $brainArgs
-brain.permissionmode = read-only
+brain.permissionmode = $perm
+brain.cwd = $cwd
+file.maxmb = 32
+file.roots = $roots
 brain.timeoutms = 20000
 brain.sessionperroom = true
 brain.maxconcurrent = 1
@@ -406,6 +410,55 @@ try {
 }
 Check ($null -eq $blocked) '缺自定义头的 POST 被拒（403）' 'ui'
 Stop-Bot $bot6
+
+# ---- 阶段 7：本机操作（发文件 / 工作目录 / 权限模式开关）----
+Write-Host "[7] 本机操作"
+$ws = Join-Path $work 'ws'
+New-Item -ItemType Directory -Path $ws -Force | Out-Null
+[IO.File]::WriteAllText((Join-Path $ws 'hello.txt'), '本地文件内容', (New-Object Text.UTF8Encoding($false)))
+# 工作目录**外**的一个文件：只有配了 file.roots 才允许发（只读，不能改）
+$outside = Join-Path $work 'outside'
+New-Item -ItemType Directory -Path $outside -Force | Out-Null
+[IO.File]::WriteAllText((Join-Path $outside 'secret.txt'), '只读目录里的文件', (New-Object Text.UTF8Encoding($false)))
+$conf7 = Write-BotConfig 'p7' 'grp6' 'all' '' '' `
+    ('--text "发你两个：[[file: hello.txt]][[file: ' + (Join-Path $outside 'secret.txt') + ']]"') `
+    -cwd $ws -perm 'workspace-write' -roots $outside
+$bot7 = Start-Bot 'p7' $conf7
+$talk9 = Invoke-Probe 'talk9' @(
+    'ROOM grp6',
+    '@sleep 600',
+    'MSG @小d 把 hello.txt 发我',
+    '@drain 10000'
+)
+$lines9 = BotLines $talk9 'grp6' '小d'
+$joined9 = $lines9 -join ''
+Check ($joined9.Contains('发你两个')) '回答了正文' 'talk9'
+Check (-not $joined9.Contains('[[file:')) '发文件指令不会原样显示在群里' 'talk9'
+# 服务器把附件卡片广播成 RFILE_OFFER <时间> <房间> <昵称> <文件ID> <文件名B64> ...
+$offerHello = 'RFILE_OFFER [0-9:]+ grp6 小d [A-Za-z0-9]+ ' + [regex]::Escape((B64 'hello.txt'))
+$offerSecret = 'RFILE_OFFER [0-9:]+ grp6 小d [A-Za-z0-9]+ ' + [regex]::Escape((B64 'secret.txt'))
+Check ($talk9 -match $offerHello) '工作目录里的文件传上去了（群里收到附件卡片）' 'talk9'
+Check ($talk9 -match $offerSecret) '只读目录里（工作目录外）的文件也能发' 'talk9'
+
+$state7 = $null
+try { $state7 = Invoke-RestMethod -Uri "http://127.0.0.1:$UiPort/api/state" -TimeoutSec 5 } catch { }
+Check ($null -ne $state7 -and $state7.brainMode -eq 'local') '状态里显示"允许改本机文件"' 'ui'
+Check ($state7.workDir -eq $ws) '状态里带着工作目录' 'ui'
+Check ($state7.patch.Contains('dsh-local-ops.yml')) '本机操作模式下用的是 local-ops 补丁' 'ui'
+
+# 界面切回"只能聊天"：权限模式和补丁要一起换回来
+$post = '{"brainMode":"chat"}'
+$saved7 = $null
+try {
+    $saved7 = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$UiPort/api/config" `
+        -Headers @{ 'X-Dchat-Bot' = '1' } -ContentType 'application/json' -Body $post -TimeoutSec 8
+} catch { }
+Check ($null -ne $saved7 -and $saved7.ok) '切换到"只能聊天"成功' 'ui'
+Check ($saved7.state.brainMode -eq 'chat') '切换后模式是 chat' 'ui'
+Check ($saved7.state.patch.Contains('dsh-chat-only.yml')) '切回后补丁换成了 chat-only' 'ui'
+$confText7 = [IO.File]::ReadAllText((Join-Path $work 'p7.conf'), [Text.Encoding]::UTF8)
+Check ($confText7.Contains('brain.permissionmode = read-only')) '权限模式写回配置文件' 'ui'
+Stop-Bot $bot7
 
 # ---- 收尾 ----
 if ($null -ne $server) {

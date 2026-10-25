@@ -1,0 +1,17 @@
+# 允许机器人真的动手：读写 / 改名 / 删文件 / 跑命令（仅限它的工作目录里）。
+#
+# 用法（写在 dchat-dsh-bot.conf 里）：
+#   brain.permissionmode = workspace-write
+#   brain.patch = /opt/dchat/plugins/dsh-bot/dsh-local-ops.yml
+#   brain.cwd   = /var/lib/dchat/dsh-bot/work      ← 这就是它能碰到的全部范围
+#
+# 为什么必须带上这个补丁：headless 模式下没有人能点"允许"，
+# 而默认的审批策略是 ask —— 一旦模型要写文件，就会卡在那里等人批准，
+# 直到超时。这里把它改成 never：沙箱仍然生效（只能写工作目录），
+# 但不再等一个永远不会来的确认。
+#
+# ⚠️ 打开它意味着：**群里任何能 @ 机器人的人，都能让它改这台机器上的文件**
+#    （范围 = brain.cwd）。不想承担这个风险就用 dsh-chat-only.yml。
+- id: approval
+  config:
+    policy: never

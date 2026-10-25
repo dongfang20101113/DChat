@@ -12,6 +12,10 @@
 // 而且只在忙的时候偶发。
 #include "socket_util.h"  // 必须第一个：winsock2.h 要排在 windows.h 之前
 
+#ifdef _WIN32
+#include <windows.h>  // GetModuleFileNameW：找和程序放一起的补丁文件
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -21,6 +25,7 @@
 #include <cstring>
 #include <ctime>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -36,6 +41,7 @@
 #include "bot_chunk.h"
 #include "bot_config.h"
 #include "bot_event.h"
+#include "bot_file.h"
 #include "bot_http.h"
 #include "bot_json.h"
 #include "bot_policy.h"
@@ -83,6 +89,52 @@ std::string DecodeBase64Text(const std::string& text) {
 }
 
 bool SameRoomId(const std::string& a, const std::string& b) { return SameNick(a, b); }
+
+/**
+ * 可执行文件所在目录。用来找"和程序放一起"的补丁文件
+ * （dsh-chat-only.yml / dsh-local-ops.yml），这样部署时不用在配置里写死绝对路径。
+ */
+std::string ExecutableDir() {
+#ifdef _WIN32
+    wchar_t buffer[MAX_PATH];
+    const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) return std::string();
+    const std::wstring wide(buffer, buffer + length);
+    int size = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (size <= 1) return std::string();
+    std::string utf8(static_cast<std::size_t>(size - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, &utf8[0], size, nullptr, nullptr);
+    const std::size_t slash = utf8.find_last_of("/\\");
+    return slash == std::string::npos ? std::string() : utf8.substr(0, slash);
+#else
+    char buffer[4096];
+    const ssize_t length = ::readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+    if (length <= 0) return std::string();
+    const std::string path(buffer, static_cast<std::size_t>(length));
+    const std::size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? std::string() : path.substr(0, slash);
+#endif
+}
+
+bool FileExists(const std::string& path) {
+    std::error_code code;
+    return std::filesystem::is_regular_file(std::filesystem::path(path), code) && !code;
+}
+
+/** 在可执行文件附近找随程序附带的补丁（部署时不用写死绝对路径）。 */
+std::string FindBundledPatch(const std::string& name) {
+    const std::string dir = ExecutableDir();
+    if (dir.empty()) return std::string();
+    const std::string candidates[] = {
+        dir + "/" + name,
+        dir + "/dsh-bot/" + name,
+        dir + "/../plugins/dsh-bot/" + name,  // 仓库里直接跑 build/dchat-dsh-bot.exe 的情况
+    };
+    for (const std::string& candidate : candidates) {
+        if (FileExists(candidate)) return candidate;
+    }
+    return std::string();
+}
 
 }  // namespace
 
@@ -162,6 +214,8 @@ private:
         int generation = 0;
         std::string room;
         std::string text;
+        /** 非空 = 这条不是文字，是把 path 这个文件传到当前会话。 */
+        std::string path;
     };
     struct Job {
         int generation = 0;
@@ -203,7 +257,15 @@ private:
     void SenderLoop();
     void WorkerLoop();
     void EnqueueOut(int generation, const std::string& room, const std::string& text);
+    void EnqueueFile(int generation, const std::string& room, const std::string& path);
     void EmitText(int generation, const std::string& room, const std::string& text);
+    /** 把文件传上去。在发送线程里跑（它负责切房间 + 独占 socket 写）。 */
+    bool UploadFile(const std::string& room, const std::string& path);
+    int FileCapMb() const;
+    /** 机器人被授权动手的目录（= 子进程工作目录；没配就是进程当前目录）。 */
+    std::string WorkspaceDir() const;
+    /** 实际生效的 DSH 补丁文件（配置里没写就按权限模式找随程序附带的那份）。 */
+    std::string ResolvePatch() const;
     void RunJob(const Job& job);
     Attempt RunAttempt(const Job& job, const std::string& session);
 
@@ -262,6 +324,8 @@ private:
     std::atomic<bool> loggedIn_{false};
     std::atomic<int> generation_{0};
     std::atomic<int> chatIntervalMs_{0};
+    std::atomic<int> serverFileLimitMb_{0};  // 服务器 rules 里的 documentsize
+    int nextUploadId_ = 0;                   // 只在发送线程里用
     // 登录时的历史回放静默期（只在接收线程里读写）
     bool historyMode_ = false;
     std::chrono::steady_clock::time_point historyQuietUntil_{};
@@ -772,6 +836,10 @@ void Bot::HandleRules(const std::vector<std::string>& words) {
         const int interval = std::atoi(words[1].c_str());
         if (interval > 0) chatIntervalMs_ = interval;
     }
+    if (!words.empty()) {
+        const int maxMb = std::atoi(words[0].c_str());
+        if (maxMb > 0) serverFileLimitMb_ = maxMb;
+    }
 }
 
 void Bot::HandleRoomList(const std::vector<std::string>& words) {
@@ -869,14 +937,138 @@ void Bot::EnqueueOut(int generation, const std::string& room, const std::string&
         std::lock_guard<std::mutex> lock(outMutex_);
         if (outStop_) return;
         if (outQueue_.size() > 512) return;  // 兜底：不能无限堆
-        outQueue_.push_back({generation, room, text});
+        outQueue_.push_back({generation, room, text, std::string()});
     }
     outCv_.notify_one();
 }
 
+void Bot::EnqueueFile(int generation, const std::string& room, const std::string& path) {
+    {
+        std::lock_guard<std::mutex> lock(outMutex_);
+        if (outStop_) return;
+        if (outQueue_.size() > 512) return;
+        Outgoing item;
+        item.generation = generation;
+        item.room = room;
+        item.path = path;
+        outQueue_.push_back(item);
+    }
+    outCv_.notify_one();
+}
+
+std::string Bot::WorkspaceDir() const {
+    const auto cfg = Cfg();
+    if (!cfg->brain.cwd.empty()) return cfg->brain.cwd;
+    std::error_code code;
+    const auto current = std::filesystem::current_path(code);
+    return code ? std::string() : current.string();
+}
+
+int Bot::FileCapMb() const {
+    const int configured = Cfg()->fileMaxMb;
+    if (configured <= 0) return 0;
+    const int server = serverFileLimitMb_.load();
+    if (server <= 0) return configured;
+    return std::min(configured, server);
+}
+
+std::string Bot::ResolvePatch() const {
+    const auto cfg = Cfg();
+    if (!cfg->brain.patch.empty()) return cfg->brain.patch;
+    // 没写就找随程序附带的那份：
+    //   workspace-write / danger-full-access → dsh-local-ops.yml（允许动手）
+    //   其它（默认 read-only）              → dsh-chat-only.yml（只聊天）
+    const bool canTouch = cfg->brain.permissionMode == "workspace-write" ||
+                          cfg->brain.permissionMode == "danger-full-access";
+    return FindBundledPatch(canTouch ? "dsh-local-ops.yml" : "dsh-chat-only.yml");
+}
+
+bool Bot::UploadFile(const std::string& room, const std::string& path) {
+    const int capMb = FileCapMb();
+    if (capMb <= 0) {
+        EnqueueOut(generation_.load(), room, "（我这边没开「发文件」）");
+        return false;
+    }
+    std::error_code code;
+    const auto bytes = std::filesystem::file_size(path, code);
+    if (code) {
+        log_.Warn("发文件失败：读不到 " + path);
+        EnqueueOut(generation_.load(), room, "（这个文件我读不到）");
+        return false;
+    }
+    if (bytes == 0) {
+        EnqueueOut(generation_.load(), room, "（空文件发不了）");
+        return false;
+    }
+    if (bytes > static_cast<unsigned long long>(capMb) * 1024ull * 1024ull) {
+        EnqueueOut(generation_.load(), room,
+                   "（文件太大：我这边最多发 " + std::to_string(capMb) + " MB）");
+        return false;
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        EnqueueOut(generation_.load(), room, "（这个文件我打不开）");
+        return false;
+    }
+    const std::string name = SanitizeFileName(BaseNameOf(path));
+    if (name.empty()) {
+        EnqueueOut(generation_.load(), room, "（文件名不合法）");
+        return false;
+    }
+    const std::string transferId = "B" + std::to_string(nextUploadId_++);
+    if (!SendRaw(BuildLine(
+            "FILE_SEND",
+            BuildFileSendRest(transferId, Base64Encode(name), bytes, std::string(), false)))) {
+        return false;
+    }
+    std::vector<char> buffer(kFileChunkBytes);
+    unsigned long long sent = 0;
+    while (sent < bytes) {
+        const std::size_t want = static_cast<std::size_t>(
+            std::min<unsigned long long>(kFileChunkBytes, bytes - sent));
+        in.read(buffer.data(), static_cast<std::streamsize>(want));
+        const std::streamsize got = in.gcount();
+        if (got <= 0) {
+            SendRaw(BuildLine("FILE_CANCEL", transferId));
+            log_.Warn("发文件失败：文件在读的过程中变短了 " + path);
+            return false;
+        }
+        const std::string piece =
+            Base64Encode(reinterpret_cast<const unsigned char*>(buffer.data()),
+                         static_cast<std::size_t>(got));
+        if (!SendRaw(BuildLine("FILE_CHUNK", transferId + " " + piece))) {
+            log_.Warn("发文件失败：连接断了（已发 " + std::to_string(sent) + " 字节）");
+            return false;
+        }
+        sent += static_cast<unsigned long long>(got);
+    }
+    if (!SendRaw(BuildLine("FILE_END", transferId))) return false;
+    log_.Info("已发送文件 " + name + "（" + std::to_string(bytes) + " 字节）到 " + room);
+    return true;
+}
+
 void Bot::EmitText(int generation, const std::string& room, const std::string& text) {
-    for (const std::string& chunk : SplitForChat(text, Cfg()->typing)) {
+    // 先把"发文件"指令抠出来：它是给机器人看的，不能原样显示在群里
+    const FileDirective directive = ExtractFileDirectives(text);
+    for (const std::string& chunk : SplitForChat(directive.text, Cfg()->typing)) {
         EnqueueOut(generation, room, chunk);
+    }
+    const std::string workspace = WorkspaceDir();
+    // 可发范围 = 工作目录 + 额外的只读目录（发文件是只读操作，改文件才是写操作）
+    std::vector<std::string> roots;
+    roots.push_back(workspace);
+    for (const std::string& extra : Cfg()->fileRoots) roots.push_back(extra);
+    for (const std::string& raw : directive.files) {
+        const std::string resolved = ResolveSendablePath(roots, raw);
+        if (resolved.empty()) {
+            // 越界/不存在/是目录：明确说一句，别让群里以为"发了但没收到"
+            log_.Warn("拒绝发文件（不在允许的目录里或不是普通文件）：" + raw);
+            EnqueueOut(generation, room, "（这个文件我发不了：只能发工作目录里的文件）");
+            continue;
+        }
+        // 先传文件再传文字？不行：文字块可能已经入队并开始发了。
+        // 发文件的意图是"把东西给你"，放在文字后面更自然，顺序由队列保证。
+        EnqueueFile(generation, room, resolved);
     }
 }
 
@@ -899,6 +1091,11 @@ void Bot::SenderLoop() {
         if (currentRoom_ != item.room) {
             if (!SendRaw(BuildLine("ROOM", item.room))) return;
             currentRoom_ = item.room;
+        }
+        if (!item.path.empty()) {
+            // 文件：协议是"上传到当前会话"，所以必须在切完房间之后再传
+            UploadFile(item.room, item.path);
+            continue;  // 文件不分条，也不需要打字间隔
         }
         if (!SendRaw(BuildLine("MSG", EscapeText(item.text)))) return;
 
@@ -932,28 +1129,33 @@ void Bot::WorkerLoop() {
 
 Bot::Attempt Bot::RunAttempt(const Job& job, const std::string& session) {
     Attempt attempt;
+    const auto cfg = Cfg();
     ProcessSpec spec;
-    spec.cwd = Cfg()->brain.cwd;
-    spec.timeoutMs = Cfg()->brain.timeoutMs;
-    spec.argv = BuildArgv(Cfg()->brain.command, job.prompt, session);
-    if (!Cfg()->brain.patch.empty()) {
-        // dsh 的启动器要求 `--patch` 排在 **profile 名之后**：
-        //   dsh headless --patch ./x.yml --json -      ✅
-        //   dsh --patch ./x.yml headless --json -      ❌ "--profile <name> is required"
-        // 所以不能死板地插在第 2 个位置，得先找到那个 profile 名（第一个不以 '-' 开头的参数）。
-        std::size_t insertAt = spec.argv.size();
-        for (std::size_t i = 1; i < spec.argv.size(); ++i) {
-            if (!spec.argv[i].empty() && spec.argv[i][0] != '-') {
-                insertAt = i + 1;
-                break;
+    spec.cwd = cfg->brain.cwd;
+    spec.timeoutMs = cfg->brain.timeoutMs;
+    spec.argv = BuildArgv(cfg->brain.command, job.prompt, session);
+    const std::string patch = ResolvePatch();
+    if (!patch.empty()) {
+        if (!FileExists(patch)) {
+            log_.Warn("补丁文件不存在：" + patch + "（按没有补丁继续跑，行为可能不符合预期）");
+        } else {
+            // dsh 的启动器要求 `--patch` 排在 **profile 名之后**：
+            //   dsh headless --patch ./x.yml --json -      ✅
+            //   dsh --patch ./x.yml headless --json -      ❌ "--profile <name> is required"
+            // 所以不能死板地插在第 2 个位置，得先找到那个 profile 名（第一个不以 '-' 开头的参数）。
+            std::size_t insertAt = spec.argv.size();
+            for (std::size_t i = 1; i < spec.argv.size(); ++i) {
+                if (!spec.argv[i].empty() && spec.argv[i][0] != '-') {
+                    insertAt = i + 1;
+                    break;
+                }
             }
+            spec.argv.insert(spec.argv.begin() + static_cast<std::ptrdiff_t>(insertAt), patch);
+            spec.argv.insert(spec.argv.begin() + static_cast<std::ptrdiff_t>(insertAt), "--patch");
         }
-        spec.argv.insert(spec.argv.begin() + static_cast<std::ptrdiff_t>(insertAt),
-                         Cfg()->brain.patch);
-        spec.argv.insert(spec.argv.begin() + static_cast<std::ptrdiff_t>(insertAt), "--patch");
     }
-    if (!Cfg()->brain.permissionMode.empty()) {
-        spec.env.push_back({"DSH_PERMISSION_MODE", Cfg()->brain.permissionMode});
+    if (!cfg->brain.permissionMode.empty()) {
+        spec.env.push_back({"DSH_PERMISSION_MODE", cfg->brain.permissionMode});
     }
 
     std::string answerSession;
@@ -1117,6 +1319,16 @@ std::string JoinList(const std::vector<std::string>& items) {
     return out;
 }
 
+/** 路径列表用分号：Windows 路径里几乎不会出现 ';'，而 ',' 在文件名里更常见。 */
+std::string JoinPaths(const std::vector<std::string>& items) {
+    std::string out;
+    for (const std::string& item : items) {
+        if (!out.empty()) out += ";";
+        out += item;
+    }
+    return out;
+}
+
 HttpResponse JsonError(int status, const std::string& message) {
     HttpResponse response;
     response.status = status;
@@ -1225,6 +1437,13 @@ std::string Bot::StateJson() {
     json += cfg->trigger.mentionOnly ? "true" : "false";
     json += ",\"aliases\":" + JsonQuoteArray(cfg->trigger.aliases);
     json += ",\"ackText\":" + JsonQuote(cfg->ackText);
+    const bool canTouch = cfg->brain.permissionMode == "workspace-write" ||
+                          cfg->brain.permissionMode == "danger-full-access";
+    json += ",\"brainMode\":" + JsonQuote(canTouch ? "local" : "chat");
+    json += ",\"workDir\":" + JsonQuote(cfg->brain.cwd);
+    json += ",\"fileMaxMb\":" + std::to_string(cfg->fileMaxMb);
+    json += ",\"fileRoots\":" + JsonQuoteArray(cfg->fileRoots);
+    json += ",\"patch\":" + JsonQuote(ResolvePatch());
     json += ",\"typing\":{";
     json += "\"maxChars\":" + std::to_string(cfg->typing.maxChars);
     json += ",\"minChars\":" + std::to_string(cfg->typing.minChars);
@@ -1283,6 +1502,32 @@ HttpResponse Bot::HandleSave(const std::string& body) {
     }
     if (input.GetArray("replyList", &values)) next.reply.nicks = values;
     if (input.Has("ackText")) next.ackText = input.GetString("ackText", std::string());
+    if (input.Has("brainMode")) {
+        const std::string mode = input.GetString("brainMode", "chat");
+        if (mode == "local") {
+            next.brain.permissionMode = "workspace-write";
+            next.brain.patch = FindBundledPatch("dsh-local-ops.yml");
+        } else if (mode == "chat") {
+            next.brain.permissionMode = "read-only";
+            next.brain.patch = FindBundledPatch("dsh-chat-only.yml");
+        } else {
+            return JsonError(400, "brainMode 只能是 chat / local");
+        }
+    }
+    if (input.Has("workDir")) {
+        std::string dir = input.GetString("workDir", std::string());
+        while (!dir.empty() && (dir.back() == '/' || dir.back() == '\\')) dir.pop_back();
+        next.brain.cwd = dir;
+    }
+    if (input.Has("fileMaxMb")) next.fileMaxMb = input.GetInt("fileMaxMb", next.fileMaxMb);
+    if (input.GetArray("fileRoots", &values)) {
+        next.fileRoots.clear();
+        for (const std::string& raw : values) {
+            std::string dir = raw;
+            while (!dir.empty() && (dir.back() == '/' || dir.back() == '\\')) dir.pop_back();
+            if (!dir.empty()) next.fileRoots.push_back(dir);
+        }
+    }
     if (input.Has("maxChars")) next.typing.maxChars = input.GetInt("maxChars", next.typing.maxChars);
     if (input.Has("minChars")) next.typing.minChars = input.GetInt("minChars", next.typing.minChars);
     if (input.Has("minGapMs")) next.typing.minGapMs = input.GetInt("minGapMs", next.typing.minGapMs);
@@ -1425,6 +1670,11 @@ void Bot::WriteConfigFile(const Config& next) {
         {"reply.mode", mode},
         {"reply.list", JoinList(next.reply.nicks)},
         {"reply.acktext", EscapeConfigValue(next.ackText)},
+        {"brain.permissionmode", next.brain.permissionMode},
+        {"brain.patch", next.brain.patch},
+        {"brain.cwd", next.brain.cwd},
+        {"file.maxmb", std::to_string(next.fileMaxMb)},
+        {"file.roots", JoinPaths(next.fileRoots)},
         {"typing.maxchars", std::to_string(next.typing.maxChars)},
         {"typing.minchars", std::to_string(next.typing.minChars)},
         {"typing.mingapms", std::to_string(next.typing.minGapMs)},

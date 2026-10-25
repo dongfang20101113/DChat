@@ -7,12 +7,15 @@
 //   * NDJSON 解析  —— 解错就是群里出现一片 "\u4f60\u597d"
 //   * 命令模板     —— {session} 展开错就是每次调用都失败，而日志只说"出错了"
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
 #include "bot_chunk.h"
 #include "bot_config.h"
 #include "bot_event.h"
+#include "bot_file.h"
 #include "bot_http.h"
 #include "bot_json.h"
 #include "bot_policy.h"
@@ -35,6 +38,7 @@ void Check(bool ok, const char* what) {
 
 int main() {
     using namespace dchat::dshbot;
+    namespace fs = std::filesystem;
 
     // =====================================================================
     std::printf("[1] 配置解析\n");
@@ -384,6 +388,67 @@ int main() {
         Check(request.path == "/api/state", "路径不含查询串");
         Check(QueryParam(request.query, "q") == "你好", "查询串百分号解码");
         Check(QueryParam(request.query, "none").empty(), "不存在的参数返回空");
+    }
+
+    // =====================================================================
+    std::printf("[10] 发文件指令与路径约束\n");
+    {
+        const FileDirective one = ExtractFileDirectives("给你看看\n[[file: a.txt]]");
+        Check(one.files.size() == 1 && one.files[0] == "a.txt", "抠出走单独一行的发文件指令");
+        Check(one.text == "给你看看", "指令被删掉，正文留下");
+
+        const FileDirective inlineOne = ExtractFileDirectives("文件在这 [[file: b/c.txt]] 看吧");
+        Check(inlineOne.files.size() == 1 && inlineOne.files[0] == "b/c.txt", "写在一行中间也能认");
+        Check(inlineOne.text.find("文件在这") != std::string::npos &&
+                  inlineOne.text.find("看吧") != std::string::npos,
+              "指令两侧的文字都保留");
+
+        const FileDirective many = ExtractFileDirectives("[[file: a]][[file: b]]");
+        Check(many.files.size() == 2, "一条回答里可以有多个");
+
+        const FileDirective broken = ExtractFileDirectives("没闭合 [[file: a.txt");
+        Check(broken.files.empty(), "没闭合的不算指令");
+        Check(broken.text.find("[[file:") != std::string::npos, "没闭合的原样留在正文里");
+
+        const FileDirective none = ExtractFileDirectives("普通的一句话");
+        Check(none.files.empty() && none.text == "普通的一句话", "没有指令时正文不动");
+
+        const FileDirective onlyFile = ExtractFileDirectives("[[file: a.txt]]");
+        Check(onlyFile.files.size() == 1 && onlyFile.text.empty(), "只发文件时正文为空");
+    }
+    {
+        // 路径约束：只允许发工作目录里的文件
+        std::error_code code;
+        const fs::path root = fs::temp_directory_path(code) / "dchat-bot-test";
+        fs::create_directories(root / "sub", code);
+        std::ofstream(root / "a.txt") << "hello";
+        std::ofstream(root / "sub" / "b.txt") << "world";
+        fs::create_directories(root.parent_path() / "dchat-bot-test-outside", code);
+        std::ofstream(root.parent_path() / "dchat-bot-test-outside" / "x.txt") << "secret";
+
+        const std::string rootText = root.string();
+        Check(!ResolveInsideWorkspace(rootText, "a.txt").empty(), "相对路径能解析");
+        Check(!ResolveInsideWorkspace(rootText, "sub/b.txt").empty(), "子目录能解析");
+        Check(ResolveInsideWorkspace(rootText, "../dchat-bot-test-outside/x.txt").empty(),
+              "../ 越界被拒");
+        Check(ResolveInsideWorkspace(rootText, "a.txt").find(rootText) == 0, "解析结果在工作目录里");
+        Check(ResolveInsideWorkspace(rootText, "missing.txt").empty(), "不存在的文件被拒");
+        Check(ResolveInsideWorkspace(rootText, "sub").empty(), "目录被拒");
+        Check(IsInsideDirectory(rootText, rootText) == false, "目录本身不算在里面");
+        Check(IsInsideDirectory(rootText, (root / "sub" / "b.txt").string()), "子目录里的文件算");
+        Check(!IsInsideDirectory(rootText, rootText + "2/a.txt"), "work2 不算 work 里面");
+
+        // 额外只读目录：发文件时多查几个根，但**改文件**仍然只有工作目录
+        const fs::path outside = root.parent_path() / "dchat-bot-test-outside";
+        Check(ResolveInsideWorkspace(rootText, (outside / "x.txt").string()).empty(),
+              "不在工作目录里的文件，改文件那条路拒绝");
+        Check(!ResolveSendablePath({rootText, outside.string()}, (outside / "x.txt").string()).empty(),
+              "但配了只读目录之后可以发出去");
+        Check(ResolveSendablePath({rootText}, (outside / "x.txt").string()).empty(),
+              "没配只读目录时发不出去");
+
+        fs::remove_all(root, code);
+        fs::remove_all(root.parent_path() / "dchat-bot-test-outside", code);
     }
 
     // =====================================================================

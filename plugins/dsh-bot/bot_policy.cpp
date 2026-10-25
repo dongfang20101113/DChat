@@ -147,6 +147,9 @@ std::string BuildPrompt(const BrainConfig& config, const std::string& roomName,
     prompt = ReplaceAll(prompt, "{roomId}", roomId);
     prompt = ReplaceAll(prompt, "{nick}", nick);
     prompt = ReplaceAll(prompt, "{text}", text);
+    // {workdir} 用子进程的工作目录：那正是沙箱允许它动手的范围，
+    // 两边必须说的是同一个路径，否则模型会去写一个它其实碰不到的地方。
+    prompt = ReplaceAll(prompt, "{workdir}", config.cwd.empty() ? std::string("（未设置）") : config.cwd);
     return prompt;
 }
 
