@@ -281,6 +281,10 @@ bool ParseConfig(const std::string& text, Config* out, std::string* error) {
             config.sessionFile = value;
         } else if (key == "reconnect.minms") {
             if (!ParseInt(value, 100, 600000, &config.reconnectMinMs)) return bad("要在 100-600000 之间");
+        } else if (key == "ping.intervalms") {
+            if (!ParseInt(value, 1000, 3600000, &config.pingIntervalMs)) return bad("要在 1000-3600000 之间");
+        } else if (key == "ping.timeoutms") {
+            if (!ParseInt(value, 1000, 3600000, &config.pingTimeoutMs)) return bad("要在 1000-3600000 之间");
         } else if (key == "reconnect.maxms") {
             if (!ParseInt(value, 100, 3600000, &config.reconnectMaxMs)) return bad("要在 100-3600000 之间");
         } else if (key == "ui.port") {
@@ -518,7 +522,12 @@ std::string ExampleConfig() {
         "\n"
         "# ---- 断线重连 ----\n"
         "reconnect.minms = 3000\n"
-        "reconnect.maxms = 60000\n";
+        "reconnect.maxms = 60000\n"
+        "\n"
+        "# ---- 心跳 ----\n"
+        "# 空闲连接可能被 NAT/代理悄悄掐掉而两端都不报错，靠 PING/PONG 探活。\n"
+        "ping.intervalms = 30000\n"
+        "ping.timeoutms = 90000\n";
 }
 
 }  // namespace dshbot

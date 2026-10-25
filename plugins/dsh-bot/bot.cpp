@@ -337,6 +337,9 @@ private:
     std::atomic<int> chatIntervalMs_{0};
     std::atomic<int> serverFileLimitMb_{0};  // 服务器 rules 里的 documentsize
     int nextUploadId_ = 0;                   // 只在发送线程里用
+    // 心跳时间戳（只在接收线程里读写）
+    std::chrono::steady_clock::time_point lastPingAt_{};
+    std::chrono::steady_clock::time_point lastPongAt_{};
     // 登录时的历史回放静默期（只在接收线程里读写）
     bool historyMode_ = false;
     std::chrono::steady_clock::time_point historyQuietUntil_{};
@@ -661,6 +664,9 @@ bool Bot::ConnectAndLogin(std::string* error) {
     JoinRooms();
     historyMode_ = false;
     droppedHistory_ = 0;
+    // 心跳基线：从现在开始算，别让上一次连接的旧时间戳把新连接判成超时
+    lastPongAt_ = std::chrono::steady_clock::now();
+    lastPingAt_ = lastPongAt_;
     std::string roomList;
     for (const std::string& room : Cfg()->rooms) {
         if (!roomList.empty()) roomList += ", ";
@@ -696,12 +702,26 @@ void Bot::ReceiveLoop() {
     while (!g_requestStop.load()) {
         std::string line;
         const ReadStatus status = ReadRawLine(&line, 200);
+        const auto cfg = Cfg();
         if (status == ReadStatus::Line) {
             if (!HandleIncoming(line)) break;
-            continue;
+        } else if (status != ReadStatus::Timeout) {
+            break;  // Closed / Failed
         }
-        if (status == ReadStatus::Timeout) continue;
-        break;  // Closed / Failed
+        // ---- 心跳 ----
+        // 空闲连接可能被中间设备悄悄清掉：recv 既不返回 0 也不报错，不主动探活
+        // 就一直"以为自己在线"。这里定期发 PING，迟迟收不到 PONG 就断开重连。
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastPingAt_ >= std::chrono::milliseconds(cfg->pingIntervalMs)) {
+            lastPingAt_ = now;
+            if (!SendRaw(BuildLine("PING"))) break;
+            log_.Debug("心跳 PING");
+        }
+        if (now - lastPongAt_ > std::chrono::milliseconds(cfg->pingTimeoutMs)) {
+            log_.Warn("心跳超时（" + std::to_string(cfg->pingTimeoutMs) +
+                      " ms 没有 PONG），连接大概已经被中间设备掐了，重连");
+            break;
+        }
     }
     if (!g_requestStop.load()) log_.Warn("连接已断开");
 }
@@ -819,6 +839,10 @@ void Bot::HandleLine(const std::string& line) {
             searchDone_ = true;
         }
         searchCv_.notify_all();
+        return;
+    }
+    if (message.command == "PONG") {
+        lastPongAt_ = std::chrono::steady_clock::now();
         return;
     }
     if (message.command == "RULES") {

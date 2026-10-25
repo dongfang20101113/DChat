@@ -890,6 +890,19 @@ void EnableKeepAlive(dchat::sock::Handle handle) {
 #else
     (void)count;
 #endif
+    // TCP_USER_TIMEOUT：**已经发出去但一直没人 ACK** 的数据最多等多久（毫秒）。
+    //
+    // 为什么光有 keepalive 不够：keepalive 只在连接**空闲**时才探活，
+    // 而这个函数真正要治的场景是"对端已经没了、我们还在往它写"——
+    // 比如 NAT 表项被清掉之后。这时内核会一直重传（默认 tcp_retries2=15，
+    // 大约 15 分钟才放弃），期间这条连接在服务器眼里一直"活着"。
+    // 实测就撞上了：机器人的旧连接早死了，服务器还挂着它，导致重连时报
+    // 「昵称已被占用」，最长要等十几分钟才释放。
+    // 设成 60 秒：只要 60 秒内收不到 ACK 就判定这条连接废了。
+#ifdef TCP_USER_TIMEOUT
+    const unsigned int userTimeoutMs = 60000;
+    ::setsockopt(handle, IPPROTO_TCP, TCP_USER_TIMEOUT, &userTimeoutMs, sizeof(userTimeoutMs));
+#endif
 #endif
 }
 
