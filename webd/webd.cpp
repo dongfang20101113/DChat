@@ -979,6 +979,15 @@ function send(line) { if (ws && ws.readyState === 1) ws.send(line); }
 let credentials = null;      // 有值 = 断开后要自动重连
 let reconnectDelay = 2000;
 
+// 改密码时记下的新密码：等服务端回「密码已修改」再写进 localStorage。
+// 提前写不行 —— 服务器可能因为密码太短/参数不对而拒绝，那样记住的密码就和
+// 真实密码不一致，下次自动登录又是一次"口令不对"。
+let pendingNewPass = '';
+function notePasswordChange(text) {
+  const m = /^\/(?:cp|changepassword)\s+(\S+)\s*$/i.exec(text || '');
+  if (m) pendingNewPass = m[1];
+}
+
 function connect(host, user, pass, reg) {
   document.getElementById('login').style.display = 'none';
   setState('连接中…', false);
@@ -1022,8 +1031,32 @@ function connect(host, user, pass, reg) {
           document.getElementById('adminlink').style.display = 'none';
         }
         break;
-      case 'SYS':   add('sys', f[1]); break;
-      case 'ERROR': add('err', f[1]); break;
+      case 'SYS': {
+        // 改密码成功：把本机记住的密码换成新的。
+        // 不换的话下次自动登录会拿旧密码去登，用户看到的只是「口令不对」，
+        // 完全想不到是自己刚才改过密码。没记过新密码（比如在别的客户端改的）
+        // 就退回老办法：把记住的账号清掉，至少不会一直自动登录失败。
+        if (f[1] && f[1].indexOf('密码已修改') >= 0) {
+          try {
+            if (pendingNewPass) {
+              // 断开重连用内存里的那份，自动登录用 localStorage 里的那份，两份都要换
+              if (credentials) credentials.pass = pendingNewPass;
+              const saved = JSON.parse(localStorage.getItem('dchat_login') || 'null');
+              if (saved && saved.pass !== undefined) {
+                saved.pass = pendingNewPass;
+                localStorage.setItem('dchat_login', JSON.stringify(saved));
+                add('sys', '本机记住的密码已更新，下次自动登录用新密码');
+              }
+              pendingNewPass = '';
+            } else {
+              localStorage.removeItem('dchat_login');
+            }
+          } catch (e) { /* 隐私模式忽略 */ }
+        }
+        add('sys', f[1]);
+        break;
+      }
+      case 'ERROR': add('err', f[1]); pendingNewPass = ''; break;
       case 'INFO':  add('sys', f[1]); break;
       case 'FILE': {
         const d = document.createElement('div');
@@ -1107,6 +1140,9 @@ document.getElementById('loginForm').addEventListener('submit', (e) => {
 function submit() {
   const text = inputEl.value.trim();
   if (!text) return;
+  // 在聊天框里直接敲 /cp <新密码>：和「账号」页签走同一条路 —— 先记下新密码，
+  // 等服务端回「密码已修改」再把本机记住的那一份换掉。
+  notePasswordChange(text);
   send('INPUT\t' + text);
   inputEl.value = '';
 }
@@ -1503,20 +1539,18 @@ q('blocksGo').addEventListener('click', () => send('INPUT\t/blocks'));
 
 // ---- 账号：改密码 ----
 // 走 /cp（服务器会校验强度，太短/太简单由服务器拒绝并回 ERROR）。
-// 改完把本机记住的账号清掉：留着旧的会自动登录失败，用户看到的只是
-// 「口令不对」，反而不知道是自己刚改过密码。
+// 新密码先记在 pendingNewPass 里；收到「密码已修改」的回执后，才把本机记住的
+// 密码换成新的（见 SYS 分支）。这样自动登录不会拿着旧密码一直失败。
 q('cpGo').addEventListener('click', () => {
   const a = q('cpNew').value, b = q('cpNew2').value;
   if (!a) { add('err', '新密码不能为空'); return; }
   if (a !== b) { add('err', '两次输入不一致'); return; }
   if (a.indexOf(' ') >= 0) { add('err', '密码里不能有空格'); return; }
+  pendingNewPass = a;
   send('INPUT\t/cp ' + a);
   q('cpNew').value = '';
   q('cpNew2').value = '';
-  try {
-    localStorage.removeItem('dchat_login');
-  } catch (e) { /* 隐私模式忽略 */ }
-  add('sys', '已提交改密码，注意看下面的结果。本机记住的账号已清除，下次请用新密码登录。');
+  add('sys', '已提交改密码，注意看下面的结果。成功后本机会自动改成新密码。');
 });
 
 // ---- 收网关推来的结构化列表 ----

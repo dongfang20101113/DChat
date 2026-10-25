@@ -454,3 +454,11 @@ dchat_add_test(color_picker_tests test_color_picker)
 dchat_add_test(linux_client_tests test_linux_client)
 dchat_add_test(client_core_tests test_client_core)
 dchat_add_test(cli_render_tests test_cli_render)
+
+# 桌面端的两个自检：不启动界面，只跑"记住账号"的存取和改密码之后是否跟着更新。
+# 这两段是 DPAPI 落盘 + 决策逻辑，界面路径在这台机器上没法自动化
+# （合成按键送不进编辑框），所以用自检把它们钉住。
+if(TARGET dchat_client)
+    add_test(NAME client_login_selftest COMMAND dchat_client --selftest-login)
+    add_test(NAME client_password_sync_selftest COMMAND dchat_client --selftest-password-sync)
+endif()

@@ -481,6 +481,16 @@ int g_port = dchat::kDefaultPort;
 std::string g_pendingUser;
 std::string g_pendingPassword;
 
+// 改密码的"等待确认"的新密码。
+//
+// 用户在聊天框里敲了 `/cp <新密码>` 之后先记在这里，**等服务端回「密码已修改」
+// 才真正更新**自动登录用的那一份。为什么不提前更新：服务器可能因为密码太短、
+// 参数写错、或者这条指令在那条路上被拒而根本没改，提前改掉会让"记住的密码"
+// 与实际密码不一致 —— 那正是这个功能要修的问题。
+std::string g_pendingNewPassword;
+ULONGLONG g_pendingNewPasswordAt = 0;
+constexpr ULONGLONG kPasswordChangeTimeoutMs = 120000;  // 两分钟没回执就不认了
+
 // ---------------- 自动化测试的状态导出 ----------------
 //
 // 为什么要有它：这台机器上**屏幕抓图在 DWM 下会拿到旧内容**（实测），所以
@@ -4358,6 +4368,32 @@ bool LoadLoginReminder(SavedLogin* saved) {
     return !saved->password.empty();
 }
 
+/**
+ * 服务端回「密码已修改」之后，把本机记住的密码换成刚才提交的新密码。
+ *
+ * 为什么必须做：改完密码，自动登录/断线重连还在用旧密码 —— 用户看到的只是
+ * 「密码错误」，根本想不到是自己刚改过。**只在服务端确认之后才换**：服务器可能
+ * 因为密码太短、参数写错而拒绝，提前换会让记住的密码和真实密码不一致。
+ *
+ * 抽成独立函数是为了能自检（--selftest-password-sync 直接调它），
+ * 界面那条路（合成按键送不进编辑框）在这台机器上没法自动化。
+ *
+ * 返回 true 表示真的换了。
+ */
+bool AdoptNewPasswordIfConfirmed(const std::string& systemText) {
+    if (g_pendingNewPassword.empty()) return false;
+    if (systemText.find("密码已修改") == std::string::npos) return false;
+    if (GetTickCount64() - g_pendingNewPasswordAt >= kPasswordChangeTimeoutMs) {
+        g_pendingNewPassword.clear();  // 太久以前的不认
+        return false;
+    }
+    g_pendingPassword = g_pendingNewPassword;
+    g_pendingNewPassword.clear();
+    if (g_pendingUser.empty()) return true;  // 没记住账号，内存里的换了就行
+    SaveLoginReminder(g_host, g_port, g_pendingUser, g_pendingPassword);
+    return true;
+}
+
 void ClearLoginReminder() {
     std::remove(kLoginReminderFile);
 }
@@ -6323,6 +6359,17 @@ void SendCurrentInput() {
         DisconnectFromServer(false);
         return;
     }
+    // 改密码：把新密码记在"待确认"里，等服务端的成功回执再更新自动登录凭据。
+    // 只认**改自己**的那种写法（一个参数）；`/cp <昵称> <新密码>` 是控制台专用，
+    // 在这里发出去只会被服务器拒掉。
+    if (dchat::IsCommandAttempt(utf8)) {
+        const dchat::ServerCommand command = dchat::ParseServerCommand(utf8);
+        if (command.knownCommand && command.kind == dchat::ServerCommand::Kind::ChangePassword &&
+            command.name.empty() && !command.password.empty()) {
+            g_pendingNewPassword = command.password;
+            g_pendingNewPasswordAt = GetTickCount64();
+        }
+    }
     // 记进历史（按 ↑ 能翻回来）：聊天和指令都记，只有 /changepassword 会把密码去掉，
     // 那样指令能翻回来、密码又不会重新出现在输入框里
     g_inputHistory.Add(dchat::HistoryTextFor(utf8));
@@ -7276,6 +7323,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                 }
                 const dchat::NoticeInfo notice = dchat::ParseNotice(*payload);
+                // 改密码成功了：把"记住的账号"里的密码换成新的。
+                // 不换的话，下次自动登录/断线重连还会拿旧密码去登 —— 用户看到的
+                // 只是"密码错误"，完全想不到是自己刚才改过。
+                if (raw.command == "SYS" && AdoptNewPasswordIfConfirmed(notice.text)) {
+                    ViewAddItem(ItemKind::Notice, "本机记住的密码已更新，下次自动登录用新密码",
+                                dchat::NowTimeString());
+                }
                 const bool mention = dchat::MentionsMe(*payload, g_nick);
                 if (g_authPending && raw.command == "ERROR") {
                     g_authPending = false;
@@ -7730,8 +7784,44 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int showCmd) {
         int argc = 0;
         LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
         if (argv != nullptr) {
-            for (int i = 1; i + 1 < argc; ++i) {
-                if (std::wstring(argv[i]) == L"--state-file") g_statePath = argv[i + 1];
+            for (int i = 1; i < argc; ++i) {
+                if (std::wstring(argv[i]) == L"--state-file" && i + 1 < argc) {
+                    g_statePath = argv[++i];
+                    continue;
+                }
+                if (std::wstring(argv[i]) == L"--selftest-password-sync") {
+                    // 自检：改密码之后"记住的账号"会不会跟着更新。
+                    // 界面那条路在这台机器上没法自动化（合成按键送不进编辑框），
+                    // 所以直接测决策函数 + DPAPI 落盘这两段。
+                    // 退出码 0 = 通过。
+                    SaveLoginReminder("127.0.0.1", 5555, "selftest_user", "oldpass123");
+                    g_pendingUser = "selftest_user";
+                    g_pendingPassword = "oldpass123";
+                    g_host = "127.0.0.1";
+                    g_port = 5555;
+                    // ① 无关的系统提示不动它
+                    g_pendingNewPassword = "newpass456";
+                    g_pendingNewPasswordAt = GetTickCount64();
+                    const bool ignored = !AdoptNewPasswordIfConfirmed("服务器已开启彩色文字代码");
+                    // ② 过期的不认
+                    g_pendingNewPasswordAt = GetTickCount64() - (kPasswordChangeTimeoutMs + 1000);
+                    const bool stale = !AdoptNewPasswordIfConfirmed("密码已修改，下次登录请用新密码");
+                    // ③ 正常路径：认了，并且真的写进文件
+                    g_pendingNewPassword = "newpass456";
+                    g_pendingNewPasswordAt = GetTickCount64();
+                    const bool adopted = AdoptNewPasswordIfConfirmed("密码已修改，下次登录请用新密码");
+                    SavedLogin probe;
+                    const bool loaded = LoadLoginReminder(&probe);
+                    const bool fileOk =
+                        loaded && probe.user == "selftest_user" && probe.password == "newpass456";
+                    // ④ 没有待确认的新密码时，重复的回执不能再改（幂等）
+                    const bool idempotent = !AdoptNewPasswordIfConfirmed("密码已修改，下次登录请用新密码");
+                    ClearLoginReminder();
+                    std::printf("无关提示不动=%d 过期不认=%d 认了新密码=%d 落盘=%d 幂等=%d\n",
+                                ignored ? 1 : 0, stale ? 1 : 0, adopted ? 1 : 0, fileOk ? 1 : 0,
+                                idempotent ? 1 : 0);
+                    return (ignored && stale && adopted && fileOk && idempotent) ? 0 : 1;
+                }
                 if (std::wstring(argv[i]) == L"--selftest-login") {
                     // 自检：把"记住账号"的存取完整走一遍，**不启动界面**。
                     // 验证的是最容易错的部分：DPAPI 加解密 + 文件格式 + 中文与空格。
