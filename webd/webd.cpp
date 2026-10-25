@@ -978,6 +978,7 @@ function send(line) { if (ws && ws.readyState === 1) ws.send(line); }
 // ---- 连接：手动登录和自动登录共用这一个函数 ----
 let credentials = null;      // 有值 = 断开后要自动重连
 let reconnectDelay = 2000;
+let loggedIn = false;        // 服务端确认过「已登录」
 
 // 改密码时记下的新密码：等服务端回「密码已修改」再写进 localStorage。
 // 提前写不行 —— 服务器可能因为密码太短/参数不对而拒绝，那样记住的密码就和
@@ -988,9 +989,43 @@ function notePasswordChange(text) {
   if (m) pendingNewPass = m[1];
 }
 
+/**
+ * 登录阶段被服务器拒了（密码错/没有这个人/已被封/登太多次）。
+ *
+ * 必须**停掉自动重连**：记住的密码已经不对了，再拿同一份去试只会
+ * 「密码错误 → 断开 → 2 秒后重连 → 密码错误」无限循环，用户看到的是一屏红字，
+ * 连输入新密码的机会都没有（实测就是这么卡住的）。
+ *
+ * 密码被拒时顺手把 localStorage 里那份密码清掉（保留用户名），这样下次打开
+ * 页面不会又拿旧的自动登一遍。
+ */
+function onLoginRejected(text) {
+  if (loggedIn) return false;  // 登录之后的 ERROR 是指令报错，和密码无关
+  const credentialRejected = text.indexOf('密码错误') >= 0 ||
+                             text.indexOf('用户名不存在') >= 0 ||
+                             text.indexOf('用户名已存在') >= 0;
+  credentials = null;
+  if (credentialRejected) {
+    try {
+      const saved = JSON.parse(localStorage.getItem('dchat_login') || 'null');
+      if (saved && saved.user) {
+        localStorage.setItem('dchat_login',
+                             JSON.stringify({host: saved.host, user: saved.user, pass: ''}));
+      } else {
+        localStorage.removeItem('dchat_login');
+      }
+    } catch (e) { /* 隐私模式忽略 */ }
+    add('err', '记住的密码已失效，请重新输入密码登录');
+  }
+  document.getElementById('login').style.display = '';
+  setState('未登录', false);
+  return true;
+}
+
 function connect(host, user, pass, reg) {
   document.getElementById('login').style.display = 'none';
   setState('连接中…', false);
+  loggedIn = false;  // 每次连接都是一次新的登录：重连后要重新等「已登录」
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
   ws = new WebSocket(proto + location.host + '/ws?server=' + encodeURIComponent(host));
   ws.onopen = () => {
@@ -1056,7 +1091,11 @@ function connect(host, user, pass, reg) {
         add('sys', f[1]);
         break;
       }
-      case 'ERROR': add('err', f[1]); pendingNewPass = ''; break;
+      case 'ERROR':
+        add('err', f[1]);
+        pendingNewPass = '';
+        onLoginRejected(f[1]);  // 登录阶段的拒绝要停掉自动重连（否则无限重试）
+        break;
       case 'INFO':  add('sys', f[1]); break;
       case 'FILE': {
         const d = document.createElement('div');
@@ -1070,7 +1109,8 @@ function connect(host, user, pass, reg) {
       }
       case 'STATE':
         setState(f[1] + (f[2] ? '　' + f[2] : ''), f[1] === '已登录');
-        if (f[1] === '已登录') {
+        loggedIn = (f[1] === '已登录');
+        if (loggedIn) {
           window.__MINE__ = f[2] || '';   // 记下自己的昵称，在线名单里要标「这是我」
           inputEl.disabled = false; sendEl.disabled = false; pickEl.disabled = false;
           const micEl = document.getElementById('mic');
@@ -1092,6 +1132,7 @@ function connect(host, user, pass, reg) {
     inputEl.disabled = true; sendEl.disabled = true; pickEl.disabled = true;
     // **自动重连**：只要还留着账号就退避重试（2s→4s→8s…最多 30s）。
     // 以前没有这一步，网络一抖就得手动刷新页面。
+    // 注意 credentials 在登录被拒时已经被清成 null —— 那种情况不该重连。
     if (credentials) {
       const seconds = Math.round(reconnectDelay / 1000);
       add('sys', '连接断开，' + seconds + ' 秒后自动重连…');
@@ -1123,13 +1164,20 @@ document.getElementById('loginForm').addEventListener('submit', (e) => {
   connect(host, user, pass, reg);
 });
 
-// 打开页面时若存过账号，自动填好并直接连
+// 打开页面时若存过账号，自动填好并直接连。
+// **密码是空的不自动连**：那是上一次"密码被拒、已清掉密码"留下的记录，
+// 拿空密码去登只会再来一次「密码错误」。
 (function autoLogin() {
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem('dchat_login') || 'null'); } catch (e) { saved = null; }
   if (!saved || !saved.user) return;
   document.getElementById('host').value = saved.host || 'dchat.xin:5555';
   document.getElementById('user').value = saved.user;
+  if (!saved.pass) {
+    document.getElementById('pass').value = '';
+    add('sys', '上次记住的密码已失效，请输入新密码登录');
+    return;
+  }
   document.getElementById('pass').value = saved.pass || '';
   document.getElementById('remember').checked = true;
   credentials = {host: saved.host, user: saved.user, pass: saved.pass, reg: false};
@@ -1838,6 +1886,7 @@ window.DCHAT_ROOM = "__ROOM_ID__";
 <script>
 const ROOM = window.DCHAT_ROOM || '';
 let ws = null, credentials = null, reconnectDelay = 2000, myRole = '';
+let loggedIn = false;   // 服务端确认过「已登录」（登录阶段的 ERROR 才当认证失败）
 let original = {};   // 服务端下发的原值，用来算「到底改了哪几项」
 
 function el(id) { return document.getElementById(id); }
@@ -1864,6 +1913,7 @@ function askOpen() {
 function connect(host, user, pass) {
   el('login').style.display = 'none';
   setState('连接中…', false);
+  loggedIn = false;
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
   ws = new WebSocket(proto + location.host + '/ws?server=' + encodeURIComponent(host));
   ws.onopen = () => {
@@ -1875,6 +1925,7 @@ function connect(host, user, pass) {
     const f = ev.data.split('\t');
     if (f[0] === 'STATE') {
       setState(f[1] + (f[2] ? '　' + f[2] : ''), f[1] === '已登录');
+      loggedIn = (f[1] === '已登录');
       // 登录成功后进这个房间：SETTINGS 帧描述的是「当前会话」的设置，不进房就没有。
       // **要重试**：登录那一刻服务器还没把会话列表发过来，ChatCore 的 SwitchRoom
       // 会在本地查不到这个 id 而直接返回「没有这个会话」。列表到之前发的都白发。
@@ -1884,7 +1935,22 @@ function connect(host, user, pass) {
     if (f[0] === 'SETTINGS') { original = {}; myRole = f[3] || ''; gotSettings = true; return; }
     if (f[0] === 'SETTING') { original[f[1]] = f[2]; return; }
     if (f[0] === 'SETTINGS_END') { fill(); return; }
-    if (f[0] === 'ERROR') { msg(f[1], true); return; }
+    if (f[0] === 'ERROR') {
+      msg(f[1], true);
+      // 登录阶段被拒：停掉自动重连，并把记住的密码清掉（设置页同样会登录）
+      if (!loggedIn) {
+        credentials = null;
+        try {
+          const saved = JSON.parse(localStorage.getItem('dchat_login') || 'null');
+          if (saved && saved.user) {
+            localStorage.setItem('dchat_login',
+                                 JSON.stringify({host: saved.host, user: saved.user, pass: ''}));
+          }
+        } catch (e) { /* 隐私模式忽略 */ }
+        el('login').style.display = '';
+      }
+      return;
+    }
     // SYS / INFO 是聊天流的噪音，设置页不显示
   };
   ws.onclose = () => {

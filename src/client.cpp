@@ -7333,6 +7333,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 const bool mention = dchat::MentionsMe(*payload, g_nick);
                 if (g_authPending && raw.command == "ERROR") {
                     g_authPending = false;
+                    // 记住的密码被服务器拒了（最典型：在别的客户端改过密码）。
+                    // 不清掉的话，每次自动登录都会拿同一份旧密码再试一次，
+                    // 用户只能看着「密码错误」发呆 —— 它连输入框里都填着旧密码。
+                    // 只清"确实就是刚才那次登录用的那份"，手滑打错的密码不受影响。
+                    if (notice.text.find("密码错误") != std::string::npos) {
+                        SavedLogin saved;
+                        if (LoadLoginReminder(&saved) && saved.password == g_pendingPassword) {
+                            ClearLoginReminder();
+                            ViewAddItem(ItemKind::Notice,
+                                        "记住的密码已失效，已清除；请输入新密码登录",
+                                        dchat::NowTimeString());
+                        }
+                    }
                     if (g_authDlg) {
                         // 账号窗口还开着：把原因写在窗口里，连接不动，用户可以改完再试
                         AuthDialogOnResult(false, Utf8ToWide(notice.text));
