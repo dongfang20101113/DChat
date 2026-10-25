@@ -7,6 +7,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace dchat {
 namespace dshbot {
@@ -34,10 +35,10 @@ TriggerMatch MatchTrigger(const std::string& raw, const std::string& botNick,
 /** 白名单 / 黑名单判定（昵称大小写不敏感）。 */
 bool ReplyAllowed(const ReplyPolicy& policy, const std::string& nick);
 
-/** 按模板拼提示词：{room} / {roomId} / {nick} / {text}。 */
-std::string BuildPrompt(const BrainConfig& config, const std::string& roomName,
-                        const std::string& roomId, const std::string& nick,
-                        const std::string& text);
+/** 按模板拼提示词：{room} / {roomId} / {nick} / {text} / {workdir} / {fileroots}。 */
+std::string BuildPrompt(const BrainConfig& config, const std::vector<std::string>& sendRoots,
+                        const std::string& roomName, const std::string& roomId,
+                        const std::string& nick, const std::string& text);
 
 }  // namespace dshbot
 }  // namespace dchat

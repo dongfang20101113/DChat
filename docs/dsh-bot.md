@@ -145,7 +145,7 @@ cmake --build build --target dchat-dsh-bot
 | `brain.sessionperroom` | `true` | 每个房间一个 DSH 会话，能记住上文 |
 | `brain.maxconcurrent` | `1` | 同时跑几个 `dsh` 进程 |
 | `brain.maxqueue` | `8` | 排队上限，超了明确回"等我一下" |
-| `brain.prompttemplate` | 见示例 | 占位符 `{room}` `{roomId}` `{nick}` `{text}` `{workdir}` |
+| `brain.prompttemplate` | 见示例 | 占位符 `{room}` `{roomId}` `{nick}` `{text}` `{workdir}` `{fileroots}` |
 
 `brain.command` 的写法：
 
@@ -206,6 +206,22 @@ cmake --build build --target dchat-dsh-bot
    这样它没法把机器上任意文件搬进聊天记录；
 2. **单个文件 ≤ `file.maxmb`**，同时不超过服务器的 `documentsize`；
 3. **只发普通文件**：目录、空文件、不存在的路径都会被明确回一句"发不了"。
+
+### Windows 上"能写文件、一跑命令就失败"
+
+如果 DSH 的 shell 工具报
+
+```
+Error: SetNamedSecurityInfoW failed (Win32 5): grantWrite(<工作目录>)
+```
+
+那是**目录 ACL** 的问题，不是沙箱配置写错了：DSH 跑命令前要给沙箱补一条写权限，
+而普通目录从父目录继承下来的只有 `Modify`（**不含改 ACL 的 `WRITE_DAC`**），
+所以这一步就被拒绝。
+
+机器人**启动时会自动补一次**（`icacls <工作目录> /grant <当前用户>:(OI)(CI)F`，
+幂等、只对自己的工作目录），日志里能看到"工作目录已确认给当前用户完全控制"。
+手动修也是这一条命令。
 
 ### 风险提示
 

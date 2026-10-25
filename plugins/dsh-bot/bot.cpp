@@ -266,6 +266,17 @@ private:
     std::string WorkspaceDir() const;
     /** 实际生效的 DSH 补丁文件（配置里没写就按权限模式找随程序附带的那份）。 */
     std::string ResolvePatch() const;
+    /**
+     * 给工作目录补上"当前用户完全控制"。
+     *
+     * 为什么需要：DSH 的 shell 工具在跑命令前会 SetNamedSecurityInfoW 给沙箱
+     * 补写权限，而**普通目录从父目录继承下来的只有 Modify（不含改 ACL 的
+     * WRITE_DAC）**，于是一跑命令就报
+     *   `SetNamedSecurityInfoW failed (Win32 5): grantWrite(<目录>)`
+     * 表现是"能写文件、但一执行命令就失败"。启动时补一次（幂等），
+     * 只针对它自己的工作目录。Windows 之外是空操作。
+     */
+    void EnsureWorkspaceAcl();
     void RunJob(const Job& job);
     Attempt RunAttempt(const Job& job, const std::string& session);
 
@@ -914,7 +925,7 @@ void Bot::HandleChat(const std::string& room, const std::string& nick, const std
     job.room = room;
     job.roomName = RoomDisplayName(room);
     job.nick = nick;
-    job.prompt = BuildPrompt(Cfg()->brain, job.roomName, room, nick, match.text);
+    job.prompt = BuildPrompt(Cfg()->brain, Cfg()->fileRoots, job.roomName, room, nick, match.text);
     // ⚠️ 回执必须**在**投递任务之前进队列：反过来的话工作线程可能先把第一段回答
     // 塞进队列，群里的顺序就变成"第一句 / （正在想…）/ 第二句"，看起来像答非所问。
     if (!Cfg()->ackText.empty()) EnqueueOut(generation, room, Cfg()->ackText);
@@ -970,6 +981,39 @@ int Bot::FileCapMb() const {
     const int server = serverFileLimitMb_.load();
     if (server <= 0) return configured;
     return std::min(configured, server);
+}
+
+void Bot::EnsureWorkspaceAcl() {
+#ifdef _WIN32
+    const std::string dir = WorkspaceDir();
+    if (dir.empty()) return;
+    std::error_code code;
+    if (!std::filesystem::is_directory(std::filesystem::path(dir), code) || code) return;
+    wchar_t user[256] = {0};
+    DWORD length = 256;
+    if (!GetUserNameW(user, &length)) return;
+    char utf8[512] = {0};
+    if (WideCharToMultiByte(CP_UTF8, 0, user, -1, utf8, sizeof(utf8), nullptr, nullptr) <= 0) {
+        return;
+    }
+    ProcessSpec spec;
+    spec.argv = {"icacls", dir, "/grant", std::string(utf8) + ":(OI)(CI)F"};
+    spec.timeoutMs = 15000;
+    BrainRunResult result;
+    std::string error;
+    if (!RunBrain(spec, std::string(), [](const std::string&) { return true; }, &result, &error)) {
+        log_.Debug("补工作目录权限失败：" + error);
+        return;
+    }
+    if (result.exitCode == 0) {
+        log_.Debug("工作目录已确认给当前用户完全控制（DSH 跑命令要用）");
+    } else {
+        log_.Warn("工作目录权限没补上，DSH 的 shell 工具可能报 grantWrite 失败：" +
+                  result.stderrTail.substr(0, 200));
+    }
+#else
+    // Linux 没有这个问题：沙箱用 namespace/挂载，不需要改 ACL
+#endif
 }
 
 std::string Bot::ResolvePatch() const {
@@ -1645,6 +1689,10 @@ bool Bot::ApplyConfig(const Config& next) {
         log_.Info("申请加入会话：" + room);
         SendRaw(BuildLine("GJOIN", room));
     }
+    // 工作目录或权限模式刚改过：把 ACL 也补一下（DSH 跑命令要用）
+    const bool canTouch = next.brain.permissionMode == "workspace-write" ||
+                          next.brain.permissionMode == "danger-full-access";
+    if (canTouch) EnsureWorkspaceAcl();
     return true;
 }
 
@@ -1706,6 +1754,12 @@ void Bot::WriteConfigFile(const Config& next) {
 
 void Bot::Run() {
     LoadSessions();
+    {
+        const auto cfg = Cfg();
+        const bool canTouch = cfg->brain.permissionMode == "workspace-write" ||
+                              cfg->brain.permissionMode == "danger-full-access";
+        if (canTouch) EnsureWorkspaceAcl();
+    }
     StartUi();
     StartThreads();
     int backoff = Cfg()->reconnectMinMs;

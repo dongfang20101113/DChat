@@ -452,6 +452,25 @@ int main() {
     }
 
     // =====================================================================
+    std::printf("[11] 提示词占位符\n");
+    {
+        BrainConfig brain;
+        brain.cwd = "D:\\work";
+        brain.promptTemplate = "目录={workdir} 可发={fileroots} 人={nick} 话={text}";
+        const std::string prompt = BuildPrompt(brain, {"C:\\Desk", "D:\\d"}, "群", "g1", "alice", "发我");
+        Check(prompt.find("目录=D:\\work") != std::string::npos, "{workdir} 换成工作目录");
+        Check(prompt.find("可发=C:\\Desk、D:\\d") != std::string::npos, "{fileroots} 列出只读目录");
+        Check(prompt.find("人=alice") != std::string::npos, "{nick}");
+        Check(prompt.find("话=发我") != std::string::npos, "{text}");
+
+        BrainConfig noRoots;
+        noRoots.cwd = "D:\\work";
+        noRoots.promptTemplate = "可发={fileroots}";
+        Check(BuildPrompt(noRoots, {}, "群", "g1", "a", "b").find("（没有额外目录）") != std::string::npos,
+              "没有只读目录时给出明确说明（而不是留空）");
+    }
+
+    // =====================================================================
     std::printf("\n%d 项检查，%d 项失败\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

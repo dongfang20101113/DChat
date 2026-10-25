@@ -503,7 +503,7 @@ std::string ExampleConfig() {
         "brain.sessionperroom = true\n"
         "brain.maxconcurrent = 1\n"
         "brain.maxqueue = 8\n"
-        "brain.prompttemplate = 你在 dchat 的群聊「{room}」里被 {nick} @ 了。\\n你能在这个目录里读写文件、改名、建目录、跑命令：{workdir}\\n想把这个目录里的文件发给对方，就在回答最后单独写一行：[[file: 相对路径]]\\n请用简体中文、口语化、简短地回复；这是聊天消息，不要用 Markdown 标题、表格或代码块。\\n{nick} 说：{text}\n"
+        "brain.prompttemplate = 你在 dchat 的群聊「{room}」里被 {nick} @ 了。\\n你能改动的目录是 {workdir}（读写、改名、建目录、跑命令都在这里）。\\n另外这些目录里的文件可以直接发给对方（只读）：{fileroots}\\n想发任何文件就在回答最后单独写一行：[[file: 完整路径或相对路径]]（机器人会自己读文件上传，不需要你先复制）\\n用简体中文、口语化、简短地回复；聊天消息不要用 Markdown 标题/表格/代码块。命令、路径、报错原文、工具名照抄，不要翻译；对方用英文问就用英文答。\\n{nick} 说：{text}\n"
         "\n"
         "# ---- 日志与状态 ----\n"
         "log.path = dchat-dsh-bot.log\n"

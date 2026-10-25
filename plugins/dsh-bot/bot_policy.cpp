@@ -139,9 +139,9 @@ bool ReplyAllowed(const ReplyPolicy& policy, const std::string& nick) {
     return (policy.mode == ReplyMode::Whitelist) ? listed : !listed;
 }
 
-std::string BuildPrompt(const BrainConfig& config, const std::string& roomName,
-                        const std::string& roomId, const std::string& nick,
-                        const std::string& text) {
+std::string BuildPrompt(const BrainConfig& config, const std::vector<std::string>& sendRoots,
+                        const std::string& roomName, const std::string& roomId,
+                        const std::string& nick, const std::string& text) {
     std::string prompt = config.promptTemplate;
     prompt = ReplaceAll(prompt, "{room}", roomName);
     prompt = ReplaceAll(prompt, "{roomId}", roomId);
@@ -150,6 +150,14 @@ std::string BuildPrompt(const BrainConfig& config, const std::string& roomName,
     // {workdir} 用子进程的工作目录：那正是沙箱允许它动手的范围，
     // 两边必须说的是同一个路径，否则模型会去写一个它其实碰不到的地方。
     prompt = ReplaceAll(prompt, "{workdir}", config.cwd.empty() ? std::string("（未设置）") : config.cwd);
+    // {fileroots}：额外的只读目录。必须告诉模型 —— 不然它会以为"文件不在工作目录
+    // 就发不了"，然后一本正经地建议用户"把文件复制进来"（实测就踩了）。
+    std::string roots;
+    for (const std::string& root : sendRoots) {
+        if (!roots.empty()) roots += "、";
+        roots += root;
+    }
+    prompt = ReplaceAll(prompt, "{fileroots}", roots.empty() ? std::string("（没有额外目录）") : roots);
     return prompt;
 }
 
