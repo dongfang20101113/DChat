@@ -637,7 +637,13 @@ bool ChatCore::SwitchRoom(const std::string& id) {
         return false;
     }
     const RoomInfo* room = FindRoom(id);
-    if (room == nullptr) {
+    // 房间列表**还没到**的时候本地查不到是正常的，不能据此拒绝。
+    //
+    // 这个竞态是网页版暴露出来的：登录成功的瞬间就发 `/open test`，而服务端的
+    // ROOMLIST 还没到，rooms_ 是空的 → 这里直接回「没有这个会话」，然后
+    // ROOMLIST_END 又把用户落到大厅，表现就是「网址写着 /room/test，页面停在大厅」。
+    // 列表已经在了还查不到，才说明是真的没有这个会话。
+    if (room == nullptr && !rooms_.empty()) {
         Notice("没有这个会话：" + id + "（先 /rooms 看看）", ChatMessage::Kind::Error);
         return false;
     }
@@ -649,7 +655,8 @@ bool ChatCore::SwitchRoom(const std::string& id) {
     }
     currentRoom_ = id;
     members_.clear();  // 成员表按房间来，切了就等新的 RMEMBERS 填
-    Notice("已切换到「" + (room->name.empty() ? id : room->name) + "」，之后的发言都发到这里");
+    Notice("已切换到「" + ((room != nullptr && !room->name.empty()) ? room->name : id) +
+               "」，之后的发言都发到这里");
     return true;
 }
 

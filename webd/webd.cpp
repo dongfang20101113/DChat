@@ -902,7 +902,13 @@ const pageRoom = window.DCHAT_ROOM || '';
 // 想要待在哪个房间。它会跟着左侧点击/前进后退变，**不能**直接改 pageRoom，
 // 否则断线重连后会被拽回最初那个房间。
 let wantRoom = pageRoom;
-let openedPageRoom = false;  // 每次登录后只自动进一次，之后听用户的
+// 等房间列表到了再进。
+//
+// **为什么不能登录一成功就发 /open**：ChatCore::SwitchRoom 会先在本地 rooms_ 里查
+// 这个 id，查不到就判「没有这个会话」直接返回；而登录那一刻服务端的 ROOMLIST 还没到，
+// rooms_ 是空的。紧接着 ROOMLIST_END 又会把用户落到大厅 ——
+// 结果就是「网址写着 /room/test，页面却停在大厅」。
+let pendingOpenRoom = '';
 
 /** 同步「房间设置」入口：没房间就藏起来。 */
 function syncRoomLink() {
@@ -931,6 +937,30 @@ window.addEventListener('popstate', () => {
   const id = (parts[0] === 'room' && parts[1]) ? decodeURIComponent(parts[1]) : '';
   if (id && id !== wantRoom) goRoom(id, false);
 });
+
+/**
+ * 房间列表到了才真正切房间。
+ *
+ * 调用点有两个：登录成功时、每次收到 ROOMS_END 时。谁先到都行，条件满足了才动手。
+ * 列表里没有这个房间就别硬切（会被服务端拒绝），并且**把地址改回 / **——
+ * 地址栏写着 /room/test 而实际停在大厅，是最容易让人以为"页面坏了"的那种不一致。
+ */
+function tryOpenPending() {
+  if (!pendingOpenRoom) return;
+  if (!roomBuf.length) return;                 // 列表还没到
+  const target = pendingOpenRoom;
+  if (target === currentRoom) { pendingOpenRoom = ''; return; }
+  let found = false;
+  for (const f of roomBuf) { if (f[1] === target) found = true; }
+  pendingOpenRoom = '';
+  if (!found) {
+    add('err', '没有这个会话：' + target + '（你可能不在里面，或 ID 打错了）');
+    if (location.pathname !== '/') history.replaceState({}, '', '/');
+    return;
+  }
+  add('sys', '正在进入 ' + target + ' …');
+  send('INPUT\t/open ' + target);
+}
 
 function add(kind, text) {
   const d = document.createElement('div');
@@ -1015,13 +1045,9 @@ function connect(host, user, pass, reg) {
           inputEl.focus();
           // `/房间名` 进来的：登录成功后自动切到那个房间。
           // 断线重连后要再走一遍——服务端那边是个全新会话，房间是空的。
-          if (wantRoom && !openedPageRoom) {
-            openedPageRoom = true;
-            add('sys', '正在进入 ' + wantRoom + ' …');
-            send('INPUT\t/open ' + wantRoom);
-          }
-        } else {
-          openedPageRoom = false;
+          // 房间列表可能还没到，交给 tryOpenPending 等它
+          if (wantRoom) pendingOpenRoom = wantRoom;
+          tryOpenPending();
         }
         break;
       // 房间面板 / 语音 / 指令面板的帧交给第二个 script（它挂在这个钩子上）
@@ -1112,6 +1138,8 @@ function renderRooms() {
     if (id === currentRoom) currentName = name || id;
   }
   whereEl.textContent = currentName ? '　· ' + currentName : '';
+  // 列表到了：这时候 /open 才有东西可查
+  tryOpenPending();
   // 从首页进来（地址里没房间）时，等网关告诉我们当前在哪个会话，
   // 再把「房间设置」入口显出来——不然那个链接永远是隐藏的。
   if (!wantRoom && currentRoom) {
@@ -1790,6 +1818,15 @@ function msg(text, bad) {
 }
 if (ROOM) el('back').href = '/room/' + encodeURIComponent(ROOM);
 
+// 重试进房，直到拿到 SETTINGS 为止（见上面 STATE 分支的说明）
+let openTries = 0;
+let gotSettings = false;
+function askOpen() {
+  if (gotSettings || !ROOM) return;
+  send('INPUT\t/open ' + ROOM);
+  if (++openTries < 8) setTimeout(askOpen, 1500);
+}
+
 function connect(host, user, pass) {
   el('login').style.display = 'none';
   setState('连接中…', false);
@@ -1804,11 +1841,13 @@ function connect(host, user, pass) {
     const f = ev.data.split('\t');
     if (f[0] === 'STATE') {
       setState(f[1] + (f[2] ? '　' + f[2] : ''), f[1] === '已登录');
-      // 登录成功后进这个房间：SETTINGS 帧描述的是「当前会话」的设置，不进房就没有
-      if (f[1] === '已登录' && ROOM) send('INPUT\t/open ' + ROOM);
+      // 登录成功后进这个房间：SETTINGS 帧描述的是「当前会话」的设置，不进房就没有。
+      // **要重试**：登录那一刻服务器还没把会话列表发过来，ChatCore 的 SwitchRoom
+      // 会在本地查不到这个 id 而直接返回「没有这个会话」。列表到之前发的都白发。
+      if (f[1] === '已登录' && ROOM) { openTries = 0; askOpen(); }
       return;
     }
-    if (f[0] === 'SETTINGS') { original = {}; myRole = f[3] || ''; return; }
+    if (f[0] === 'SETTINGS') { original = {}; myRole = f[3] || ''; gotSettings = true; return; }
     if (f[0] === 'SETTING') { original[f[1]] = f[2]; return; }
     if (f[0] === 'SETTINGS_END') { fill(); return; }
     if (f[0] === 'ERROR') { msg(f[1], true); return; }
