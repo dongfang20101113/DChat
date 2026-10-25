@@ -1089,6 +1089,51 @@ function onLoginRejected(text) {
   return true;
 }
 
+// ---- 文件收发进度：整个下载只占一行，原地更新 ----
+let fileProgressRow = null;
+
+/** 从路径里取文件名（网关的落盘路径用 / 分隔，桌面端传来的可能带 \）。 */
+function fileNameOf(path) {
+  if (!path) return '';
+  const i = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return i >= 0 ? path.slice(i + 1) : path;
+}
+
+/**
+ * "接收 名字 42%" 这种进度：原地更新同一行，返回 true。
+ *
+ * 以前每条进度都新加一行 —— 一个 10 MB 的附件就是一百行"接收 xxx 18%"，
+ * 把聊天记录冲得看不见（实测截图就是这样）。进度这种东西只需要"现在到哪了"。
+ */
+function showFileProgress(text) {
+  const m = /^接收 (.+?) (\d+)%$/.exec(text || '');
+  if (!m) return false;
+  if (!fileProgressRow) {
+    fileProgressRow = document.createElement('div');
+    fileProgressRow.className = 'row sys';
+    logEl.appendChild(fileProgressRow);
+  }
+  fileProgressRow.textContent = '⬇ 正在接收 ' + m[1] + ' … ' + m[2] + '%';
+  logEl.scrollTop = logEl.scrollHeight;
+  return true;
+}
+
+/**
+ * 下载收尾：把那一行换成结果。返回还需要另外显示的文本（空 = 已经处理完）。
+ * 成功时 FILE 帧还会加一条下载链接，所以这里只说"下载完成"。
+ */
+function finishFileProgress(text) {
+  if (!fileProgressRow) return '';
+  const row = fileProgressRow;
+  fileProgressRow = null;
+  if (text && text.indexOf('已保存') >= 0) {
+    row.textContent = '✅ 下载完成';
+    return '';
+  }
+  row.remove();
+  return (text && text.indexOf('❌') >= 0) ? text : '';
+}
+
 function connect(host, user, pass, reg) {
   document.getElementById('login').style.display = 'none';
   setState('连接中…', false);
@@ -1163,13 +1208,25 @@ function connect(host, user, pass, reg) {
         pendingNewPass = '';
         onLoginRejected(f[1]);  // 登录阶段的拒绝要停掉自动重连（否则无限重试）
         break;
-      case 'INFO':  add('sys', f[1]); break;
+      case 'INFO': {
+        // 下载进度（"接收 名字 42%"）以前是每条 INFO 加一行 —— 一个 10 MB 的附件
+        // 就是一百行"接收 xxx 18%"，把聊天记录冲得看不见。改成**同一行原地更新**，
+        // 下完就把它换成最终结果。
+        if (showFileProgress(f[1])) break;
+        const finalText = finishFileProgress(f[1]);
+        if (finalText) { add('sys', finalText); break; }
+        add('sys', f[1]);
+        break;
+      }
       case 'FILE': {
+        finishFileProgress('');
         const d = document.createElement('div');
         d.className = 'row sys';
         const a = document.createElement('a');
         a.href = '/file/' + encodeURIComponent(f[1]);
-        a.textContent = '⬇ 点这里下载 ' + f[1];
+        // 链接上写**原始文件名**（f[2] 是网关本机的落盘路径，取最后一段），
+        // 不再显示附件 id —— 用户要看的是"这是什么文件"。
+        a.textContent = '⬇ ' + (fileNameOf(f[2]) || f[1]) + '（点这里下载）';
         d.appendChild(a);
         logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
         break;
