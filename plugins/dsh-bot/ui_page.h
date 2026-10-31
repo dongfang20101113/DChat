@@ -190,9 +190,10 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
   html.room-mode:not(.room-admin) #cardTrigger,
   html.room-mode:not(.room-admin) #cardLocal,
   html.room-mode:not(.room-admin) #cardTyping,
-  html.room-mode:not(.room-admin) #cardBrain,
   html.room-mode #cardRoomManage { display:none; }
-  html.room-mode:not(.room-manage) #cardBrain { display:none; }
+  /* 「大脑」卡片：api-key 页要靠它显示本群 key 输入框（谁都得看得见）；
+     manage 页上它装的是全局大脑设置，只有 room-admin 看得到。 */
+  html.room-manage:not(.room-admin) #cardBrain { display:none; }
   a.tag { color:#cfe0ff; text-decoration:none; }
   a.tag:hover { border-color:#3a5ea8; background:#22304d; }
 </style>
