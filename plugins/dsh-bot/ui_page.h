@@ -363,16 +363,16 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
         var node = document.getElementById(id);
         if (node) node.style.display = 'none';
       });
-      // 单群页只要一个"这个群的 key"输入框：群名由地址决定，
+      // 单群页只要一个"本群的 key"输入框：群由地址里的那一层决定，
       // 不让用户再手写 `房间 = sk-...`（写错就是跨群改配置）。
       var single = document.getElementById('rowSingleRoomKey');
       if (single) single.style.display = '';
       var singleLabel = document.getElementById('singleRoomKeyLabel');
       if (singleLabel) {
-        singleLabel.innerHTML = '「' + window.__ROOM__ + '」的 API Key（只写：留空=不改，填 <code>-</code> 清空）';
+        singleLabel.innerHTML = '本群 API Key（只写：留空=不改，填 <code>-</code> 清空）';
       }
       var h2 = document.querySelector('#cardBrain h2');
-      if (h2) h2.textContent = '群「' + window.__ROOM__ + '」的设置';
+      if (h2) h2.textContent = '群管理';
       // 能管所有群的人，从单群页要能回总览（否则点进来就出不去了）
       var back = document.getElementById('backAll');
       if (back && state.canManageAll) back.style.display = '';
@@ -411,7 +411,7 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
           var a = document.createElement('a');
           a.className = 'tag';
           a.style.textDecoration = 'none';
-          a.href = '/room/' + encodeURIComponent(room.id) + '/bot';
+          a.href = '/room/' + encodeURIComponent(room.id) + '/bot/manage';
           a.textContent = (room.name || room.id) + ' ›';
           linksHost.appendChild(a);
         });
@@ -480,11 +480,10 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     el('apiRoomKeyText').value = '';
     if (window.__ROOM__) {
       // 单群页：这个文本框只管当前这一个群，别群的 key 在这里改不了
-      el('apiRoomKeyText').placeholder = window.__ROOM__ + ' = sk-xxxxxxxx（只管这个群）';
+      el('apiRoomKeyText').placeholder = 'sk-xxxxxxxx（只填这个群的 key，不写群名）';
       el('apiKeyHint').textContent =
-        '这一页只管「' + window.__ROOM__ + '」这个群。群主/群管理员能改这里的 Key；' +
-        '其余设置（白名单、分条、工作目录…）归管理员。' +
-        (roomKeyRooms.indexOf(window.__ROOM__) >= 0 ? ' 这个群已经单独配了 key（要换就重写一行，写 - 清空）。' : '');
+        '群主/群管理员能改本群的 Key；其余设置（白名单、分条、工作目录…）归管理员。' +
+        (roomKeyRooms.indexOf(window.__ROOM__) >= 0 ? ' 本群已经单独配了 key（要换就重填，写 - 清空）。' : '');
     } else {
       el('apiRoomKeyText').placeholder = 'test = sk-xxxxxxxx（一行一个，只写不回显）';
       el('apiKeyHint').textContent = (state.brainType === 'api'

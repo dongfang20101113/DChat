@@ -2294,7 +2294,9 @@ bool IsRoomBotPath(const std::string& route) {
     if (room.empty() || !IsWebRoomId(room)) return false;
     std::string tail = route.substr(first);
     while (!tail.empty() && tail.back() == '/') tail.pop_back();
-    return tail == "/bot";
+    // /room/<群>/bot          老的入口（会跳到下面的 manage）
+    // /room/<群>/bot/manage   单群管理页（正主）
+    return tail == "/bot" || tail == "/bot/manage";
 }
 
 /** 给浏览器回一个最小的纯文本响应（转发失败时用）。 */
