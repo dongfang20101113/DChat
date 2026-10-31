@@ -883,10 +883,29 @@ const char* kIndexHtml = R"HTML(<!doctype html>
     footer input, footer button { font-size:16px; }  /* ≥16px 才不会让 iOS 自动放大 */
     .room { padding:12px 14px; }  /* 触摸目标大一点 */
   }
+  /* ---- 消息气泡：自己的靠右（蓝），别人的靠左（深色）---- */
+  #log { display:flex; flex-direction:column; align-items:flex-start; }
   .row { margin:6px 0; white-space:pre-wrap; word-break:break-word; }
+  .msg { max-width:min(74%,730px); padding:7px 11px; border-radius:12px;
+         background:#1a1a20; border:1px solid #2c2c35; align-self:flex-start;
+         border-top-left-radius:4px; }
+  .msg.own { align-self:flex-end; background:#1b3a63; border-color:#2f6fed;
+             border-top-left-radius:12px; border-top-right-radius:4px; }
+  .msg.mention { border-color:#c9a227; box-shadow:0 0 0 2px rgba(201,162,39,.18); }
+  .msg .meta { font-size:11.5px; color:#8a8a94; display:flex; gap:6px; margin-bottom:2px; }
+  .msg.own .meta { justify-content:flex-end; }
+  .msg .body { line-height:1.55; }
+  .at { color:#e8c14a; font-weight:600; }
+  .inline-img { display:block; max-width:100%; max-height:320px; border-radius:8px;
+                margin:6px 0; cursor:zoom-in; }
+  .inline-file { display:inline-flex; align-items:center; gap:6px; background:#2a2a33;
+                 border:1px solid #3a3a44; border-radius:8px; padding:5px 9px; margin:4px 0;
+                 color:#cfe0ff; text-decoration:none; }
+  .own .inline-file { background:#24405f; border-color:#3b6ea8; }
+  body.dragging #log { outline:2px dashed #2f6fed; outline-offset:-8px; }
   .nick { color:#7aa7ff; }
-  .time { color:#666; font-size:12px; margin:0 6px; }
-  .own .nick { color:#4caf7d; }
+  .time { color:#666; font-size:12px; }
+  .own .nick { color:#9ecbff; }
   .sys { color:#8a8a94; font-size:13px; }
   .err { color:#ff6b6b; }
   #login { position:fixed; inset:0; background:#1b1b1f; display:flex; align-items:center;
@@ -1028,6 +1047,86 @@ function add(kind, text) {
   logEl.appendChild(d);
   logEl.scrollTop = logEl.scrollHeight;
 }
+
+/**
+ * 消息正文里的附件标记：`[[file:附件ID|URL编码的文件名]]`。
+ *
+ * 为什么用文本标记而不是另开协议：一条消息就是一段文本（服务端只认文本），
+ * 想「文字里任意位置插图片」，唯一不改协议的办法就是让附件在正文里占一段标记，
+ * 网页端把它渲染成图片/文件卡片，其余客户端只会看到这段标记本身（已知代价）。
+ */
+const FILE_MARK_RE = /\[\[file:([A-Za-z0-9_-]+)(?:\|([^\]]*))?\]\]/g;
+const IMG_NAME_RE = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
+
+/** 把 @某人 画成金色。 */
+function appendTextWithAt(host, text) {
+  const re = /@[^\s@]+/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) host.appendChild(document.createTextNode(text.slice(last, m.index)));
+    const s = document.createElement('span');
+    s.className = 'at';
+    s.textContent = m[0];
+    host.appendChild(s);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) host.appendChild(document.createTextNode(text.slice(last)));
+}
+
+/** 把一条消息正文画出来：普通文字 / @高亮 / 行内图片 / 行内文件卡片。 */
+function renderRichBody(host, text) {
+  host.textContent = '';
+  text = text || '';
+  let last = 0, m;
+  FILE_MARK_RE.lastIndex = 0;
+  while ((m = FILE_MARK_RE.exec(text))) {
+    if (m.index > last) appendTextWithAt(host, text.slice(last, m.index));
+    const id = m[1];
+    let name = id;
+    try { if (m[2]) name = decodeURIComponent(m[2]); } catch (e) { name = m[2] || id; }
+    if (IMG_NAME_RE.test(name) || IMG_NAME_RE.test(id)) {
+      const img = document.createElement('img');
+      img.className = 'inline-img';
+      img.src = '/file/' + encodeURIComponent(id);
+      img.alt = name;
+      img.title = name + '（点开看大图）';
+      img.addEventListener('click', () => window.open(img.src, '_blank'));
+      host.appendChild(img);
+    } else {
+      const a = document.createElement('a');
+      a.className = 'inline-file';
+      a.href = '/file/' + encodeURIComponent(id);
+      a.textContent = '📎 ' + name;
+      host.appendChild(a);
+    }
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) appendTextWithAt(host, text.slice(last));
+}
+
+/** 一条消息 = 气泡（头像区不画，昵称+时间在气泡里）。 */
+function appendMessage(msg) {
+  const d = document.createElement('div');
+  d.className = 'row msg' + (msg.own ? ' own' : '') + (msg.atMe ? ' mention' : '');
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const n = document.createElement('span');
+  n.className = 'nick';
+  n.textContent = msg.nick;
+  const t = document.createElement('span');
+  t.className = 'time';
+  t.textContent = msg.time;
+  meta.appendChild(n);
+  meta.appendChild(t);
+  const body = document.createElement('div');
+  body.className = 'body';
+  renderRichBody(body, msg.text);
+  d.appendChild(meta);
+  d.appendChild(body);
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+  return d;
+}
 function setState(text, on) {
   stateEl.textContent = text;
   stateEl.className = on ? 'on' : '';
@@ -1149,16 +1248,8 @@ function connect(host, user, pass, reg) {
     const f = ev.data.split('\t');
     switch (f[0]) {
       case 'SAY': {
-        const own = f[4] === '1';
-        const atMe = f[5] === '1';   // 服务器标了「这条 @ 到我」
-        const d = document.createElement('div');
-        d.className = 'row' + (own ? ' own' : '') + (atMe ? ' mention' : '');
-        d.innerHTML = '';
-        const n = document.createElement('span'); n.className = 'nick'; n.textContent = f[1];
-        const t = document.createElement('span'); t.className = 'time'; t.textContent = f[2];
-        const x = document.createElement('span'); x.textContent = f[3];
-        d.appendChild(n); d.appendChild(t); d.appendChild(x);
-        logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
+        appendMessage({nick: f[1], time: f[2], text: f[3],
+                       own: f[4] === '1', atMe: f[5] === '1'});
         break;
       }
       // ---- 左侧会话选择器：网关每秒比对一次，变了才推 ----
@@ -1370,23 +1461,80 @@ inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); })
 // （桌面端没这个限制，它直接读盘分块发）。
 const pickEl = document.getElementById('pick');
 const fileEl = document.getElementById('file');
-pickEl.addEventListener('click', () => fileEl.click());
-fileEl.addEventListener('change', () => {
-  const f = fileEl.files[0];
+
+/** 等待服务器回附件号的挂起上传（FIFO）：回来一个就认领一个。 */
+let uploadQueue = [];
+
+/** 在输入框光标处插入一段文字（附件标记就是这么进去的）。 */
+function insertAtCaret(text) {
+  const el = inputEl;
+  const start = (el.selectionStart === null || el.selectionStart === undefined)
+    ? el.value.length : el.selectionStart;
+  const end = (el.selectionEnd === null || el.selectionEnd === undefined) ? start : el.selectionEnd;
+  el.value = el.value.slice(0, start) + text + el.value.slice(end);
+  const pos = start + text.length;
+  el.focus();
+  try { el.setSelectionRange(pos, pos); } catch (e) { /* 老浏览器忽略 */ }
+}
+
+/** 上传一个文件（拖进来/粘贴/选择文件都走这里），成功后由 FILEOFFER 插标记。 */
+function uploadOne(f) {
   if (!f) return;
   if (f.size > UPLOAD_MB * 1024 * 1024) {
     add('err', '网页版单文件上限 ' + UPLOAD_MB + ' MB（服务器设置），更大的文件请用桌面客户端');
-    fileEl.value = '';
     return;
   }
   const reader = new FileReader();
   reader.onload = () => {
-    const b64 = String(reader.result).split(',')[1] || '';
-    send('UPLOAD\t' + f.name + '\t' + b64);
-    add('sys', '正在上传 ' + f.name + ' …');
+    uploadQueue.push({name: f.name || 'file'});
+    send('UPLOAD\t' + (f.name || 'file') + '\t' + (String(reader.result).split(',')[1] || ''));
+    add('sys', '正在上传 ' + (f.name || 'file') + ' …');
   };
   reader.readAsDataURL(f);
+}
+
+pickEl.addEventListener('click', () => fileEl.click());
+fileEl.addEventListener('change', () => {
+  for (const f of fileEl.files) uploadOne(f);
   fileEl.value = '';
+});
+
+// ---- 拖拽：文件拖进窗口任何地方都收 ----
+let dragDepth = 0;
+document.addEventListener('dragenter', (e) => {
+  if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+  e.preventDefault();
+  dragDepth++;
+  document.body.classList.add('dragging');
+});
+document.addEventListener('dragover', (e) => {
+  if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault();
+});
+document.addEventListener('dragleave', (e) => {
+  if (!dragDepth) return;
+  dragDepth--;
+  if (dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dragging'); }
+});
+document.addEventListener('drop', (e) => {
+  if (!e.dataTransfer) return;
+  const files = [...(e.dataTransfer.files || [])];
+  if (!files.length) return;
+  e.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove('dragging');
+  for (const f of files) uploadOne(f);
+});
+
+// ---- 粘贴：截图/图片直接粘进输入框 ----
+document.addEventListener('paste', (e) => {
+  if (!e.clipboardData) return;
+  const files = [...(e.clipboardData.items || [])]
+    .filter((it) => it.kind === 'file')
+    .map((it) => it.getAsFile())
+    .filter(Boolean);
+  if (!files.length) return;      // 纯文字照旧粘
+  e.preventDefault();
+  for (const f of files) uploadOne(f);
 });
 </script>
 <!-- ==================== 房间面板 / 语音 / 指令面板 ==================== -->
@@ -1762,6 +1910,14 @@ window.__EXTRA_FRAME__ = function (f) {
       if (pendingReqs) { renderPending(pendingReqs); pendingReqs = null; }
       break;
     case 'FILEOFFER': {
+      // 自己刚拖进来/粘贴上来的文件：服务器回来的第一个附件就是它，
+      // 把标记插到光标处（消息正文里任意位置都能有一张图/一个文件）。
+      if (uploadQueue.length) {
+        const mine = uploadQueue.shift();
+        insertAtCaret('[[file:' + f[1] + '|' + encodeURIComponent(mine.name) + ']]');
+        add('sys', '已插入 ' + mine.name + '（点发送即可）');
+        break;
+      }
       // 附件卡片：语音给「▶ 播放」，普通文件给下载
       const d = document.createElement('div'); d.className = 'row sys';
       const a = document.createElement('a');
