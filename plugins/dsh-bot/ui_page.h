@@ -386,12 +386,14 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
         }
         if (h2) h2.textContent = 'API Key';
       } else {
-        // manage 页：不放输入框，只放入口
+        // manage 页：**只要这一个群的入口**。原来那套总览（大脑/白名单/分条…）
+        // 整块不要 —— 那是管理员在 /bot/ 看的东西，摆在这儿只会让人以为能改。
         if (single) single.style.display = 'none';
         if (nav) nav.style.display = '';
+        var brainCard = document.getElementById('cardBrain');
+        if (brainCard) brainCard.style.display = 'none';
         var link = document.getElementById('toApiKey');
         if (link) link.href = '/room/' + encodeURIComponent(window.__ROOM__) + '/bot/api-key';
-        if (h2) h2.textContent = '群管理';
         // 这一页没什么可提交的
         var sv = document.getElementById('save');
         if (sv) sv.style.display = 'none';
