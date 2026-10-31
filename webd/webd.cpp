@@ -2277,6 +2277,26 @@ struct Config {
 // 定义在文件后半部分（ServeConnection 之后）；这里先声明，路由那边要用。
 void ServeAdmin(dchat::sock::Handle handle, const std::string& rawRequest);
 
+/** 房间 ID 的合法性校验（定义在后面，房间路由那边）。 */
+bool IsWebRoomId(const std::string& text);
+
+/**
+ * `/room/<群>/bot` 这种"单群管理页"的地址。
+ *
+ * 形状固定四段：room / <群ID> / bot（末尾斜杠可省）。房间 ID 走 IsWebRoomId，
+ * 免得把奇怪的路径转发给机器人。
+ */
+bool IsRoomBotPath(const std::string& route) {
+    if (route.rfind("/room/", 0) != 0) return false;
+    const std::size_t first = route.find('/', 6);
+    if (first == std::string::npos) return false;
+    const std::string room = route.substr(6, first - 6);
+    if (room.empty() || !IsWebRoomId(room)) return false;
+    std::string tail = route.substr(first);
+    while (!tail.empty() && tail.back() == '/') tail.pop_back();
+    return tail == "/bot";
+}
+
 /** 给浏览器回一个最小的纯文本响应（转发失败时用）。 */
 void SendPlain(dchat::sock::Handle client, int code, const std::string& text) {
     const std::string body = text + "\n";
@@ -2624,11 +2644,15 @@ void ServeConnection(dchat::sock::Handle handle) {
         // 也要走一次 FillRoom（房间号填空）：否则页面里留着字面量 "__ROOM_ID__"，
         // 前端会把它当成房间名去 /open，等于每次打开首页都白报一条错。
         reply("200 OK", "text/html; charset=utf-8", FillPage(kIndexHtml, ""));
-    } else if (route == "/bot" || route.rfind("/bot/", 0) == 0) {
+    } else if (route == "/bot" || route.rfind("/bot/", 0) == 0 ||
+               IsRoomBotPath(route)) {
         // 机器人的管理界面挂在这里（公网可达，8080 本来就在用）。
-        // 它自己的登录（dchat 账号 + op/群主）在机器人那边判，网关只做转发 ——
+        // 它自己的登录（dchat 账号 + 群管理员/管理员）在机器人那边判，网关只做转发 ——
         // 不在这里再拦一道，否则两套权限迟早对不上。
-        // `/bot`（不带斜杠）要先跳到 `/bot/`：页面里的接口路径是相对写法。
+        // 三种地址都认：
+        //   /bot/                 总览（管理员用）
+        //   /room/<群>/bot        单群管理（群主/群管理员用）
+        //   /bot/api/...          前端接口（相对路径解析出来的）
         if (route == "/bot") {
             reply("200 OK", "text/html; charset=utf-8",
                   "<meta http-equiv=\"refresh\" content=\"0;url=/bot/\">");

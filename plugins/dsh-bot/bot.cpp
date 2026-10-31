@@ -214,11 +214,16 @@ private:
         std::string name;
         bool member = false;
     };
-    /** 管理界面的登录会话：谁登的、是不是 op、是不是某些群的群主。 */
+    /** 管理界面的登录会话：谁登的、是不是 admin、是哪些群的群主/管理员。 */
     struct UiSession {
         std::string nick;
-        bool op = false;
-        std::set<std::string> ownerRooms;
+        /**
+         * 全局管理员（= 服务端 dchat-admins.txt 里那些人）。
+         * **这是权限，不是身份标签**：界面上不显示这个词，只用来决定能不能改。
+         */
+        bool admin = false;
+        /** 这个人在这些群里是群主或群管理员 —— 也就是"这些群的 op"。 */
+        std::set<std::string> opRooms;
         std::chrono::steady_clock::time_point expires{};
     };
     struct Outgoing {
@@ -315,6 +320,14 @@ private:
     std::string CookieToken(const HttpRequest& request) const;
     bool LoadSession(const HttpRequest& request, UiSession* out);
     void DropSession(const HttpRequest& request);
+    /**
+     * 向服务器要一次最新的群成员表（发 ROOM <群>，服务器会回 RMEMBERS）。
+     *
+     * 为什么登录时要拉一次：成员角色是会变的，而机器人只在"自己在群里"的时候
+     * 才收得到 RMEMBERS 推送。你刚被设成群管理员、而机器人在那之后才入群时，
+     * 缓存里就没有这条 —— 表现是"我明明是群管理却进不去"。
+     */
+    void RefreshRoomRoles();
     HttpResponse HandleSearch(const std::string& body);
     HttpResponse HandleJoin(const std::string& body);
     bool ApplyConfig(const Config& next);
@@ -1529,8 +1542,12 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
     // ---- 其余全部要登录 ----
     UiSession session;
     if (!LoadSession(request, &session)) {
-        // 没登录：只给登录页，别的一律 401（页面自己会跳到 /login）
-        if (request.method == "GET" && (request.path == "/" || request.path == "/index.html")) {
+        // 没登录：页面请求给登录页，接口请求 401
+        const bool wantsPage =
+            request.method == "GET" &&
+            (request.path == "/" || request.path == "/index.html" ||
+             (request.path.rfind("/room/", 0) == 0 && request.path.find("/bot") != std::string::npos));
+        if (wantsPage) {
             HttpResponse response;
             response.contentType = "text/html; charset=utf-8";
             response.body = kLoginPage;
@@ -1550,6 +1567,21 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
         response.body = kUiPage;
         return response;
     }
+    // 单群管理页：/room/<群>/bot（由 webd 把 /room/<群>/bot 转到这里）
+    if (request.method == "GET" && request.path.rfind("/room/", 0) == 0) {
+        const std::size_t end = request.path.find("/bot");
+        const std::string room = request.path.substr(6, end == std::string::npos
+                                                            ? std::string::npos
+                                                            : end - 6);
+        if (!room.empty()) {
+            HttpResponse response;
+            response.contentType = "text/html; charset=utf-8";
+            // 页面里塞一个标记：前端据此只显示这个群的设置
+            response.body = std::string(kUiPage) +
+                            "\n<script>window.__ROOM__ = " + JsonQuote(room) + ";</script>";
+            return response;
+        }
+    }
     if (request.method == "GET" && request.path == "/api/state") {
         HttpResponse response;
         response.body = StateJson();
@@ -1559,17 +1591,35 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
         return HandleSave(request.body, session);
     }
     if (request.method == "POST" && request.path == "/api/search") {
-        if (!session.op) return JsonError(403, "只有 op 能用搜索");
+        if (!session.admin) return JsonError(403, "只有管理员能用搜索");
         return HandleSearch(request.body);
     }
     if (request.method == "POST" && request.path == "/api/join") {
-        if (!session.op) return JsonError(403, "只有 op 能让它加群");
+        if (!session.admin) return JsonError(403, "只有管理员能让它加群");
         return HandleJoin(request.body);
     }
     return JsonError(404, "not found");
 }
 
 /** 从 Cookie 里取会话 token。 */
+void Bot::RefreshRoomRoles() {
+    if (sock_ == sock::kInvalid || !loggedIn_.load()) return;
+    std::vector<std::string> rooms;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        for (const auto& pair : rooms_) {
+            if (pair.second.member) rooms.push_back(pair.first);
+        }
+    }
+    if (rooms.empty()) return;
+    for (const std::string& room : rooms) SendRaw(BuildLine("ROOM", room));
+    // 给服务器一点时间把 RMEMBERS 推回来（接收线程会顺手更新 roomRoles_）
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(600);
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
 std::string Bot::CookieToken(const HttpRequest& request) const {
     const auto it = request.headers.find("cookie");
     if (it == request.headers.end()) return std::string();
@@ -1638,7 +1688,8 @@ HttpResponse Bot::HandleLogin(const std::string& body) {
         return JsonError(403, check.error.empty() ? "昵称或密码不对" : check.error);
     }
     // op 名单：和服务器同一个文件（机器人就跑在这台机器上）
-    bool op = false;
+    // 全局管理员名单（= 服务端 dchat-admins.txt）。这是"所有群的群主"那档权限。
+    bool admin = false;
     {
         std::ifstream admins(cfg->uiOpFile.c_str());
         std::string line;
@@ -1652,23 +1703,28 @@ HttpResponse Bot::HandleLogin(const std::string& body) {
             }
             while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
             if (!line.empty() && line[0] == '#') continue;
-            if (SameNick(line, nick)) op = true;
+            if (SameNick(line, nick)) admin = true;
         }
     }
-    std::set<std::string> ownerRooms;
+    std::set<std::string> opRooms;
     {
+        // 先向服务器要一次最新的成员表：缓存里的角色可能已经过期
+        //（比如你刚被设成群管理员，但机器人入群时还没这回事）。
+        RefreshRoomRoles();
         std::lock_guard<std::mutex> lock(stateMutex_);
         for (const auto& room : roomRoles_) {
             for (const auto& member : room.second) {
-                if (SameNick(member.first, nick) && member.second == "owner") {
-                    ownerRooms.insert(room.first);
+                // owner = 群主；admin = 群管理员。这两个都算"这个群的 op"。
+                if (SameNick(member.first, nick) &&
+                    (member.second == "owner" || member.second == "admin")) {
+                    opRooms.insert(room.first);
                 }
             }
         }
     }
-    if (!op && ownerRooms.empty()) {
-        log_.Warn("管理界面登录被拒（既不是 op 也不是群主）：" + nick);
-        return JsonError(403, "你既不是 op，也不是它所在的群的群主");
+    if (!admin && opRooms.empty()) {
+        log_.Warn("管理界面登录被拒（既不是管理员也不是任何群的群主/管理员）：" + nick);
+        return JsonError(403, "你不是管理员，也不是这个机器人在的群的群主/群管理员");
     }
 
     std::string token;
@@ -1683,26 +1739,37 @@ HttpResponse Bot::HandleLogin(const std::string& body) {
     }
     UiSession session;
     session.nick = nick;
-    session.op = op;
-    session.ownerRooms = ownerRooms;
+    session.admin = admin;
+    session.opRooms = opRooms;
     session.expires = std::chrono::steady_clock::now() + std::chrono::hours(8);
     {
         std::lock_guard<std::mutex> lock(uiSessionMutex_);
         uiSessions_[token] = session;
     }
-    log_.Info("管理界面登录：" + nick + (op ? "（op）" : "（群主）"));
+    log_.Info("管理界面登录：" + nick + "（" +
+              (admin ? std::string("管理员")
+                     : "群管理员：" + [&] {
+                           std::string list;
+                           for (const std::string& room : opRooms) {
+                               if (!list.empty()) list += ",";
+                               list += room;
+                           }
+                           return list;
+                       }()) +
+              "）");
 
-    std::string owners;
-    for (const std::string& room : ownerRooms) {
-        if (!owners.empty()) owners += ",";
-        owners += JsonQuote(room);
+    std::string rooms;
+    for (const std::string& room : opRooms) {
+        if (!rooms.empty()) rooms += ",";
+        rooms += JsonQuote(room);
     }
     HttpResponse response;
     response.headers.push_back(
         {"Set-Cookie",
          "dchatbot_session=" + token + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800"});
-    response.body = "{\"ok\":true,\"nick\":" + JsonQuote(nick) +
-                    ",\"op\":" + (op ? "true" : "false") + ",\"ownerRooms\":[" + owners + "]}";
+    // 注意：**不把 admin 这个身份回给页面**（用户要求"只是权限不要显示"）。
+    // 页面只需要知道"能不能改"，由后端每次请求自己判。
+    response.body = "{\"ok\":true,\"nick\":" + JsonQuote(nick) + ",\"opRooms\":[" + rooms + "]}";
     return response;
 }
 
@@ -1807,6 +1874,48 @@ std::string Bot::StateJson() {
     return json;
 }
 
+namespace {
+
+/**
+ * 解析"房间ID = sk-..."这种行，写进 keys。
+ *
+ * `onlyRoom` 非空时**只接受这一行**（单群页/群管理员用）：页面只有这个群的输入框，
+ * 别的群的行即使被构造出来也不认，否则群管理员改一个页面就能改别的群。
+ * 值写 `-` 表示清空该群的 key。
+ */
+void ApplyRoomKeyLines(const std::string& text, std::map<std::string, std::string>* keys,
+                       const std::string& onlyRoom) {
+    const auto trim = [](std::string* value) {
+        while (!value->empty() && (value->back() == ' ' || value->back() == '\t')) value->pop_back();
+        while (!value->empty() && (value->front() == ' ' || value->front() == '\t')) {
+            value->erase(0, 1);
+        }
+    };
+    std::size_t pos = 0;
+    while (pos <= text.size()) {
+        const std::size_t end = text.find('\n', pos);
+        std::string line =
+            text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+        pos = (end == std::string::npos) ? text.size() + 1 : end + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const std::size_t equals = line.find('=');
+        if (equals == std::string::npos) continue;
+        std::string room = line.substr(0, equals);
+        std::string key = line.substr(equals + 1);
+        trim(&room);
+        trim(&key);
+        if (room.empty()) continue;
+        if (!onlyRoom.empty() && !SameRoomId(room, onlyRoom)) continue;
+        if (key == "-") {
+            keys->erase(room);
+        } else if (!key.empty()) {
+            (*keys)[room] = key;
+        }
+    }
+}
+
+}  // namespace
+
 HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) {
     FlatJson input;
     std::string error;
@@ -1814,56 +1923,42 @@ HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) 
 
     auto current = Cfg();
 
-    // 群主（非 op）只能改"自己那个群的 Key"。其余字段一律忽略 ——
-    // 它们影响的是整台机器人的行为，群主无权动。
-    if (!session.op) {
+    // 群主/群管理员（非 admin）只能改**自己那个群**的东西。
+    // 这里的 scopeRoom 就是"这一页管的是哪个群"：单群页 /room/<群>/bot 带群名，
+    // 总览页不带（非 admin 只能改自己有权限的群，见下面逐个字段的判断）。
+    if (!session.admin) {
         Config next = *current;
+        if (input.Has("room")) {
+            const std::string room = input.GetString("room", std::string());
+            if (room.empty() || session.opRooms.count(room) == 0) {
+                log_.Warn("群管理员 " + session.nick + " 想改 " + room + "，但 TA 不是那个群的管理");
+                return JsonError(403, "你不是这个群的管理员");
+            }
+            if (input.Has("apiRoomKeyText")) {
+                const std::string text = input.GetString("apiRoomKeyText", std::string());
+                std::map<std::string, std::string> keys = next.brain.roomApiKeys;
+                ApplyRoomKeyLines(text, &keys, room);
+                next.brain.roomApiKeys = keys;
+            }
+            ApplyConfig(next);
+            WriteConfigFile(next);
+            HttpResponse response;
+            response.body = "{\"ok\":true,\"note\":" + JsonQuote("已保存「" + room + "」的设置") +
+                            ",\"state\":" + StateJson() + "}";
+            return response;
+        }
+        // 没带 room：只允许改自己有权限的群的那些 key，其余字段忽略
         if (input.Has("apiRoomKeyText")) {
             const std::string text = input.GetString("apiRoomKeyText", std::string());
             std::map<std::string, std::string> keys = next.brain.roomApiKeys;
-            std::size_t pos = 0;
-            while (pos <= text.size()) {
-                const std::size_t end = text.find('\n', pos);
-                std::string line =
-                    text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
-                pos = (end == std::string::npos) ? text.size() + 1 : end + 1;
-                if (!line.empty() && line.back() == '\r') line.pop_back();
-                const std::size_t equals = line.find('=');
-                if (equals == std::string::npos) continue;
-                std::string room = line.substr(0, equals);
-                std::string key = line.substr(equals + 1);
-                const auto trim = [](std::string* value) {
-                    while (!value->empty() && (value->back() == ' ' || value->back() == '\t')) {
-                        value->pop_back();
-                    }
-                    while (!value->empty() && (value->front() == ' ' || value->front() == '\t')) {
-                        value->erase(0, 1);
-                    }
-                };
-                trim(&room);
-                trim(&key);
-                if (room.empty()) continue;
-                bool owned = false;
-                for (const std::string& mine : session.ownerRooms) {
-                    if (SameRoomId(mine, room)) owned = true;
-                }
-                if (!owned) {
-                    log_.Warn("群主 " + session.nick + " 想改 " + room + " 的 key，但 TA 不是那个群的群主");
-                    continue;
-                }
-                if (key == "-") {
-                    keys.erase(room);
-                } else if (!key.empty()) {
-                    keys[room] = key;
-                }
-            }
+            ApplyRoomKeyLines(text, &keys, std::string());
             next.brain.roomApiKeys = keys;
         }
         ApplyConfig(next);
         WriteConfigFile(next);
         HttpResponse response;
         response.body = "{\"ok\":true,\"note\":" +
-                        JsonQuote("已保存（你只能改自己群的 Key，其他设置需要 op）") +
+                        JsonQuote("已保存（你只能改自己管理的群的设置，其他设置需要管理员）") +
                         ",\"state\":" + StateJson() + "}";
         return response;
     }
@@ -1928,38 +2023,8 @@ HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) 
     if (input.Has("apiRoomKeyText")) {
         // 表单里只提交"新写的"那几行：`房间 = sk-...` 表示设置，`房间 = -` 表示清空。
         // 没出现在表单里的群保持原样 —— key 是只写的，页面本来就拿不回旧值。
-        const std::string text = input.GetString("apiRoomKeyText", std::string());
         std::map<std::string, std::string> keys = next.brain.roomApiKeys;
-        std::size_t pos = 0;
-        while (pos <= text.size()) {
-            const std::size_t end = text.find('\n', pos);
-            std::string line =
-                text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
-            pos = (end == std::string::npos) ? text.size() + 1 : end + 1;
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            const std::size_t equals = line.find('=');
-            if (equals == std::string::npos) continue;
-            std::string room = line.substr(0, equals);
-            std::string key = line.substr(equals + 1);
-            const auto trim = [](std::string* value) {
-                while (!value->empty() &&
-                       (value->back() == ' ' || value->back() == '\t')) {
-                    value->pop_back();
-                }
-                while (!value->empty() &&
-                       (value->front() == ' ' || value->front() == '\t')) {
-                    value->erase(0, 1);
-                }
-            };
-            trim(&room);
-            trim(&key);
-            if (room.empty()) continue;
-            if (key == "-") {
-                keys.erase(room);           // 清空这个群的专用 key，回退到默认
-            } else if (!key.empty()) {
-                keys[room] = key;
-            }
-        }
+        ApplyRoomKeyLines(input.GetString("apiRoomKeyText", std::string()), &keys, std::string());
         next.brain.roomApiKeys = keys;
     }
     if (input.Has("brainMode")) {

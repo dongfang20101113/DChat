@@ -134,7 +134,7 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     <button id="refresh">刷新</button>
   </header>
 
-  <div class="card">
+  <div class="card" id="cardRooms">
     <h2>接入的群</h2>
     <p class="hint">只回这里打开的群；没打开的群就算有人 @ 它也不理。机器人不是群成员时收不到消息，所以要先加群。</p>
     <div id="rooms"></div>
@@ -149,7 +149,7 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     <div id="hits" class="tags"></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="cardReply">
     <h2>谁能让它开口</h2>
     <p class="hint">@ 它的人还必须在允许范围内，否则它保持沉默（日志里会记一句）。</p>
     <div class="seg" id="mode">
@@ -164,7 +164,7 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" id="cardTrigger">
     <h2>触发方式</h2>
     <div class="row">
       <span class="name">只有被 @ 时才回复</span>
@@ -178,7 +178,7 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" id="cardLocal">
     <h2>本机操作</h2>
     <p class="hint">打开后它能在这个目录里读文件、改文件、改名、跑命令，也能把目录里的文件发到群里。
       群里<strong>任何能 @ 它的人</strong>都能让它做这些 —— 只在信任这个群的时候打开。</p>
@@ -192,30 +192,30 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     <p class="hint" id="patchHint" style="margin-top:10px"></p>
   </div>
 
-  <div class="card">
+  <div class="card" id="cardBrain">
     <h2>大脑</h2>
     <p class="hint">「本机 DeepSeek Harness」= 起子进程跑 dsh（需要本机装 DSH）；
       「DeepSeek API」= 直接调接口，工具由机器人自己做 —— 这样它可以整个跑在服务器上，
       改的也是服务器上的文件。API Key 只保存在这台机器的配置文件里（权限 600），
-      页面上只显示掩码。</p>
-    <div class="row">
+      页面永远不回显。</p>
+    <div class="row" id="rowBrainType">
       <span class="name">用哪个大脑</span>
       <select id="brainType">
         <option value="dsh">本机 DeepSeek Harness（子进程）</option>
         <option value="api">DeepSeek API（直连，不需要装 DSH）</option>
       </select>
     </div>
-    <div class="row"><span class="name">接口地址</span><input id="apiUrl" type="text" placeholder="https://api.deepseek.com/chat/completions"></div>
-    <div class="row"><span class="name">模型</span><input id="apiModel" type="text" placeholder="deepseek-chat"></div>
-    <div class="row"><span class="name">默认 API Key（只写：留空 = 不修改，填 - 清空）</span><input id="apiKey" type="password" autocomplete="off" placeholder="sk-…"></div>
-    <div class="row" style="display:block">
-      <span class="name">每个群单独的 Key（一行一个：<code>房间ID = sk-...</code>；<code>房间ID = -</code> 清空；留空用默认）</span>
+    <div class="row" id="rowApiUrl"><span class="name">接口地址</span><input id="apiUrl" type="text" placeholder="https://api.deepseek.com/chat/completions"></div>
+    <div class="row" id="rowApiModel"><span class="name">模型</span><input id="apiModel" type="text" placeholder="deepseek-chat"></div>
+    <div class="row" id="rowApiKey"><span class="name">默认 API Key（只写：留空 = 不修改，填 - 清空）</span><input id="apiKey" type="password" autocomplete="off" placeholder="sk-…"></div>
+    <div class="row" id="rowRoomKey" style="display:block">
+      <span class="name" id="roomKeyLabel">每个群单独的 Key（一行一个：<code>房间ID = sk-...</code>；<code>房间ID = -</code> 清空；留空用默认）</span>
       <textarea id="apiRoomKeyText" rows="3" autocomplete="off" placeholder="test = sk-xxxxxxxx" style="width:100%;margin-top:6px"></textarea>
     </div>
     <p class="hint" id="apiKeyHint" style="margin-top:6px"></p>
   </div>
 
-  <div class="card">
+  <div class="card" id="cardTyping">
     <h2>回答怎么分条发</h2>
     <p class="hint">字太多会刷屏，字太少像卡壳。改动保存后立刻生效。</p>
     <div class="row"><span class="name">每条最多几个字</span><input id="maxChars" type="number" min="8" max="4000"></div>
@@ -243,12 +243,14 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
   var state = null, dirty = false;
   var el = function (id) { return document.getElementById(id); };
   function api(path, body) {
+    // 单群页挂在 /room/<群>/bot 上（经网关转发），相对路径会解析成 /room/<群>/api/...，
+    // 所以这种情况下一律走 /bot/ 前缀 —— 网关认得它。
+    var base = window.__ROOM__ ? '/bot/' : '';
     var opt = { method: body ? 'POST' : 'GET', headers: { 'X-Dchat-Bot': '1' } };
     if (body) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
-    return fetch(path, opt).then(function (r) { return r.json(); });
+    return fetch(base + path, opt).then(function (r) { return r.json(); });
   }
-  function setMsg(text, cls) {
-    var m = el('msg'); m.textContent = text || ''; m.className = cls || '';
+  function setMsg(text, cls) {    var m = el('msg'); m.textContent = text || ''; m.className = cls || '';
   }
   function markDirty() {
     dirty = true; el('save').disabled = false; el('reload').disabled = false;
@@ -272,6 +274,24 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     el('st').textContent = state.online ? '在线' : '离线';
     el('st').className = 'badge ' + (state.online ? 'on' : 'off');
     el('addr').textContent = state.nick + ' @ ' + state.server;
+
+    // 单群页（/room/<群>/bot）：只留「这个群」能改的东西。
+    // 群主/群管理员看到的就这一块；全局设置整块藏掉，免得以为改得动。
+    if (window.__ROOM__) {
+      var hideIds = ['cardRooms', 'cardReply', 'cardTrigger', 'cardLocal', 'cardTyping'];
+      hideIds.forEach(function (id) {
+        var node = document.getElementById(id);
+        if (node) node.style.display = 'none';
+      });
+      ['rowBrainType', 'rowApiUrl', 'rowApiModel', 'rowApiKey'].forEach(function (id) {
+        var node = document.getElementById(id);
+        if (node) node.style.display = 'none';
+      });
+      var label = document.getElementById('roomKeyLabel');
+      if (label) label.innerHTML = '「' + window.__ROOM__ + '」的 API Key（只写：留空=不改，填 <code>-</code> 清空）';
+      var h2 = document.querySelector('#cardBrain h2');
+      if (h2) h2.textContent = '群「' + window.__ROOM__ + '」的设置';
+    }
 
     var rooms = el('rooms'); rooms.innerHTML = '';
     state.known.forEach(function (room) {
@@ -322,12 +342,21 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
       : '还没设置，粘贴 sk-… 后保存';
     var roomKeyRooms = (state.apiRoomKeys || []).map(function (item) { return item.room; });
     el('apiRoomKeyText').value = '';
-    el('apiRoomKeyText').placeholder = 'test = sk-xxxxxxxx（一行一个，只写不回显）';
-    el('apiKeyHint').textContent = (state.brainType === 'api'
-      ? '当前用 API 直连；工具（读写文件、跑命令、发文件）由机器人自己执行，范围就是上面的「工作目录」。'
-      : '当前用本机 DSH；要跑在服务器上就切到 API 直连。') +
-      (roomKeyRooms.length ? ' 已单独配了 key 的群：' + roomKeyRooms.join('、') + '（要改就重新写一行，写 - 清空）' : '');
-    el('apiKeyHint').textContent += ' Key 只保存在服务器上的配置文件里（权限 600），界面不回显。';
+    if (window.__ROOM__) {
+      // 单群页：这个文本框只管当前这一个群，别群的 key 在这里改不了
+      el('apiRoomKeyText').placeholder = window.__ROOM__ + ' = sk-xxxxxxxx（只管这个群）';
+      el('apiKeyHint').textContent =
+        '这一页只管「' + window.__ROOM__ + '」这个群。群主/群管理员能改这里的 Key；' +
+        '其余设置（白名单、分条、工作目录…）归管理员。' +
+        (roomKeyRooms.indexOf(window.__ROOM__) >= 0 ? ' 这个群已经单独配了 key（要换就重写一行，写 - 清空）。' : '');
+    } else {
+      el('apiRoomKeyText').placeholder = 'test = sk-xxxxxxxx（一行一个，只写不回显）';
+      el('apiKeyHint').textContent = (state.brainType === 'api'
+        ? '当前用 API 直连；工具（读写文件、跑命令、发文件）由机器人自己执行，范围就是上面的「工作目录」。'
+        : '当前用本机 DSH；要跑在服务器上就切到 API 直连。') +
+        (roomKeyRooms.length ? ' 已单独配了 key 的群：' + roomKeyRooms.join('、') + '（要改就重新写一行，写 - 清空）' : '');
+      el('apiKeyHint').textContent += ' Key 只保存在服务器上的配置文件里（权限 600），界面不回显。';
+    }
     el('maxChars').value = state.typing.maxChars;
     el('minChars').value = state.typing.minChars;
     el('minGap').value = state.typing.minGapMs;
@@ -374,6 +403,8 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
       apiModel: el('apiModel').value.trim(),
       apiKey: el('apiKey').value.trim(),
       apiRoomKeyText: el('apiRoomKeyText').value,
+      // 单群页：告诉后端"这一页只管这个群"，后端据此只放行这个群的改动
+      room: window.__ROOM__ || '',
       workDir: el('workDir').value,
       fileMaxMb: parseInt(el('fileMaxMb').value, 10),
       fileRoots: el('fileRoots').value.split(';').map(function (s) { return s.trim(); })
