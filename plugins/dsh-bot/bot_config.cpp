@@ -220,6 +220,30 @@ bool ParseConfig(const std::string& text, Config* out, std::string* error) {
             }
         } else if (key == "reply.list") {
             config.reply.nicks = SplitList(value);
+        } else if (key.rfind("room.", 0) == 0) {
+            // room.<群>.replymode / room.<群>.replylist —— 每个群自己的应答范围。
+            // 按键名最后一段区分，群 ID 里带点也不会认错。
+            const std::size_t dot = key.rfind('.');
+            if (dot == std::string::npos || dot <= 5) return bad("缺少群 ID 或字段名");
+            const std::string room = key.substr(5, dot - 5);
+            const std::string field = key.substr(dot + 1);
+            if (field == "replymode") {
+                const std::string mode = Lower(value);
+                ReplyPolicy& policy = config.roomReply[room];
+                if (mode == "all") {
+                    policy.mode = ReplyMode::All;
+                } else if (mode == "whitelist") {
+                    policy.mode = ReplyMode::Whitelist;
+                } else if (mode == "blacklist") {
+                    policy.mode = ReplyMode::Blacklist;
+                } else {
+                    return bad("只能是 all / whitelist / blacklist");
+                }
+            } else if (field == "replylist") {
+                config.roomReply[room].nicks = SplitList(value);
+            } else {
+                return bad("只认 room.<群>.replymode / room.<群>.replylist");
+            }
         } else if (key == "reply.acktext") {
             config.ackText = UnescapeValue(value);
         } else if (key == "history.settlems") {

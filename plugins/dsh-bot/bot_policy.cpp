@@ -139,6 +139,14 @@ bool ReplyAllowed(const ReplyPolicy& policy, const std::string& nick) {
     return (policy.mode == ReplyMode::Whitelist) ? listed : !listed;
 }
 
+const ReplyPolicy& EffectiveReply(const Config& config, const std::string& room) {
+    for (const auto& pair : config.roomReply) {
+        // 房间 ID 大小写不敏感（和 SameRoomId 同一套规则）
+        if (SameNick(pair.first, room)) return pair.second;
+    }
+    return config.reply;
+}
+
 std::string BuildPrompt(const BrainConfig& config, const std::vector<std::string>& sendRoots,
                         const std::string& roomName, const std::string& roomId,
                         const std::string& nick, const std::string& text) {

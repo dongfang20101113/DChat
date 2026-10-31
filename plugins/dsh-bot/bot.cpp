@@ -313,7 +313,7 @@ private:
     // ---- 本机管理界面 ----
     void StartUi();
     HttpResponse HandleHttp(const HttpRequest& request);
-    std::string StateJson(const UiSession& session);
+    std::string StateJson(const UiSession& session, const std::string& room);
     HttpResponse HandleSave(const std::string& body, const UiSession& session);
     HttpResponse HandleLogin(const std::string& body);
     /** 从 Cookie 里取会话 token。 */
@@ -976,8 +976,10 @@ void Bot::HandleChat(const std::string& room, const std::string& nick, const std
     const TriggerMatch match = MatchTrigger(text, Cfg()->nick, Cfg()->trigger);
     if (!match.matched) return;
 
-    if (!ReplyAllowed(Cfg()->reply, nick)) {
-        const char* why = (Cfg()->reply.mode == ReplyMode::Whitelist) ? "不在白名单" : "在黑名单";
+    // 这个群有自己的应答范围就用它，没有才用全局那份
+    const ReplyPolicy& policy = EffectiveReply(*Cfg(), room);
+    if (!ReplyAllowed(policy, nick)) {
+        const char* why = (policy.mode == ReplyMode::Whitelist) ? "不在白名单" : "在黑名单";
         log_.Info("跳过 " + nick + " 的 @" + "（" + why + "）");
         return;
     }
@@ -1532,11 +1534,34 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
     // 这里统一剥掉这层前缀，机器人自己直接访问（127.0.0.1:8731）也照样能用。
     // ⚠️ /room/<群>/bot 不能被剥（那是单群页自己的地址）。
     std::string path = request.path;
+    // HTTP 层已经把查询串拆出去了（request.query），这里直接用；顺手兜一下
+    // 以防哪天路径里又带上了 ?（老调用方会那么写）。
+    std::string query = request.query;
+    const std::size_t qmark = path.find('?');
+    if (qmark != std::string::npos) {
+        if (query.empty()) query = path.substr(qmark + 1);
+        path = path.substr(0, qmark);
+    }
     if (path.rfind("/bot/", 0) == 0) {
         path = path.substr(4);
     } else if (path == "/bot") {
         path = "/";
     }
+    /** 从查询串里取一个参数（只认简单的 key=value&…，够用了）。 */
+    const auto queryParam = [&query](const std::string& key) {
+        std::size_t pos = 0;
+        while (pos < query.size()) {
+            const std::size_t and_ = query.find('&', pos);
+            const std::string item =
+                query.substr(pos, and_ == std::string::npos ? std::string::npos : and_ - pos);
+            const std::size_t eq = item.find('=');
+            if (eq != std::string::npos && item.substr(0, eq) == key) return item.substr(eq + 1);
+            if (and_ == std::string::npos) break;
+            pos = and_ + 1;
+        }
+        return std::string();
+    };
+    const std::string queryRoom = queryParam("room");
     // ---- 登录（唯一不需要会话的两个入口）----
     if (request.method == "GET" && (path == "/login" || path == "/")) {
         // 登录页就是登录页
@@ -1648,7 +1673,7 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
     }
     if (request.method == "GET" && path == "/api/state") {
         HttpResponse response;
-        response.body = StateJson(session);
+        response.body = StateJson(session, queryRoom);
         return response;
     }
     if (request.method == "POST" && path == "/api/config") {
@@ -1852,7 +1877,7 @@ HttpResponse Bot::HandleLogin(const std::string& body) {
     return response;
 }
 
-std::string Bot::StateJson(const UiSession& session) {
+std::string Bot::StateJson(const UiSession& session, const std::string& room) {
     const auto cfg = Cfg();
     std::string json = "{\"ok\":true";
     json += ",\"online\":";
@@ -1915,11 +1940,15 @@ std::string Bot::StateJson(const UiSession& session) {
     }
     json += "]";
 
+    // 有 room 参数时返回这个群自己的应答范围（群页上改的就是它）；没有就返回全局那份。
+    const ReplyPolicy& shown = room.empty() ? cfg->reply : EffectiveReply(*cfg, room);
     const char* mode = "all";
-    if (cfg->reply.mode == ReplyMode::Whitelist) mode = "whitelist";
-    if (cfg->reply.mode == ReplyMode::Blacklist) mode = "blacklist";
+    if (shown.mode == ReplyMode::Whitelist) mode = "whitelist";
+    if (shown.mode == ReplyMode::Blacklist) mode = "blacklist";
     json += ",\"replyMode\":" + JsonQuote(mode);
-    json += ",\"replyList\":" + JsonQuoteArray(cfg->reply.nicks);
+    json += ",\"replyList\":" + JsonQuoteArray(shown.nicks);
+    json += ",\"replyScoped\":";
+    json += room.empty() ? "false" : "true";
     json += ",\"mentionOnly\":";
     json += cfg->trigger.mentionOnly ? "true" : "false";
     json += ",\"aliases\":" + JsonQuoteArray(cfg->trigger.aliases);
@@ -2005,6 +2034,32 @@ void ApplyRoomKeyLines(const std::string& text, std::map<std::string, std::strin
     }
 }
 
+/** 把一个群自己的设置（专用 key、应答范围）落到配置里。 */
+void ApplyRoomScoped(Config* next, const FlatJson& input, const std::string& room) {
+    if (input.Has("apiRoomKeyText")) {
+        std::map<std::string, std::string> keys = next->brain.roomApiKeys;
+        ApplyRoomKeyLines(input.GetString("apiRoomKeyText", std::string()), &keys, room);
+        next->brain.roomApiKeys = keys;
+    }
+    // 群页发的是 roomReplyMode / roomReplyList：和全局的 replyMode/replyList 分开，
+    // 否则在群页上一保存就把全局名单也盖掉了。
+    if (input.Has("roomReplyMode")) {
+        const std::string mode = input.GetString("roomReplyMode", "all");
+        ReplyPolicy& policy = next->roomReply[room];
+        if (mode == "all") {
+            policy.mode = ReplyMode::All;
+        } else if (mode == "whitelist") {
+            policy.mode = ReplyMode::Whitelist;
+        } else if (mode == "blacklist") {
+            policy.mode = ReplyMode::Blacklist;
+        }
+    }
+    std::vector<std::string> values;
+    if (input.GetArray("roomReplyList", &values)) {
+        next->roomReply[room].nicks = values;
+    }
+}
+
 }  // namespace
 
 HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) {
@@ -2025,17 +2080,12 @@ HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) 
                 log_.Warn("群管理员 " + session.nick + " 想改 " + room + "，但 TA 不是那个群的管理");
                 return JsonError(403, "你不是这个群的管理员");
             }
-            if (input.Has("apiRoomKeyText")) {
-                const std::string text = input.GetString("apiRoomKeyText", std::string());
-                std::map<std::string, std::string> keys = next.brain.roomApiKeys;
-                ApplyRoomKeyLines(text, &keys, room);
-                next.brain.roomApiKeys = keys;
-            }
+            ApplyRoomScoped(&next, input, room);
             ApplyConfig(next);
             WriteConfigFile(next);
             HttpResponse response;
             response.body = "{\"ok\":true,\"note\":" + JsonQuote("已保存「" + room + "」的设置") +
-                            ",\"state\":" + StateJson(session) + "}";
+                            ",\"state\":" + StateJson(session, room) + "}";
             return response;
         }
         // 没带 room：只允许改自己有权限的群的那些 key，其余字段忽略
@@ -2050,12 +2100,18 @@ HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) 
         HttpResponse response;
         response.body = "{\"ok\":true,\"note\":" +
                         JsonQuote("已保存（你只能改自己管理的群的设置，其他设置需要管理员）") +
-                        ",\"state\":" + StateJson(session) + "}";
+                        ",\"state\":" + StateJson(session, std::string()) + "}";
         return response;
     }
 
     Config next = *current;
     std::vector<std::string> values;
+
+    // 管理员在某个群的页面上保存：这个群的设置（key / 应答范围）先落进去，
+    // 其余全局字段照常处理。
+    if (input.Has("room")) {
+        ApplyRoomScoped(&next, input, input.GetString("room", std::string()));
+    }
 
     if (input.GetArray("rooms", &values)) {
         next.rooms.clear();
@@ -2155,7 +2211,7 @@ HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) 
     WriteConfigFile(next);
 
     HttpResponse response;
-    response.body = "{\"ok\":true,\"state\":" + StateJson(session) + "}";
+    response.body = "{\"ok\":true,\"state\":" + StateJson(session, std::string()) + "}";
     return response;
 }
 
@@ -2225,7 +2281,7 @@ HttpResponse Bot::HandleJoin(const std::string& body, const UiSession& session) 
     HttpResponse response;
     response.body = "{\"ok\":true,\"note\":" +
                     JsonQuote("已把 " + room + " 加进接入列表；需要审核的群要等群主同意后才会回复") +
-                    ",\"state\":" + StateJson(session) + "}";
+                    ",\"state\":" + StateJson(session, std::string()) + "}";
     return response;
 }
 
@@ -2282,7 +2338,7 @@ void Bot::WriteConfigFile(const Config& next) {
     const char* mode = "all";
     if (next.reply.mode == ReplyMode::Whitelist) mode = "whitelist";
     if (next.reply.mode == ReplyMode::Blacklist) mode = "blacklist";
-    const std::vector<std::pair<std::string, std::string>> changes = {
+    std::vector<std::pair<std::string, std::string>> changes = {
         {"rooms", JoinList(next.rooms)},
         {"rooms.autojoin", next.autoJoin ? "true" : "false"},
         {"trigger.mentiononly", next.trigger.mentionOnly ? "true" : "false"},
@@ -2305,6 +2361,14 @@ void Bot::WriteConfigFile(const Config& next) {
         {"brain.api.model", EscapeConfigValue(next.brain.apiModel)},
         {"brain.api.key", EscapeConfigValue(next.brain.apiKey)},
     };
+    // 每个群自己的应答范围：配过的群逐条写回（没配过的群不写，跟着全局走）
+    for (const auto& pair : next.roomReply) {
+        const char* roomMode = "all";
+        if (pair.second.mode == ReplyMode::Whitelist) roomMode = "whitelist";
+        if (pair.second.mode == ReplyMode::Blacklist) roomMode = "blacklist";
+        changes.emplace_back("room." + pair.first + ".replymode", roomMode);
+        changes.emplace_back("room." + pair.first + ".replylist", JoinList(pair.second.nicks));
+    }
     const std::string updated = UpdateConfigText(text, changes);
     // 每个群的 key 单独写（包含"被删掉的"：写成空值，加载时会被当成没有）
     std::string withRoomKeys = updated;

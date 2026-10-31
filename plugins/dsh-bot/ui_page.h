@@ -181,20 +181,17 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
   .muted { color:var(--muted); }
   /* 单群页（/room/<群>/bot/...）在**第一帧之前**就把不该看的卡片藏掉：
      靠 JS 在 render() 里改 display 会先闪一下整个总览，看着像页面抽风。
-     - api-key 页：只留本群的 key 输入框，全局卡片一律不画；
-     - manage 页：只有能管所有群的人（room-admin）才看到全局设置。 */
-  html.room-mode:not(.room-admin) #cardRooms,
-  html.room-mode:not(.room-admin) #cardReply,
+     - 「接入的群」是全局的，群页上永远不出现；
+     - 「谁能让它开口」在群页上是**这个群自己的**黑白名单，所以谁都能看；
+     - 触发方式/本机操作/大脑这些全局项只有 room-admin 看得到；
+     - api-key 页只留本群 key 那一行。 */
+  html.room-mode #cardRooms,
+  html.room-mode:not(.room-manage) #cardReply { display:none; }
   html.room-mode:not(.room-admin) #cardTrigger,
   html.room-mode:not(.room-admin) #cardLocal,
   html.room-mode:not(.room-admin) #cardTyping,
-  html.room-mode #cardRoomManage,
-  html.room-mode:not(.room-manage) #cardRooms,
-  html.room-mode:not(.room-manage) #cardReply,
-  html.room-mode:not(.room-manage) #cardTrigger,
-  html.room-mode:not(.room-manage) #cardLocal,
-  html.room-mode:not(.room-manage) #cardTyping { display:none; }
-  /* 「大脑」卡片只有 api-key 页用（而且只露本群 key 那一行） */
+  html.room-mode:not(.room-admin) #cardBrain,
+  html.room-mode #cardRoomManage { display:none; }
   html.room-mode:not(.room-manage) #cardBrain { display:none; }
   a.tag { color:#cfe0ff; text-decoration:none; }
   a.tag:hover { border-color:#3a5ea8; background:#22304d; }
@@ -563,7 +560,7 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     el('log').textContent = (state.log && state.log.length) ? state.log.join('\n') : '（还没有日志）';
   }
   function load(keepMsg) {
-    return api('api/state').then(function (data) {
+    return api('api/state' + roomQuery()).then(function (data) {
       if (!data.ok) { setMsg(data.error || '读取失败', 'bad'); return; }
       state = data;
       dirty = false; el('save').disabled = true; el('reload').disabled = true;
@@ -593,13 +590,15 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     el('brainMode').className = 'switch' + (state.brainMode === 'local' ? ' on' : '');
     markDirty();
   };
+  /** 群页的接口要带上 room，后端据此取/存这个群自己的设置。 */
+  function roomQuery() {
+    return window.__ROOM__ ? ('?room=' + encodeURIComponent(window.__ROOM__)) : '';
+  }
   function collect() {
-    return {
+    var body = {
       rooms: state.rooms,
       mentionOnly: state.mentionOnly,
       aliases: state.aliases,
-      replyMode: state.replyMode,
-      replyList: state.replyList,
       ackText: el('ack').value,
       brainMode: state.brainMode,
       brainType: el('brainType').value,
@@ -628,6 +627,15 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
       perCharMs: parseInt(el('perChar').value, 10),
       maxGapMs: parseInt(el('maxGap').value, 10)
     };
+    if (window.__ROOM__) {
+      // 群页：名单是**这个群自己的**，用 roomReply* 提交，别动全局那份
+      body.roomReplyMode = state.replyMode;
+      body.roomReplyList = state.replyList;
+    } else {
+      body.replyMode = state.replyMode;
+      body.replyList = state.replyList;
+    }
+    return body;
   }
   el('apiModel').onchange = function () {
     var custom = el('apiModel').value === '__custom__';

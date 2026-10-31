@@ -173,6 +173,13 @@ struct Config {
 
     TriggerConfig trigger;
     ReplyPolicy reply;
+    /**
+     * 每个群自己的"谁能让它开口"，键是房间 ID。
+     *
+     * 有就用它，没有就退回上面那份全局的 —— 一个群设了白名单不会影响别的群。
+     * 配置写法：`room.<群>.replymode` / `room.<群>.replylist`。
+     */
+    std::map<std::string, ReplyPolicy> roomReply;
     TypingConfig typing;
     BrainConfig brain;
 

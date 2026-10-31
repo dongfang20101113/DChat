@@ -15,6 +15,7 @@ namespace dshbot {
 struct TriggerConfig;
 struct ReplyPolicy;
 struct BrainConfig;
+struct Config;
 
 struct TriggerMatch {
     bool matched = false;
@@ -34,6 +35,12 @@ TriggerMatch MatchTrigger(const std::string& raw, const std::string& botNick,
 
 /** 白名单 / 黑名单判定（昵称大小写不敏感）。 */
 bool ReplyAllowed(const ReplyPolicy& policy, const std::string& nick);
+
+/**
+ * 某个群真正生效的应答范围：这个群单独配过就用它，否则退回全局那份。
+ * 房间 ID 比较大小写不敏感（和服务端一致）。
+ */
+const ReplyPolicy& EffectiveReply(const Config& config, const std::string& room);
 
 /** 按模板拼提示词：{room} / {roomId} / {nick} / {text} / {workdir} / {fileroots}。 */
 std::string BuildPrompt(const BrainConfig& config, const std::vector<std::string>& sendRoots,
