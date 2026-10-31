@@ -931,6 +931,7 @@ const char* kIndexHtml = R"HTML(<!doctype html>
   <button id="btnPanel" class="ghost" title="房间" style="padding:4px 9px;font-size:13px">＋</button>
   <a id="adminlink" href="/admin" style="display:none;font-size:13px">管理</a>
   <a id="rset" href="#" style="display:none;font-size:13px">房间设置</a>
+  <a id="botlink" href="#" style="display:none;font-size:13px">机器人</a>
   <a href="/download" style="font-size:13px">下载客户端</a>
 </header>
 <main><aside id="rooms"></aside><div id="log"></div></main>
@@ -988,14 +989,19 @@ let wantRoom = pageRoom;
 // 结果就是「网址写着 /room/test，页面却停在大厅」。
 let pendingOpenRoom = '';
 
-/** 同步「房间设置」入口：没房间就藏起来。 */
+/** 同步「房间设置」和「机器人」入口：没房间就藏起来。 */
 function syncRoomLink() {
   const rset = document.getElementById('rset');
+  const botlink = document.getElementById('botlink');
   if (wantRoom) {
     rset.href = '/room/' + encodeURIComponent(wantRoom) + '/settings';
     rset.style.display = '';
+    // 机器人管理只在群的命名空间下（没有独立的总览页）
+    botlink.href = '/room/' + encodeURIComponent(wantRoom) + '/bot/manage';
+    botlink.style.display = '';
   } else {
     rset.style.display = 'none';
+    botlink.style.display = 'none';
   }
 }
 syncRoomLink();

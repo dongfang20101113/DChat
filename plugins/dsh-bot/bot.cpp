@@ -320,14 +320,13 @@ private:
     std::string CookieToken(const HttpRequest& request) const;
     bool LoadSession(const HttpRequest& request, UiSession* out);
     void DropSession(const HttpRequest& request);
-    /**
-     * 向服务器要一次最新的群成员表（发 ROOM <群>，服务器会回 RMEMBERS）。
-     *
-     * 为什么登录时要拉一次：成员角色是会变的，而机器人只在"自己在群里"的时候
-     * 才收得到 RMEMBERS 推送。你刚被设成群管理员、而机器人在那之后才入群时，
-     * 缓存里就没有这条 —— 表现是"我明明是群管理却进不去"。
-     */
+    /** 向服务器要一次最新的群成员表（发 ROOM <群>，服务器会回 RMEMBERS）。 */
     void RefreshRoomRoles();
+    /**
+     * 这个人打开管理界面时应该落在哪个群：优先他有管理权限的群，
+     * 没有就退回机器人接入的第一个群（全局管理员能管所有群）。
+     */
+    std::string FirstManagedRoom(const UiSession& session);
     HttpResponse HandleSearch(const std::string& body);
     HttpResponse HandleJoin(const std::string& body, const UiSession& session);
     bool ApplyConfig(const Config& next);
@@ -1540,12 +1539,23 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
     }
     // ---- 登录（唯一不需要会话的两个入口）----
     if (request.method == "GET" && (path == "/login" || path == "/")) {
-        // 没登录时首页就是登录页；登录页本身也走这里
+        // 登录页就是登录页
         UiSession probe;
         if (path == "/" && LoadSession(request, &probe)) {
+            // **不再有独立的"总览页"**：管理内容只在 /room/<群>/bot/… 里。
+            // 登录后（或直接访问 /bot/）一律送到第一个群的管理页。
+            const std::string first = FirstManagedRoom(probe);
             HttpResponse response;
             response.contentType = "text/html; charset=utf-8";
-            response.body = kUiPage;
+            if (!first.empty()) {
+                response.body = "<meta http-equiv=\"refresh\" content=\"0;url=/room/" + first +
+                                "/bot/manage\">";
+            } else {
+                response.body = "<meta charset=\"utf-8\"><body style=\"background:#0f1115;"
+                                "color:#e6e9ef;font:14px sans-serif;padding:40px\">"
+                                "没有能管理的群：先让机器人加入一个群，并在那个群里给你群主/"
+                                "群管理员，或者把昵称加进管理员名单。</body>";
+            }
             return response;
         }
         HttpResponse response;
@@ -1579,9 +1589,18 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
         return response;
     }
     if (request.method == "GET" && path == "/index.html") {
+        // 没有独立的总览页：和 / 一样送到第一个群的管理页
+        const std::string first = FirstManagedRoom(session);
         HttpResponse response;
         response.contentType = "text/html; charset=utf-8";
-        response.body = kUiPage;
+        if (!first.empty()) {
+            response.body = "<meta http-equiv=\"refresh\" content=\"0;url=/room/" + first +
+                            "/bot/manage\">";
+        } else {
+            response.body = "<meta charset=\"utf-8\"><body style=\"background:#0f1115;"
+                            "color:#e6e9ef;font:14px sans-serif;padding:40px\">没有能管理的群。"
+                            "</body>";
+        }
         return response;
     }
     // 单群页面分两页（都在这个群的命名空间下）：
@@ -1616,7 +1635,8 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
                 "<script>window.__ROOM__ = " + JsonQuote(room) +
                 ";window.__PAGE__ = " + JsonQuote(pageName) +
                 ";document.documentElement.className = 'room-mode" +
-                (pageName == "manage" ? " room-manage" : "") + "';</script>";
+                (pageName == "manage" ? " room-manage" : "") +
+                (session.admin ? " room-admin" : "") + "';</script>";
             if (headAt != std::string::npos) {
                 page.insert(headAt + 6, mark);
             } else {
@@ -1646,6 +1666,21 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
 }
 
 /** 从 Cookie 里取会话 token。 */
+std::string Bot::FirstManagedRoom(const UiSession& session) {
+    for (const std::string& room : session.opRooms) {
+        if (!room.empty()) return room;
+    }
+    const auto cfg = Cfg();
+    for (const std::string& room : cfg->rooms) {
+        if (!room.empty()) return room;
+    }
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    for (const auto& pair : rooms_) {
+        if (!pair.first.empty()) return pair.first;
+    }
+    return std::string();
+}
+
 void Bot::RefreshRoomRoles() {
     if (sock_ == sock::kInvalid || !loggedIn_.load()) return;
     std::vector<std::string> rooms;

@@ -179,12 +179,23 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
   pre#log { margin:0; max-height:230px; overflow:auto; font:12px/1.5 Consolas,monospace; color:#a8b0c0;
             white-space:pre-wrap; word-break:break-all; }
   .muted { color:var(--muted); }
-  /* 单群页（/room/<群>/bot/...）在**第一帧之前**就把全局卡片藏掉：
-     靠 JS 在 render() 里改 display 会先闪一下整个总览，看着像页面抽风。 */
-  html.room-mode #cardRooms, html.room-mode #cardReply, html.room-mode #cardTrigger,
-  html.room-mode #cardLocal, html.room-mode #cardTyping, html.room-mode #cardRoomManage { display:none; }
-  /* manage 页连"大脑"那块也不要 */
-  html.room-manage #cardBrain { display:none; }
+  /* 单群页（/room/<群>/bot/...）在**第一帧之前**就把不该看的卡片藏掉：
+     靠 JS 在 render() 里改 display 会先闪一下整个总览，看着像页面抽风。
+     - api-key 页：只留本群的 key 输入框，全局卡片一律不画；
+     - manage 页：只有能管所有群的人（room-admin）才看到全局设置。 */
+  html.room-mode:not(.room-admin) #cardRooms,
+  html.room-mode:not(.room-admin) #cardReply,
+  html.room-mode:not(.room-admin) #cardTrigger,
+  html.room-mode:not(.room-admin) #cardLocal,
+  html.room-mode:not(.room-admin) #cardTyping,
+  html.room-mode #cardRoomManage,
+  html.room-mode:not(.room-manage) #cardRooms,
+  html.room-mode:not(.room-manage) #cardReply,
+  html.room-mode:not(.room-manage) #cardTrigger,
+  html.room-mode:not(.room-manage) #cardLocal,
+  html.room-mode:not(.room-manage) #cardTyping { display:none; }
+  /* 「大脑」卡片只有 api-key 页用（而且只露本群 key 那一行） */
+  html.room-mode:not(.room-manage) #cardBrain { display:none; }
   a.tag { color:#cfe0ff; text-decoration:none; }
   a.tag:hover { border-color:#3a5ea8; background:#22304d; }
 </style>
@@ -368,15 +379,11 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     el('st').className = 'badge ' + (state.online ? 'on' : 'off');
     el('addr').textContent = state.nick + ' @ ' + state.server;
 
-    // 单群的两页（/room/<群>/bot/manage 与 /bot/api-key）：只跟本群有关，
-    // 全局设置整块藏掉；manage 页只给入口，api-key 页才给输入框。
+    // 单群的两页（/room/<群>/bot/manage 与 …/api-key）。
+    // 没有独立的"总览页"了：全局设置只在 manage 页、且只有能管所有群的人看得到。
     if (window.__ROOM__) {
       var isApiKeyPage = window.__PAGE__ === 'apikey';
-      ['cardRooms', 'cardReply', 'cardTrigger', 'cardLocal', 'cardTyping', 'cardRoomManage']
-        .forEach(function (id) {
-          var node = document.getElementById(id);
-          if (node) node.style.display = 'none';
-        });
+      var canAll = !!state.canManageAll;
       ['rowBrainType', 'rowApiUrl', 'rowApiModel', 'rowApiKey', 'rowRoomKey'].forEach(function (id) {
         var node = document.getElementById(id);
         if (node) node.style.display = 'none';
@@ -386,6 +393,11 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
       var h2 = document.querySelector('#cardBrain h2');
       if (isApiKeyPage) {
         // api-key 页：只有"本群的 key"一个输入框（群由地址决定，不让手写群名）
+        ['cardRooms', 'cardReply', 'cardTrigger', 'cardLocal', 'cardTyping', 'cardRoomManage']
+          .forEach(function (id) {
+            var node = document.getElementById(id);
+            if (node) node.style.display = 'none';
+          });
         if (single) single.style.display = '';
         if (nav) nav.style.display = 'none';
         var singleLabel = document.getElementById('singleRoomKeyLabel');
@@ -394,30 +406,36 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
         }
         if (h2) h2.textContent = 'API Key';
       } else {
-        // manage 页：**只要这一个群的入口**。原来那套总览（大脑/白名单/分条…）
-        // 整块不要 —— 那是管理员在 /bot/ 看的东西，摆在这儿只会让人以为能改。
+        // manage 页：入口卡片永远有；全局设置只有管理员看得到（CSS 已经按
+        // room-admin 类名先藏好了，这里只补 JS 侧的收尾）。
         if (single) single.style.display = 'none';
         if (nav) nav.style.display = '';
-        var brainCard = document.getElementById('cardBrain');
-        if (brainCard) brainCard.style.display = 'none';
         var link = document.getElementById('toApiKey');
         if (link) link.href = '/room/' + encodeURIComponent(window.__ROOM__) + '/bot/api-key';
-        // 这一页没什么可提交的
-        var sv = document.getElementById('save');
-        if (sv) sv.style.display = 'none';
-        var rl = document.getElementById('reload');
-        if (rl) rl.style.display = 'none';
+        if (!canAll) {
+          ['cardRooms', 'cardReply', 'cardTrigger', 'cardLocal', 'cardTyping', 'cardBrain']
+            .forEach(function (id) {
+              var node = document.getElementById(id);
+              if (node) node.style.display = 'none';
+            });
+          var sv = document.getElementById('save');
+          if (sv) sv.style.display = 'none';
+          var rl = document.getElementById('reload');
+          if (rl) rl.style.display = 'none';
+        } else {
+          var brainCard = document.getElementById('cardBrain');
+          if (brainCard) brainCard.style.display = '';
+        }
       }
-      // 头部返回链接：在 api-key 页返回本群的 manage 页；在 manage 页时，
-      // 能管所有群的人可以回总览（否则点进来就出不去了）
+      // 头部返回链接：api-key 页返回本群 manage；manage 页没有上一层了（总览页已删）
       var back = document.getElementById('backAll');
       if (back) {
         if (isApiKeyPage) {
           back.href = '/room/' + encodeURIComponent(window.__ROOM__) + '/bot/manage';
           back.textContent = '← 群管理';
           back.style.display = '';
-        } else if (state.canManageAll) {
-          back.style.display = '';
+        } else {
+          back.style.display = 'none';
         }
       }
     } else if (!state.canManageAll) {
