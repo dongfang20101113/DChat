@@ -71,9 +71,9 @@ inline constexpr const char* kLoginPage = R"HTML(<!DOCTYPE html>
   }
 
   function afterLogin(data) {
-    var rooms = data.opRooms || [];
-    location.href = rooms.length === 1 ? ('/room/' + encodeURIComponent(rooms[0]) + '/bot')
-                                       : '/bot/';
+    // 统一进总览页：总览里有"每个群的入口"，从那儿再点进单群。
+    // 之前"只管理一个群就直接跳单群页"会让人找不到总览（用户实测就困在单群页里）。
+    location.href = '/bot/';
   }
 
   document.getElementById('f').addEventListener('submit', function (e) {
@@ -187,9 +187,16 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     <h1>dchat 机器人</h1>
     <span id="st" class="badge">…</span>
     <span id="addr" class="badge"></span>
+    <a id="backAll" href="/bot/" style="display:none;font-size:13px;color:var(--accent);text-decoration:none">← 总览</a>
     <span style="flex:1"></span>
     <button id="refresh">刷新</button>
   </header>
+
+  <div class="card" id="cardRoomManage">
+    <h2>群管理</h2>
+    <p class="hint">每个群有自己的管理页：群主和群管理员能在那一页改自己群的 Key，看不到别的群。</p>
+    <div id="roomLinks" class="tags"></div>
+  </div>
 
   <div class="card" id="cardRooms">
     <h2>接入的群</h2>
@@ -366,6 +373,49 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
       }
       var h2 = document.querySelector('#cardBrain h2');
       if (h2) h2.textContent = '群「' + window.__ROOM__ + '」的设置';
+      // 能管所有群的人，从单群页要能回总览（否则点进来就出不去了）
+      var back = document.getElementById('backAll');
+      if (back && state.canManageAll) back.style.display = '';
+    } else if (!state.canManageAll) {
+      // 只管理某些群的人打开总览：全局设置他也改不了，藏掉，只留"群管理"和日志
+      ['cardRooms', 'cardReply', 'cardTrigger', 'cardLocal', 'cardTyping', 'cardBrain']
+        .forEach(function (id) {
+          var node = document.getElementById(id);
+          if (node) node.style.display = 'none';
+        });
+      var saveBtn = document.getElementById('save');
+      if (saveBtn) saveBtn.style.display = 'none';
+      var reloadBtn = document.getElementById('reload');
+      if (reloadBtn) reloadBtn.style.display = 'none';
+    }
+
+    // 群管理入口：管理员看到所有群，群主/群管理员只看到自己那几个
+    var linksHost = document.getElementById('roomLinks');
+    if (linksHost) {
+      linksHost.innerHTML = '';
+      var canAll = !!state.canManageAll;
+      var mine = state.opRooms || [];
+      var list = (state.known || []).filter(function (room) {
+        if (canAll) return true;
+        for (var i = 0; i < mine.length; i++) {
+          if (mine[i].toLowerCase() === String(room.id).toLowerCase()) return true;
+        }
+        return false;
+      });
+      if (!list.length) {
+        var none = document.createElement('span');
+        none.className = 'muted'; none.textContent = '（没有你能管理的群）';
+        linksHost.appendChild(none);
+      } else {
+        list.forEach(function (room) {
+          var a = document.createElement('a');
+          a.className = 'tag';
+          a.style.textDecoration = 'none';
+          a.href = '/room/' + encodeURIComponent(room.id) + '/bot';
+          a.textContent = (room.name || room.id) + ' ›';
+          linksHost.appendChild(a);
+        });
+      }
     }
 
     var rooms = el('rooms'); rooms.innerHTML = '';

@@ -313,7 +313,7 @@ private:
     // ---- 本机管理界面 ----
     void StartUi();
     HttpResponse HandleHttp(const HttpRequest& request);
-    std::string StateJson();
+    std::string StateJson(const UiSession& session);
     HttpResponse HandleSave(const std::string& body, const UiSession& session);
     HttpResponse HandleLogin(const std::string& body);
     /** 从 Cookie 里取会话 token。 */
@@ -329,7 +329,7 @@ private:
      */
     void RefreshRoomRoles();
     HttpResponse HandleSearch(const std::string& body);
-    HttpResponse HandleJoin(const std::string& body);
+    HttpResponse HandleJoin(const std::string& body, const UiSession& session);
     bool ApplyConfig(const Config& next);
     /** 把界面管的那几个键写回配置文件（保留注释），失败只记日志 —— 内存里已经生效了。 */
     void WriteConfigFile(const Config& next);
@@ -1608,7 +1608,7 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
     }
     if (request.method == "GET" && path == "/api/state") {
         HttpResponse response;
-        response.body = StateJson();
+        response.body = StateJson(session);
         return response;
     }
     if (request.method == "POST" && path == "/api/config") {
@@ -1620,7 +1620,7 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
     }
     if (request.method == "POST" && path == "/api/join") {
         if (!session.admin) return JsonError(403, "只有管理员能让它加群");
-        return HandleJoin(request.body);
+        return HandleJoin(request.body, session);
     }
     return JsonError(404, "not found");
 }
@@ -1797,7 +1797,7 @@ HttpResponse Bot::HandleLogin(const std::string& body) {
     return response;
 }
 
-std::string Bot::StateJson() {
+std::string Bot::StateJson(const UiSession& session) {
     const auto cfg = Cfg();
     std::string json = "{\"ok\":true";
     json += ",\"online\":";
@@ -1805,6 +1805,18 @@ std::string Bot::StateJson() {
     json += ",\"nick\":" + JsonQuote(cfg->nick);
     json += ",\"server\":" + JsonQuote(cfg->host + ":" + std::to_string(cfg->port));
     json += ",\"rooms\":" + JsonQuoteArray(cfg->rooms);
+    // 页面用这两个决定"显示哪一页"：能不能管所有群、能管哪些群。
+    // 这不是身份标签 —— 界面上不会出现"管理员/群管理员"字样。
+    json += ",\"canManageAll\":";
+    json += session.admin ? "true" : "false";
+    {
+        std::string opRooms;
+        for (const std::string& room : session.opRooms) {
+            if (!opRooms.empty()) opRooms += ",";
+            opRooms += JsonQuote(room);
+        }
+        json += ",\"opRooms\":[" + opRooms + "]";
+    }
 
     // known = 我已经加入的群 + 配置里写了但还没加入的（后者标 joined:false，
     // 这样界面上仍然能看到它、也能把它关掉 —— 否则配错一个群 ID 就再也删不掉了）
@@ -1968,7 +1980,7 @@ HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) 
             WriteConfigFile(next);
             HttpResponse response;
             response.body = "{\"ok\":true,\"note\":" + JsonQuote("已保存「" + room + "」的设置") +
-                            ",\"state\":" + StateJson() + "}";
+                            ",\"state\":" + StateJson(session) + "}";
             return response;
         }
         // 没带 room：只允许改自己有权限的群的那些 key，其余字段忽略
@@ -1983,7 +1995,7 @@ HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) 
         HttpResponse response;
         response.body = "{\"ok\":true,\"note\":" +
                         JsonQuote("已保存（你只能改自己管理的群的设置，其他设置需要管理员）") +
-                        ",\"state\":" + StateJson() + "}";
+                        ",\"state\":" + StateJson(session) + "}";
         return response;
     }
 
@@ -2088,7 +2100,7 @@ HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) 
     WriteConfigFile(next);
 
     HttpResponse response;
-    response.body = "{\"ok\":true,\"state\":" + StateJson() + "}";
+    response.body = "{\"ok\":true,\"state\":" + StateJson(session) + "}";
     return response;
 }
 
@@ -2132,7 +2144,7 @@ HttpResponse Bot::HandleSearch(const std::string& body) {
     return response;
 }
 
-HttpResponse Bot::HandleJoin(const std::string& body) {
+HttpResponse Bot::HandleJoin(const std::string& body, const UiSession& session) {
     FlatJson input;
     std::string error;
     if (!ParseFlatJson(body, &input, &error)) return JsonError(400, error);
@@ -2158,7 +2170,7 @@ HttpResponse Bot::HandleJoin(const std::string& body) {
     HttpResponse response;
     response.body = "{\"ok\":true,\"note\":" +
                     JsonQuote("已把 " + room + " 加进接入列表；需要审核的群要等群主同意后才会回复") +
-                    ",\"state\":" + StateJson() + "}";
+                    ",\"state\":" + StateJson(session) + "}";
     return response;
 }
 
