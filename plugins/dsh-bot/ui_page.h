@@ -152,10 +152,10 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     </div>
     <div class="row"><span class="name">接口地址</span><input id="apiUrl" type="text" placeholder="https://api.deepseek.com/chat/completions"></div>
     <div class="row"><span class="name">模型</span><input id="apiModel" type="text" placeholder="deepseek-chat"></div>
-    <div class="row"><span class="name">默认 API Key（留空 = 不修改，填 - 清空）</span><input id="apiKey" type="password" placeholder="sk-…"></div>
+    <div class="row"><span class="name">默认 API Key（只写：留空 = 不修改，填 - 清空）</span><input id="apiKey" type="password" autocomplete="off" placeholder="sk-…"></div>
     <div class="row" style="display:block">
-      <span class="name">每个群单独的 Key（一行一个：<code>房间ID = sk-...</code>；留空用默认）</span>
-      <textarea id="apiRoomKeyText" rows="3" placeholder="test = sk-xxxxxxxx" style="width:100%;margin-top:6px"></textarea>
+      <span class="name">每个群单独的 Key（一行一个：<code>房间ID = sk-...</code>；<code>房间ID = -</code> 清空；留空用默认）</span>
+      <textarea id="apiRoomKeyText" rows="3" autocomplete="off" placeholder="test = sk-xxxxxxxx" style="width:100%;margin-top:6px"></textarea>
     </div>
     <p class="hint" id="apiKeyHint" style="margin-top:6px"></p>
   </div>
@@ -259,16 +259,20 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     el('brainType').value = state.brainType || 'dsh';
     el('apiUrl').value = state.apiUrl || '';
     el('apiModel').value = state.apiModel || '';
-    // key 只显示掩码：输入框永远空着，用户不填就等于"不改"
+    // API Key 是**只写**的：页面永远拿不到 key 的任何片段，只能设置/替换/清空。
+    // 想看 key 只有一条路 —— 上服务器看 /etc/dchat-bot/bot.conf（权限 600）。
     el('apiKey').value = '';
-    el('apiKey').placeholder = state.apiKeyMask ? ('已设置：' + state.apiKeyMask + '（留空则不修改）') : 'sk-…';
-    var roomKeyLines = (state.apiRoomKeys || []).map(function (item) {
-      return item.room + ' = ' + item.mask;
-    });
-    el('apiRoomKeyText').value = roomKeyLines.join('\n');
-    el('apiKeyHint').textContent = state.brainType === 'api'
+    el('apiKey').placeholder = state.apiKeySet
+      ? '已设置（不可查看；留空=不改，填 - 清空）'
+      : '还没设置，粘贴 sk-… 后保存';
+    var roomKeyRooms = (state.apiRoomKeys || []).map(function (item) { return item.room; });
+    el('apiRoomKeyText').value = '';
+    el('apiRoomKeyText').placeholder = 'test = sk-xxxxxxxx（一行一个，只写不回显）';
+    el('apiKeyHint').textContent = (state.brainType === 'api'
       ? '当前用 API 直连；工具（读写文件、跑命令、发文件）由机器人自己执行，范围就是上面的「工作目录」。'
-      : '当前用本机 DSH；要跑在服务器上就切到 API 直连。';
+      : '当前用本机 DSH；要跑在服务器上就切到 API 直连。') +
+      (roomKeyRooms.length ? ' 已单独配了 key 的群：' + roomKeyRooms.join('、') + '（要改就重新写一行，写 - 清空）' : '');
+    el('apiKeyHint').textContent += ' Key 只保存在服务器上的配置文件里（权限 600），界面不回显。';
     el('maxChars').value = state.typing.maxChars;
     el('minChars').value = state.typing.minChars;
     el('minGap').value = state.typing.minGapMs;

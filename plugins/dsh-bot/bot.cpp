@@ -1564,22 +1564,19 @@ std::string Bot::StateJson() {
     const bool canTouch = cfg->brain.permissionMode == "workspace-write" ||
                           cfg->brain.permissionMode == "danger-full-access";
     json += ",\"brainMode\":" + JsonQuote(canTouch ? "local" : "chat");
-    // ---- 大脑类型与 api 配置（key 只回掩码，页面里绝不显示完整 key）----
+    // ---- 大脑类型与 api 配置 ----
+    // **key 是只写的**：页面只能"设置/替换/清空"，永远拿不回任何片段
+    //（连前 5 位后 4 位都不给 —— 用户要求"除了服务器端，任何人都不能查看"）。
+    // 这里只告诉界面"有没有设置"。
     json += ",\"brainType\":" + JsonQuote(cfg->brain.mode);
     json += ",\"apiUrl\":" + JsonQuote(cfg->brain.apiUrl);
     json += ",\"apiModel\":" + JsonQuote(cfg->brain.apiModel);
+    json += ",\"apiKeySet\":" + std::string(cfg->brain.apiKey.empty() ? "false" : "true");
     {
-        const auto mask = [](const std::string& key) {
-            if (key.empty()) return std::string();
-            if (key.size() <= 8) return std::string("已设置");
-            return key.substr(0, 5) + "…" + key.substr(key.size() - 4);
-        };
-        json += ",\"apiKeyMask\":" + JsonQuote(mask(cfg->brain.apiKey));
         std::string roomKeys;
         for (const auto& entry : cfg->brain.roomApiKeys) {
             if (!roomKeys.empty()) roomKeys += ",";
-            roomKeys += "{\"room\":" + JsonQuote(entry.first) + ",\"mask\":" +
-                        JsonQuote(mask(entry.second)) + "}";
+            roomKeys += "{\"room\":" + JsonQuote(entry.first) + "}";
         }
         json += ",\"apiRoomKeys\":[" + roomKeys + "]";
     }
@@ -1669,31 +1666,39 @@ HttpResponse Bot::HandleSave(const std::string& body) {
         }
     }
     if (input.Has("apiRoomKeyText")) {
-        // 每行 "房间ID = sk-..."：留空的房间表示"用默认 key"
+        // 表单里只提交"新写的"那几行：`房间 = sk-...` 表示设置，`房间 = -` 表示清空。
+        // 没出现在表单里的群保持原样 —— key 是只写的，页面本来就拿不回旧值。
         const std::string text = input.GetString("apiRoomKeyText", std::string());
-        std::map<std::string, std::string> keys;
+        std::map<std::string, std::string> keys = next.brain.roomApiKeys;
         std::size_t pos = 0;
         while (pos <= text.size()) {
             const std::size_t end = text.find('\n', pos);
-            std::string line = text.substr(pos, end == std::string::npos ? std::string::npos
-                                                                         : end - pos);
+            std::string line =
+                text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
             pos = (end == std::string::npos) ? text.size() + 1 : end + 1;
             if (!line.empty() && line.back() == '\r') line.pop_back();
             const std::size_t equals = line.find('=');
             if (equals == std::string::npos) continue;
             std::string room = line.substr(0, equals);
             std::string key = line.substr(equals + 1);
-            while (!room.empty() && (room.back() == ' ' || room.back() == '\t')) room.pop_back();
-            while (!room.empty() && (room.front() == ' ' || room.front() == '\t')) room.erase(0, 1);
-            while (!key.empty() && (key.back() == ' ' || key.back() == '\t')) key.pop_back();
-            while (!key.empty() && (key.front() == ' ' || key.front() == '\t')) key.erase(0, 1);
-            // 掩码原样提交回来的情况：说明用户没改这一行
-            if (room.empty() || key.find("…") != std::string::npos) continue;
-            if (!key.empty()) keys[room] = key;
-        }
-        // 只提交了"新内容"：已经存在的房间 key 如果没出现在表单里就保留原值
-        for (const auto& entry : next.brain.roomApiKeys) {
-            if (keys.find(entry.first) == keys.end()) keys[entry.first] = entry.second;
+            const auto trim = [](std::string* value) {
+                while (!value->empty() &&
+                       (value->back() == ' ' || value->back() == '\t')) {
+                    value->pop_back();
+                }
+                while (!value->empty() &&
+                       (value->front() == ' ' || value->front() == '\t')) {
+                    value->erase(0, 1);
+                }
+            };
+            trim(&room);
+            trim(&key);
+            if (room.empty()) continue;
+            if (key == "-") {
+                keys.erase(room);           // 清空这个群的专用 key，回退到默认
+            } else if (!key.empty()) {
+                keys[room] = key;
+            }
         }
         next.brain.roomApiKeys = keys;
     }
