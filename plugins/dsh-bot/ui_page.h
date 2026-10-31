@@ -55,7 +55,13 @@ document.getElementById('f').addEventListener('submit', async (e) => {
       })
     });
     const data = await r.json();
-    if (data.ok) { location.href = '/'; return; }
+    if (data.ok) {
+      // 只管理一个群的人直接进那个群的页面，省一次点击
+      const rooms = data.opRooms || [];
+      location.href = rooms.length === 1 ? ('/room/' + encodeURIComponent(rooms[0]) + '/bot')
+                                         : '/bot/';
+      return;
+    }
     msg.textContent = data.error || '登录失败';
   } catch (err) {
     msg.textContent = '连不上机器人：' + err;
@@ -97,9 +103,19 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
   .switch.on { background:#1f3a6b; border-color:#2f5ea8; }
   .switch.on::after { left:20px; background:var(--accent); }
   .lg { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
-  input[type=text], input[type=number] { background:#0d1015; color:var(--text); border:1px solid var(--line);
-         border-radius:8px; padding:7px 10px; font:inherit; min-width:0; }
-  input[type=text] { flex:1; }
+  /* 密码框、下拉框、文本域也要走深色主题：之前只写了 text/number，
+     其余控件用的是浏览器默认白底 —— 深色页面上特别刺眼（用户截图里那几块白）。 */
+  input[type=text], input[type=number], input[type=password], select, textarea {
+         background:#0d1015; color:var(--text); border:1px solid var(--line);
+         border-radius:8px; padding:7px 10px; font:inherit; min-width:0;
+         outline:none; -webkit-appearance:none; appearance:none; }
+  input:focus, select:focus, textarea:focus { border-color:#3a5ea8; }
+  input::placeholder, textarea::placeholder { color:#5c657a; }
+  select { cursor:pointer; background-image:none; }
+  select option { background:#0d1015; color:var(--text); }
+  textarea { width:100%; resize:vertical; line-height:1.5;
+             font-family:Consolas,"Cascadia Mono",monospace; font-size:13px; }
+  input[type=text], input[type=password] { flex:1; }
   input[type=number] { width:96px; }
   button { background:#1d2330; color:var(--text); border:1px solid var(--line); border-radius:8px;
            padding:7px 13px; font:inherit; cursor:pointer; }
@@ -206,11 +222,23 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
       </select>
     </div>
     <div class="row" id="rowApiUrl"><span class="name">接口地址</span><input id="apiUrl" type="text" placeholder="https://api.deepseek.com/chat/completions"></div>
-    <div class="row" id="rowApiModel"><span class="name">模型</span><input id="apiModel" type="text" placeholder="deepseek-chat"></div>
+    <div class="row" id="rowApiModel"><span class="name">模型</span>
+      <select id="apiModel">
+        <option value="deepseek-chat">deepseek-chat（快，日常聊天）</option>
+        <option value="deepseek-reasoner">deepseek-reasoner（会推理，慢一些）</option>
+        <option value="__custom__">其它（自己填）</option>
+      </select>
+      <input id="apiModelCustom" type="text" placeholder="模型名" style="display:none;max-width:220px">
+    </div>
     <div class="row" id="rowApiKey"><span class="name">默认 API Key（只写：留空 = 不修改，填 - 清空）</span><input id="apiKey" type="password" autocomplete="off" placeholder="sk-…"></div>
     <div class="row" id="rowRoomKey" style="display:block">
       <span class="name" id="roomKeyLabel">每个群单独的 Key（一行一个：<code>房间ID = sk-...</code>；<code>房间ID = -</code> 清空；留空用默认）</span>
       <textarea id="apiRoomKeyText" rows="3" autocomplete="off" placeholder="test = sk-xxxxxxxx" style="width:100%;margin-top:6px"></textarea>
+    </div>
+    <!-- 单群页用这个：只填 key，群名由页面决定，不需要（也不允许）手写房间 ID -->
+    <div class="row" id="rowSingleRoomKey" style="display:none">
+      <span class="name" id="singleRoomKeyLabel">这个群的 API Key（只写：留空 = 不修改，填 - 清空）</span>
+      <input id="singleRoomKey" type="password" autocomplete="off" placeholder="sk-…">
     </div>
     <p class="hint" id="apiKeyHint" style="margin-top:6px"></p>
   </div>
@@ -283,12 +311,18 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
         var node = document.getElementById(id);
         if (node) node.style.display = 'none';
       });
-      ['rowBrainType', 'rowApiUrl', 'rowApiModel', 'rowApiKey'].forEach(function (id) {
+      ['rowBrainType', 'rowApiUrl', 'rowApiModel', 'rowApiKey', 'rowRoomKey'].forEach(function (id) {
         var node = document.getElementById(id);
         if (node) node.style.display = 'none';
       });
-      var label = document.getElementById('roomKeyLabel');
-      if (label) label.innerHTML = '「' + window.__ROOM__ + '」的 API Key（只写：留空=不改，填 <code>-</code> 清空）';
+      // 单群页只要一个"这个群的 key"输入框：群名由地址决定，
+      // 不让用户再手写 `房间 = sk-...`（写错就是跨群改配置）。
+      var single = document.getElementById('rowSingleRoomKey');
+      if (single) single.style.display = '';
+      var singleLabel = document.getElementById('singleRoomKeyLabel');
+      if (singleLabel) {
+        singleLabel.innerHTML = '「' + window.__ROOM__ + '」的 API Key（只写：留空=不改，填 <code>-</code> 清空）';
+      }
       var h2 = document.querySelector('#cardBrain h2');
       if (h2) h2.textContent = '群「' + window.__ROOM__ + '」的设置';
     }
@@ -333,7 +367,18 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
       : '没有生效的补丁：headless 下没人能点"允许"，需要补丁才能让工具真的执行。';
     el('brainType').value = state.brainType || 'dsh';
     el('apiUrl').value = state.apiUrl || '';
-    el('apiModel').value = state.apiModel || '';
+    // 模型用下拉：常见两个直接选，"其它"才出现输入框
+    var knownModels = ['deepseek-chat', 'deepseek-reasoner'];
+    var model = state.apiModel || 'deepseek-chat';
+    if (knownModels.indexOf(model) >= 0) {
+      el('apiModel').value = model;
+      el('apiModelCustom').style.display = 'none';
+      el('apiModelCustom').value = '';
+    } else {
+      el('apiModel').value = '__custom__';
+      el('apiModelCustom').style.display = '';
+      el('apiModelCustom').value = model;
+    }
     // API Key 是**只写**的：页面永远拿不到 key 的任何片段，只能设置/替换/清空。
     // 想看 key 只有一条路 —— 上服务器看 /etc/dchat-bot/bot.conf（权限 600）。
     el('apiKey').value = '';
@@ -400,9 +445,18 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
       brainMode: state.brainMode,
       brainType: el('brainType').value,
       apiUrl: el('apiUrl').value.trim(),
-      apiModel: el('apiModel').value.trim(),
+      apiModel: (el('apiModel').value === '__custom__'
+                 ? el('apiModelCustom').value.trim()
+                 : el('apiModel').value.trim()),
       apiKey: el('apiKey').value.trim(),
-      apiRoomKeyText: el('apiRoomKeyText').value,
+      // 单群页：key 单独一个框，群名用地址里的那个，不让手写房间 ID
+      apiRoomKeyText: window.__ROOM__
+        ? (function () {
+            var v = el('singleRoomKey').value.trim();
+            if (!v) return '';                       // 留空 = 不改
+            return window.__ROOM__ + ' = ' + v;      // 后端会再校验一次群名
+          })()
+        : el('apiRoomKeyText').value,
       // 单群页：告诉后端"这一页只管这个群"，后端据此只放行这个群的改动
       room: window.__ROOM__ || '',
       workDir: el('workDir').value,
@@ -416,6 +470,12 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
       maxGapMs: parseInt(el('maxGap').value, 10)
     };
   }
+  el('apiModel').onchange = function () {
+    var custom = el('apiModel').value === '__custom__';
+    el('apiModelCustom').style.display = custom ? '' : 'none';
+    if (custom) el('apiModelCustom').focus();
+    markDirty();
+  };
   el('save').onclick = function () {
     el('save').disabled = true;
     setMsg('保存中…');

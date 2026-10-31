@@ -1576,9 +1576,17 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
         if (!room.empty()) {
             HttpResponse response;
             response.contentType = "text/html; charset=utf-8";
-            // 页面里塞一个标记：前端据此只显示这个群的设置
-            response.body = std::string(kUiPage) +
-                            "\n<script>window.__ROOM__ = " + JsonQuote(room) + ";</script>";
+            // 群名标记必须插在 <head> 里、**主脚本之前**：页面脚本一加载就会 render()，
+            // 那时如果 __ROOM__ 还没定义，单群页会当成总览页显示（"接入的群"又冒出来）。
+            std::string page = kUiPage;
+            const std::size_t headAt = page.find("<head>");
+            const std::string mark = "<script>window.__ROOM__ = " + JsonQuote(room) + ";</script>";
+            if (headAt != std::string::npos) {
+                page.insert(headAt + 6, mark);
+            } else {
+                page = mark + page;
+            }
+            response.body = page;
             return response;
         }
     }
