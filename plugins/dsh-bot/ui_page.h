@@ -40,34 +40,75 @@ inline constexpr const char* kLoginPage = R"HTML(<!DOCTYPE html>
   <div id="msg"></div>
 </div>
 <script>
-document.getElementById('f').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const go = document.getElementById('go');
-  const msg = document.getElementById('msg');
-  go.disabled = true; msg.textContent = '';
-  try {
-    const r = await fetch('api/login', {
+(function () {
+  var go = document.getElementById('go');
+  var msg = document.getElementById('msg');
+
+  // 登录接口**必须用绝对路径**：这一页既可能是 /bot/，也可能是 /room/<群>/bot，
+  // 相对写法在后者会解析成 /room/<群>/api/login（网关那边是 404 纯文本，
+  // 前端 r.json() 直接抛 SyntaxError —— 就是那个 "Unexpected token 'o'"）。
+  var LOGIN_URL = '/bot/api/login';
+
+  function submit(nick, password, silent) {
+    go.disabled = true;
+    if (!silent) msg.textContent = '正在登录…';
+    return fetch(LOGIN_URL, {
       method: 'POST',
       headers: {'Content-Type': 'application/json', 'X-Dchat-Bot': '1'},
-      body: JSON.stringify({
-        nick: document.getElementById('nick').value.trim(),
-        password: document.getElementById('pass').value
-      })
+      body: JSON.stringify({nick: nick, password: password})
+    }).then(function (r) {
+      // 网关出错时可能回纯文本（404/502），先按文本读再尝试解析，
+      // 免得一个非 JSON 响应就把整页报成"连不上"。
+      return r.text().then(function (body) {
+        var data = null;
+        try { data = JSON.parse(body); } catch (e) { data = null; }
+        if (data === null) {
+          throw new Error('服务器返回了非 JSON（HTTP ' + r.status + '）');
+        }
+        return data;
+      });
     });
-    const data = await r.json();
-    if (data.ok) {
-      // 只管理一个群的人直接进那个群的页面，省一次点击
-      const rooms = data.opRooms || [];
-      location.href = rooms.length === 1 ? ('/room/' + encodeURIComponent(rooms[0]) + '/bot')
-                                         : '/bot/';
-      return;
-    }
-    msg.textContent = data.error || '登录失败';
-  } catch (err) {
-    msg.textContent = '连不上机器人：' + err;
   }
-  go.disabled = false;
-});
+
+  function afterLogin(data) {
+    var rooms = data.opRooms || [];
+    location.href = rooms.length === 1 ? ('/room/' + encodeURIComponent(rooms[0]) + '/bot')
+                                       : '/bot/';
+  }
+
+  document.getElementById('f').addEventListener('submit', function (e) {
+    e.preventDefault();
+    msg.textContent = '';
+    submit(document.getElementById('nick').value.trim(), document.getElementById('pass').value, false)
+      .then(function (data) {
+        if (data.ok) { afterLogin(data); return; }
+        msg.textContent = data.error || '登录失败';
+        go.disabled = false;
+      })
+      .catch(function (err) {
+        msg.textContent = '登录失败：' + err.message;
+        go.disabled = false;
+      });
+  });
+
+  // 已经登录过聊天室的，直接用那份账号密码登录 —— 同一个站点、同一份 localStorage，
+  // 用户不该为了看机器人设置再输一遍密码。
+  try {
+    var saved = JSON.parse(localStorage.getItem('dchat_login') || 'null');
+    if (saved && saved.user && saved.pass) {
+      document.getElementById('nick').value = saved.user;
+      msg.textContent = '用聊天室记住的账号自动登录…';
+      submit(saved.user, saved.pass, true).then(function (data) {
+        if (data.ok) { afterLogin(data); return; }
+        msg.textContent = data.error || '自动登录失败，请手动输入密码';
+        go.disabled = false;
+      }).catch(function (err) {
+        msg.textContent = '自动登录失败：' + err.message;
+        go.disabled = false;
+      });
+    }
+  } catch (e) { /* 隐私模式没有 localStorage，忽略 */ }
+})();
 </script>
 </body></html>)HTML";
 

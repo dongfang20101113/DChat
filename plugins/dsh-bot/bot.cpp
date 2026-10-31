@@ -1529,14 +1529,31 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
         request.headers.find("x-dchat-bot") == request.headers.end()) {
         return JsonError(403, "forbidden");
     }
+    // 网关把管理界面挂在 /bot/ 下转发过来，页面里的接口地址也写的是 /bot/api/...
+    // 这里统一剥掉这层前缀，机器人自己直接访问（127.0.0.1:8731）也照样能用。
+    // ⚠️ /room/<群>/bot 不能被剥（那是单群页自己的地址）。
+    std::string path = request.path;
+    if (path.rfind("/bot/", 0) == 0) {
+        path = path.substr(4);
+    } else if (path == "/bot") {
+        path = "/";
+    }
     // ---- 登录（唯一不需要会话的两个入口）----
-    if (request.method == "GET" && request.path == "/login") {
+    if (request.method == "GET" && (path == "/login" || path == "/")) {
+        // 没登录时首页就是登录页；登录页本身也走这里
+        UiSession probe;
+        if (path == "/" && LoadSession(request, &probe)) {
+            HttpResponse response;
+            response.contentType = "text/html; charset=utf-8";
+            response.body = kUiPage;
+            return response;
+        }
         HttpResponse response;
         response.contentType = "text/html; charset=utf-8";
         response.body = kLoginPage;
         return response;
     }
-    if (request.method == "POST" && request.path == "/api/login") {
+    if (request.method == "POST" && path == "/api/login") {
         return HandleLogin(request.body);
     }
     // ---- 其余全部要登录 ----
@@ -1545,8 +1562,8 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
         // 没登录：页面请求给登录页，接口请求 401
         const bool wantsPage =
             request.method == "GET" &&
-            (request.path == "/" || request.path == "/index.html" ||
-             (request.path.rfind("/room/", 0) == 0 && request.path.find("/bot") != std::string::npos));
+            (path == "/index.html" ||
+             (path.rfind("/room/", 0) == 0 && path.find("/bot") != std::string::npos));
         if (wantsPage) {
             HttpResponse response;
             response.contentType = "text/html; charset=utf-8";
@@ -1555,24 +1572,23 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
         }
         return JsonError(401, "请先登录");
     }
-    if (request.path == "/api/logout") {
+    if (path == "/api/logout") {
         DropSession(request);
         HttpResponse response;
         response.body = "{\"ok\":true}";
         return response;
     }
-    if (request.method == "GET" && (request.path == "/" || request.path == "/index.html")) {
+    if (request.method == "GET" && path == "/index.html") {
         HttpResponse response;
         response.contentType = "text/html; charset=utf-8";
         response.body = kUiPage;
         return response;
     }
     // 单群管理页：/room/<群>/bot（由 webd 把 /room/<群>/bot 转到这里）
-    if (request.method == "GET" && request.path.rfind("/room/", 0) == 0) {
-        const std::size_t end = request.path.find("/bot");
-        const std::string room = request.path.substr(6, end == std::string::npos
-                                                            ? std::string::npos
-                                                            : end - 6);
+    if (request.method == "GET" && path.rfind("/room/", 0) == 0) {
+        const std::size_t end = path.find("/bot");
+        const std::string room =
+            path.substr(6, end == std::string::npos ? std::string::npos : end - 6);
         if (!room.empty()) {
             HttpResponse response;
             response.contentType = "text/html; charset=utf-8";
@@ -1590,19 +1606,19 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
             return response;
         }
     }
-    if (request.method == "GET" && request.path == "/api/state") {
+    if (request.method == "GET" && path == "/api/state") {
         HttpResponse response;
         response.body = StateJson();
         return response;
     }
-    if (request.method == "POST" && request.path == "/api/config") {
+    if (request.method == "POST" && path == "/api/config") {
         return HandleSave(request.body, session);
     }
-    if (request.method == "POST" && request.path == "/api/search") {
+    if (request.method == "POST" && path == "/api/search") {
         if (!session.admin) return JsonError(403, "只有管理员能用搜索");
         return HandleSearch(request.body);
     }
-    if (request.method == "POST" && request.path == "/api/join") {
+    if (request.method == "POST" && path == "/api/join") {
         if (!session.admin) return JsonError(403, "只有管理员能让它加群");
         return HandleJoin(request.body);
     }
