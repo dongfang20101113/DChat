@@ -1584,30 +1584,36 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
         response.body = kUiPage;
         return response;
     }
-    // 单群管理页：/room/<群>/bot/manage
-    // /room/<群>/bot 是老地址，跳过去（收藏夹里已经有它的不至于 404）。
+    // 单群页面分两页（都在这个群的命名空间下）：
+    //   /room/<群>/bot/manage    这个群的机器人总览（没有房间选择器，有去 Key 页的入口）
+    //   /room/<群>/bot/api-key   填这个群的 API Key
+    // 老地址 /room/<群>/bot 跳 manage。
     if (request.method == "GET" && path.rfind("/room/", 0) == 0) {
         const std::size_t end = path.find("/bot");
         const std::string room =
             path.substr(6, end == std::string::npos ? std::string::npos : end - 6);
-        if (!room.empty()) {
-            const bool isManage =
-                end != std::string::npos && path.compare(end, std::string("/bot/manage").size(),
-                                                         "/bot/manage") == 0;
-            if (!isManage) {
+        if (!room.empty() && end != std::string::npos) {
+            const std::string sub = path.substr(end + 4);  // "" / "/manage" / "/api-key"
+            std::string pageName;
+            if (sub == "/manage") {
+                pageName = "manage";
+            } else if (sub == "/api-key") {
+                pageName = "apikey";
+            } else {
                 HttpResponse response;
                 response.contentType = "text/html; charset=utf-8";
-                response.body = "<meta http-equiv=\"refresh\" content=\"0;url=/room/" +
-                                room + "/bot/manage\">";
+                response.body = "<meta http-equiv=\"refresh\" content=\"0;url=/room/" + room +
+                                "/bot/manage\">";
                 return response;
             }
             HttpResponse response;
             response.contentType = "text/html; charset=utf-8";
-            // 群名标记必须插在 <head> 里、**主脚本之前**：页面脚本一加载就会 render()，
-            // 那时如果 __ROOM__ 还没定义，单群页会当成总览页显示（"接入的群"又冒出来）。
+            // 这两个标记必须插在 <head> 里、**主脚本之前**：页面脚本一加载就会 render()，
+            // 那时还没定义的话，单群页会被当成总览页画出来。
             std::string page = kUiPage;
             const std::size_t headAt = page.find("<head>");
-            const std::string mark = "<script>window.__ROOM__ = " + JsonQuote(room) + ";</script>";
+            const std::string mark = "<script>window.__ROOM__ = " + JsonQuote(room) +
+                                     ";window.__PAGE__ = " + JsonQuote(pageName) + ";</script>";
             if (headAt != std::string::npos) {
                 page.insert(headAt + 6, mark);
             } else {

@@ -192,6 +192,15 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     <button id="refresh">刷新</button>
   </header>
 
+  <div class="card" id="cardRoomNav" style="display:none">
+    <h2>群机器人</h2>
+    <p class="hint">这个群的管理入口都在这儿：</p>
+    <div class="row">
+      <span class="name">API Key（这个群单独用一个 key）</span>
+      <a id="toApiKey" class="tag" href="#" style="text-decoration:none">去设置 ›</a>
+    </div>
+  </div>
+
   <div class="card" id="cardRoomManage">
     <h2>群管理</h2>
     <p class="hint">每个群有自己的管理页：群主和群管理员能在那一页改自己群的 Key，看不到别的群。</p>
@@ -351,31 +360,56 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     el('st').className = 'badge ' + (state.online ? 'on' : 'off');
     el('addr').textContent = state.nick + ' @ ' + state.server;
 
-    // 单群页（/room/<群>/bot）：只留「这个群」能改的东西。
-    // 群主/群管理员看到的就这一块；全局设置整块藏掉，免得以为改得动。
+    // 单群的两页（/room/<群>/bot/manage 与 /bot/api-key）：只跟本群有关，
+    // 全局设置整块藏掉；manage 页只给入口，api-key 页才给输入框。
     if (window.__ROOM__) {
-      var hideIds = ['cardRooms', 'cardReply', 'cardTrigger', 'cardLocal', 'cardTyping'];
-      hideIds.forEach(function (id) {
-        var node = document.getElementById(id);
-        if (node) node.style.display = 'none';
-      });
+      var isApiKeyPage = window.__PAGE__ === 'apikey';
+      ['cardRooms', 'cardReply', 'cardTrigger', 'cardLocal', 'cardTyping', 'cardRoomManage']
+        .forEach(function (id) {
+          var node = document.getElementById(id);
+          if (node) node.style.display = 'none';
+        });
       ['rowBrainType', 'rowApiUrl', 'rowApiModel', 'rowApiKey', 'rowRoomKey'].forEach(function (id) {
         var node = document.getElementById(id);
         if (node) node.style.display = 'none';
       });
-      // 单群页只要一个"本群的 key"输入框：群由地址里的那一层决定，
-      // 不让用户再手写 `房间 = sk-...`（写错就是跨群改配置）。
       var single = document.getElementById('rowSingleRoomKey');
-      if (single) single.style.display = '';
-      var singleLabel = document.getElementById('singleRoomKeyLabel');
-      if (singleLabel) {
-        singleLabel.innerHTML = '本群 API Key（只写：留空=不改，填 <code>-</code> 清空）';
-      }
+      var nav = document.getElementById('cardRoomNav');
       var h2 = document.querySelector('#cardBrain h2');
-      if (h2) h2.textContent = '群管理';
-      // 能管所有群的人，从单群页要能回总览（否则点进来就出不去了）
+      if (isApiKeyPage) {
+        // api-key 页：只有"本群的 key"一个输入框（群由地址决定，不让手写群名）
+        if (single) single.style.display = '';
+        if (nav) nav.style.display = 'none';
+        var singleLabel = document.getElementById('singleRoomKeyLabel');
+        if (singleLabel) {
+          singleLabel.innerHTML = '本群 API Key（只写：留空=不改，填 <code>-</code> 清空）';
+        }
+        if (h2) h2.textContent = 'API Key';
+      } else {
+        // manage 页：不放输入框，只放入口
+        if (single) single.style.display = 'none';
+        if (nav) nav.style.display = '';
+        var link = document.getElementById('toApiKey');
+        if (link) link.href = '/room/' + encodeURIComponent(window.__ROOM__) + '/bot/api-key';
+        if (h2) h2.textContent = '群管理';
+        // 这一页没什么可提交的
+        var sv = document.getElementById('save');
+        if (sv) sv.style.display = 'none';
+        var rl = document.getElementById('reload');
+        if (rl) rl.style.display = 'none';
+      }
+      // 头部返回链接：在 api-key 页返回本群的 manage 页；在 manage 页时，
+      // 能管所有群的人可以回总览（否则点进来就出不去了）
       var back = document.getElementById('backAll');
-      if (back && state.canManageAll) back.style.display = '';
+      if (back) {
+        if (isApiKeyPage) {
+          back.href = '/room/' + encodeURIComponent(window.__ROOM__) + '/bot/manage';
+          back.textContent = '← 群管理';
+          back.style.display = '';
+        } else if (state.canManageAll) {
+          back.style.display = '';
+        }
+      }
     } else if (!state.canManageAll) {
       // 只管理某些群的人打开总览：全局设置他也改不了，藏掉，只留"群管理"和日志
       ['cardRooms', 'cardReply', 'cardTrigger', 'cardLocal', 'cardTyping', 'cardBrain']
