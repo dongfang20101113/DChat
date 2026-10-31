@@ -135,6 +135,8 @@ cmake --build build --target dchat-dsh-bot
 
 ### 大脑（DSH）
 
+> 只想让机器人**跑在服务器上、不装 DSH**？看下一节「api 模式」。
+
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
 | `brain.command` | `dsh headless --json {session} -` | 见下面的说明 |
@@ -165,6 +167,68 @@ cmake --build build --target dchat-dsh-bot
 
 为什么本机操作必须带补丁：headless 下没有人能点"允许"，而 DSH 默认的审批策略是
 `ask` —— 模型一要写文件就卡在那里等人批准，直到超时。
+
+### api 模式（跑在服务器上，不需要 DSH）
+
+DSH 只以桌面应用的形式发布（`dsh.cmd` 实际是拿 Electron 当 node 跑
+`app.asar` 里的 cli.js），搬到 Linux 服务器上等于把整个桌面端搬过去。
+所以另有一条路：**大脑换成直接调 DeepSeek 的 HTTP 接口，工具由机器人自己做**。
+
+```ini
+brain.mode = api
+brain.api.url = https://api.deepseek.com/chat/completions
+brain.api.model = deepseek-chat
+brain.api.key = sk-...          # 也可以留空，在管理界面里填
+brain.cwd = /srv/dchat-bot/work
+```
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `brain.mode` | `dsh` | `dsh` = 起子进程；`api` = 直连接口 |
+| `brain.api.url` | `https://api.deepseek.com/chat/completions` | OpenAI 兼容的接口地址（也可以指向自己的中转） |
+| `brain.api.model` | `deepseek-chat` | 模型名 |
+| `brain.api.key` | 空 | 默认 Key；空 = 还没配置（会明确回一句，不会静默失败） |
+| `brain.api.key.<房间>` | 空 | **每个群单独的 Key**（例：`brain.api.key.test = sk-...`），留空用默认 |
+| `brain.api.maxrounds` | `6` | 最多来回几轮工具调用 |
+| `brain.api.timeoutms` | `120000` | 单次 HTTP 请求超时 |
+| `brain.api.systemprompt` | 空 | 追加到内置系统提示后面 |
+
+它自己能用的工具（全部只作用于 `brain.cwd`，`file.roots` 只能读/发）：
+
+`list_dir` `read_file` `write_file` `append_file` `replace_in_file` `make_dir`
+`move_file` `delete_file` `run_command` `send_file`
+
+几个实现上的取舍：
+
+- **请求走 `curl` 子进程**，不是自己写 TLS。Windows 上没有现成 OpenSSL
+  （机器人用的是 CNG），而 curl 在 Windows 10+ 和所有 Linux 上都自带；
+  Key 写进临时配置文件（POSIX 上 `0600`）而不是命令行 —— 命令行会出现在 `ps` 里。
+- **历史只留纯文本**（每房间最近 6 轮），工具消息不进上下文，省 token。
+- `run_command` 走 `/bin/sh -c`（Windows 是 `cmd /c`），默认 30 秒超时、输出截断 8 KB。
+- 模型要发文件就调 `send_file`，机器人自己读文件、走正常上传流程。
+
+管理界面（`ui.port`，只监听 `127.0.0.1`）的「大脑」卡片里可以改这些，
+**Key 只显示掩码**、留空表示不修改、填 `-` 表示清空。
+
+在服务器上跑（systemd）：
+
+```bash
+sudo mkdir -p /srv/dchat-bot/work /etc/dchat-bot /var/log/dchat-bot
+sudo install -m 0755 dchat-dsh-bot /opt/dchat-bot/
+sudo install -m 0600 -o dchat -g dchat bot.conf /etc/dchat-bot/bot.conf
+sudo cp tools/dchat-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now dchat-bot
+```
+
+界面只监听本机，从自己电脑上看要转发一下：
+
+```bash
+ssh -N -L 8731:127.0.0.1:8731 admin@你的服务器
+# 然后浏览器打开 http://127.0.0.1:8731/
+```
+
+> 注意：api 模式下 `brain.cwd` 就是**服务器上的真实目录**，群里能 @ 它的人
+> 也能让它在这个目录里跑命令。默认仍然只聊天 —— 要放开得自己改配置。
 
 ### 日志与状态
 

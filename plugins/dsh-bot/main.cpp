@@ -88,10 +88,22 @@ int main(int argc, char** argv) {
         }
         std::printf("\n分条：每条 ≤ %d 字，最多 %d 条，间隔 %d-%d ms\n", config.typing.maxChars,
                     config.typing.maxChunks, config.typing.minGapMs, config.typing.maxGapMs);
-        std::printf("大脑：");
-        for (const std::string& word : config.brain.command) std::printf("%s ", word.c_str());
-        std::printf("\n权限模式：%s\n", config.brain.permissionMode.c_str());
-        if (!config.brain.patch.empty()) std::printf("补丁：%s\n", config.brain.patch.c_str());
+        if (config.brain.mode == "api") {
+            std::printf("大脑：DeepSeek API 直连 %s（模型 %s）\n", config.brain.apiUrl.c_str(),
+                        config.brain.apiModel.c_str());
+            std::printf("API Key：%s\n",
+                        config.brain.apiKey.empty() ? "还没配置（在管理界面里填）" : "已配置");
+            if (!config.brain.roomApiKeys.empty()) {
+                std::printf("单独配了 key 的群：%zu 个\n", config.brain.roomApiKeys.size());
+            }
+            std::printf("能读写的目录：%s\n",
+                        config.brain.cwd.empty() ? "（当前目录）" : config.brain.cwd.c_str());
+        } else {
+            std::printf("大脑：");
+            for (const std::string& word : config.brain.command) std::printf("%s ", word.c_str());
+            std::printf("\n权限模式：%s\n", config.brain.permissionMode.c_str());
+            if (!config.brain.patch.empty()) std::printf("补丁：%s\n", config.brain.patch.c_str());
+        }
         std::printf("配置没问题。\n");
         return 0;
     }

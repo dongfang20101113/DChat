@@ -46,6 +46,21 @@ bool DrainLines(std::string* buffer, const std::function<bool(const std::string&
     return true;
 }
 
+/**
+ * 子进程退出时把缓冲区里**没有换行结尾**的最后一段也交出去。
+ *
+ * 为什么需要：`DrainLines` 只认完整的行。curl 拿一个 JSON 响应时正文后面没有
+ * 换行，最后那段就永远留在缓冲里 —— 表现为"请求明明成功了，拿回来的却是空串"
+ * （api 模式第一次真机联调就是这么卡住的）。
+ */
+bool FlushTail(std::string* buffer, const std::function<bool(const std::string&)>& onLine) {
+    if (buffer->empty()) return true;
+    std::string line = *buffer;
+    buffer->clear();
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    return onLine(line);
+}
+
 void AppendTail(std::string* tail, const char* data, std::size_t size) {
     const std::size_t kMaxTail = 4096;
     tail->append(data, size);
@@ -321,7 +336,10 @@ bool RunBrain(const ProcessSpec& spec, const std::string& prompt,
     WaitForSingleObject(process, 5000);
     DWORD exitCode = 0;
     if (GetExitCodeProcess(process, &exitCode)) result->exitCode = static_cast<int>(exitCode);
-    if (!outBuffer.empty()) DrainLines(&outBuffer, onLine);
+    if (!outBuffer.empty()) {
+        DrainLines(&outBuffer, onLine);
+        FlushTail(&outBuffer, onLine);   // 最后一段可能没有换行（curl 的 JSON 响应就是这样）
+    }
     result->stderrTail = errBuffer;
     (void)childDone;
     cleanup();

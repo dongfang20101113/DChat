@@ -138,6 +138,29 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
   </div>
 
   <div class="card">
+    <h2>大脑</h2>
+    <p class="hint">「本机 DeepSeek Harness」= 起子进程跑 dsh（需要本机装 DSH）；
+      「DeepSeek API」= 直接调接口，工具由机器人自己做 —— 这样它可以整个跑在服务器上，
+      改的也是服务器上的文件。API Key 只保存在这台机器的配置文件里（权限 600），
+      页面上只显示掩码。</p>
+    <div class="row">
+      <span class="name">用哪个大脑</span>
+      <select id="brainType">
+        <option value="dsh">本机 DeepSeek Harness（子进程）</option>
+        <option value="api">DeepSeek API（直连，不需要装 DSH）</option>
+      </select>
+    </div>
+    <div class="row"><span class="name">接口地址</span><input id="apiUrl" type="text" placeholder="https://api.deepseek.com/chat/completions"></div>
+    <div class="row"><span class="name">模型</span><input id="apiModel" type="text" placeholder="deepseek-chat"></div>
+    <div class="row"><span class="name">默认 API Key（留空 = 不修改，填 - 清空）</span><input id="apiKey" type="password" placeholder="sk-…"></div>
+    <div class="row" style="display:block">
+      <span class="name">每个群单独的 Key（一行一个：<code>房间ID = sk-...</code>；留空用默认）</span>
+      <textarea id="apiRoomKeyText" rows="3" placeholder="test = sk-xxxxxxxx" style="width:100%;margin-top:6px"></textarea>
+    </div>
+    <p class="hint" id="apiKeyHint" style="margin-top:6px"></p>
+  </div>
+
+  <div class="card">
     <h2>回答怎么分条发</h2>
     <p class="hint">字太多会刷屏，字太少像卡壳。改动保存后立刻生效。</p>
     <div class="row"><span class="name">每条最多几个字</span><input id="maxChars" type="number" min="8" max="4000"></div>
@@ -233,6 +256,19 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     el('patchHint').textContent = state.patch
       ? '当前生效的 DSH 补丁：' + state.patch
       : '没有生效的补丁：headless 下没人能点"允许"，需要补丁才能让工具真的执行。';
+    el('brainType').value = state.brainType || 'dsh';
+    el('apiUrl').value = state.apiUrl || '';
+    el('apiModel').value = state.apiModel || '';
+    // key 只显示掩码：输入框永远空着，用户不填就等于"不改"
+    el('apiKey').value = '';
+    el('apiKey').placeholder = state.apiKeyMask ? ('已设置：' + state.apiKeyMask + '（留空则不修改）') : 'sk-…';
+    var roomKeyLines = (state.apiRoomKeys || []).map(function (item) {
+      return item.room + ' = ' + item.mask;
+    });
+    el('apiRoomKeyText').value = roomKeyLines.join('\n');
+    el('apiKeyHint').textContent = state.brainType === 'api'
+      ? '当前用 API 直连；工具（读写文件、跑命令、发文件）由机器人自己执行，范围就是上面的「工作目录」。'
+      : '当前用本机 DSH；要跑在服务器上就切到 API 直连。';
     el('maxChars').value = state.typing.maxChars;
     el('minChars').value = state.typing.minChars;
     el('minGap').value = state.typing.minGapMs;
@@ -274,6 +310,11 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
       replyList: state.replyList,
       ackText: el('ack').value,
       brainMode: state.brainMode,
+      brainType: el('brainType').value,
+      apiUrl: el('apiUrl').value.trim(),
+      apiModel: el('apiModel').value.trim(),
+      apiKey: el('apiKey').value.trim(),
+      apiRoomKeyText: el('apiRoomKeyText').value,
       workDir: el('workDir').value,
       fileMaxMb: parseInt(el('fileMaxMb').value, 10),
       fileRoots: el('fileRoots').value.split(';').map(function (s) { return s.trim(); })

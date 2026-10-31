@@ -362,6 +362,8 @@ if(DCHAT_DSH_BOT)
         plugins/dsh-bot/bot_event.cpp
         plugins/dsh-bot/bot_file.cpp
         plugins/dsh-bot/bot_json.cpp
+        plugins/dsh-bot/bot_json_value.cpp
+        plugins/dsh-bot/bot_api.cpp
         plugins/dsh-bot/bot_http.cpp
         plugins/dsh-bot/bot_process.cpp)
     if(WIN32)

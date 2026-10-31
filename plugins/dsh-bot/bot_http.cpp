@@ -148,7 +148,7 @@ int ParseHttpRequest(const std::string& buffer, HttpRequest* out, std::size_t* t
 HttpServer::~HttpServer() { Stop(); }
 
 bool HttpServer::Start(const std::string& host, int port, Handler handler, std::string* error) {
-    if (listenSocket_ != nullptr) return true;
+    if (listenSocket_ >= 0) return true;
     handler_ = std::move(handler);
     sock::Startup();
     const sock::Handle handle = sock::CreateTcp();
@@ -173,13 +173,13 @@ bool HttpServer::Start(const std::string& host, int port, Handler handler, std::
     } else {
         boundPort_ = port;
     }
-    listenSocket_ = reinterpret_cast<void*>(handle);
+    listenSocket_ = static_cast<intptr_t>(handle);
     thread_ = new std::thread([this] { Loop(); });
     return true;
 }
 
 void HttpServer::Loop() {
-    const sock::Handle listener = reinterpret_cast<sock::Handle>(listenSocket_);
+    const sock::Handle listener = static_cast<sock::Handle>(listenSocket_);
     while (!stopping_) {
         sockaddr_in peer{};
         const sock::Handle client = sock::Accept(listener, &peer);
@@ -238,10 +238,10 @@ void HttpServer::Loop() {
 }
 
 void HttpServer::Stop() {
-    if (listenSocket_ == nullptr) return;
+    if (listenSocket_ < 0) return;
     stopping_ = true;
-    const sock::Handle listener = reinterpret_cast<sock::Handle>(listenSocket_);
-    listenSocket_ = nullptr;
+    const sock::Handle listener = static_cast<sock::Handle>(listenSocket_);
+    listenSocket_ = -1;
     sock::Close(listener);
     if (thread_ != nullptr) {
         auto* thread = static_cast<std::thread*>(thread_);

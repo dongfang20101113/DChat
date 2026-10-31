@@ -267,6 +267,32 @@ bool ParseConfig(const std::string& text, Config* out, std::string* error) {
             }
         } else if (key == "brain.sessionperroom") {
             if (!ParseBool(value, &config.brain.sessionPerRoom)) return bad("只能是 true / false");
+        } else if (key == "brain.mode") {
+            if (value != "dsh" && value != "api") return bad("只能是 dsh 或 api");
+            config.brain.mode = value;
+        } else if (key == "brain.api.url") {
+            config.brain.apiUrl = value;
+        } else if (key == "brain.api.model") {
+            config.brain.apiModel = value;
+        } else if (key == "brain.api.key") {
+            config.brain.apiKey = value;
+        } else if (key == "brain.api.systemprompt") {
+            config.brain.apiSystemPrompt = UnescapeValue(value);
+        } else if (key == "brain.api.maxrounds") {
+            if (!ParseInt(value, 1, 20, &config.brain.apiMaxRounds)) return bad("要在 1-20 之间");
+        } else if (key == "brain.api.timeoutms") {
+            if (!ParseInt(value, 5000, 600000, &config.brain.apiTimeoutMs)) {
+                return bad("要在 5000-600000 之间");
+            }
+        } else if (key.rfind("brain.api.key.", 0) == 0) {
+            // brain.api.key.<房间> = sk-... ：每个群可以用不同的 key
+            const std::string room = key.substr(std::string("brain.api.key.").size());
+            if (room.empty()) return bad("房间 ID 不能为空");
+            if (value.empty()) {
+                config.brain.roomApiKeys.erase(room);
+            } else {
+                config.brain.roomApiKeys[room] = value;
+            }
         } else if (key == "brain.maxconcurrent") {
             if (!ParseInt(value, 1, 16, &config.brain.maxConcurrent)) return bad("要在 1-16 之间");
         } else if (key == "brain.maxqueue") {

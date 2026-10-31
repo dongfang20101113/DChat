@@ -18,6 +18,7 @@
 #include "bot_file.h"
 #include "bot_http.h"
 #include "bot_json.h"
+#include "bot_json_value.h"
 #include "bot_policy.h"
 #include "bot_process.h"
 
@@ -468,6 +469,104 @@ int main() {
         noRoots.promptTemplate = "可发={fileroots}";
         Check(BuildPrompt(noRoots, {}, "群", "g1", "a", "b").find("（没有额外目录）") != std::string::npos,
               "没有只读目录时给出明确说明（而不是留空）");
+    }
+
+    // =====================================================================
+    std::printf("[12] JSON 值解析（api 模式要解析接口响应）\n");
+    {
+        JsonValue value;
+        std::string error;
+        Check(ParseJsonValue("{\"a\":1,\"b\":[true,null,\"x\\u4e2d\"],\"c\":{\"d\":-2.5}}", &value,
+                             &error),
+              "能解析嵌套对象/数组/转义");
+        Check(value.GetInt("a", 0) == 1, "整数");
+        const std::vector<JsonValue> list = value.GetArray("b");
+        Check(list.size() == 3 && list[0].boolean && list[1].IsNull(), "数组里的布尔与 null");
+        Check(list.size() == 3 && list[2].text == "x中", "\\u 转义还原成 UTF-8");
+        const JsonValue* inner = value.Find("c");
+        Check(inner != nullptr && inner->Find("d") != nullptr, "嵌套对象能取到");
+        Check(!ParseJsonValue("{\"a\":}", &value, &error), "缺值要报错");
+        Check(!ParseJsonValue("{\"a\":1} tail", &value, &error), "多余内容要报错");
+        // 真实的 tool_calls 形状（api 模式第一轮就靠它拿到工具调用）
+        const std::string response =
+            "{\"choices\":[{\"message\":{\"content\":null,\"tool_calls\":[{\"id\":\"c1\","
+            "\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":"
+            "\"{\\\"path\\\":\\\"a.txt\\\",\\\"content\\\":\\\"hi\\\"}\"}}]}}]}";
+        JsonValue root;
+        Check(ParseJsonValue(response, &root, &error), "能解析 choices 响应");
+        const std::vector<JsonValue> choices = root.GetArray("choices");
+        Check(choices.size() == 1, "choices 有一项");
+        const JsonValue* message = choices.empty() ? nullptr : choices[0].Find("message");
+        const std::vector<JsonValue> calls =
+            message != nullptr ? message->GetArray("tool_calls") : std::vector<JsonValue>();
+        Check(calls.size() == 1, "取到 tool_calls");
+        if (!calls.empty()) {
+            const JsonValue* fn = calls[0].Find("function");
+            Check(fn != nullptr && fn->GetString("name") == "write_file", "工具名");
+            JsonValue args;
+            Check(fn != nullptr &&
+                      ParseJsonValue(fn->GetString("arguments"), &args, &error) &&
+                      args.GetString("path") == "a.txt",
+                  "工具参数里层的 JSON 能再解析");
+        }
+    }
+
+    // =====================================================================
+    std::printf("[13] api 模式的配置项\n");
+    {
+        const std::string text =
+            "server.host = 127.0.0.1\n"
+            "bot.nick = n\n"
+            "bot.password = p12345678\n"
+            "rooms = hall\n"
+            "brain.mode = api\n"
+            "brain.api.url = http://127.0.0.1:5620/chat/completions\n"
+            "brain.api.model = deepseek-chat\n"
+            "brain.api.key = sk-default\n"
+            "brain.api.key.test = sk-room-test\n"
+            "brain.api.maxrounds = 4\n";
+        Config config;
+        std::string error;
+        Check(ParseConfig(text, &config, &error), "能解析 api 配置");
+        Check(config.brain.mode == "api", "brain.mode = api");
+        Check(config.brain.apiKey == "sk-default", "默认 key");
+        Check(config.brain.roomApiKeys.size() == 1 &&
+                  config.brain.roomApiKeys["test"] == "sk-room-test",
+              "每个群的 key 单独存");
+        Check(config.brain.apiMaxRounds == 4, "maxrounds");
+
+        Config bad;
+        Check(!ParseConfig("bot.nick = n\nbrain.mode = nonsense\n", &bad, &error),
+              "brain.mode 只接受 dsh / api");
+    }
+
+    // =====================================================================
+    std::printf("[14] 连续跑两次子进程（api 模式每轮都起一次 curl）\n");
+    {
+        // 这条是回归测试：RunBrain 第二次调用要是收不到输出/退不出来，
+        // api 模式就会在"工具调用之后的第二轮"永远卡住（实测踩过）。
+        for (int round = 1; round <= 2; ++round) {
+            ProcessSpec spec;
+#ifdef _WIN32
+            spec.argv = {"cmd", "/c", "echo", "round-" + std::to_string(round)};
+#else
+            spec.argv = {"/bin/sh", "-c", "echo round-" + std::to_string(round)};
+#endif
+            spec.timeoutMs = 10000;
+            std::string output;
+            auto onLine = [&](const std::string& line) -> bool {
+                output += line + "\n";
+                return true;
+            };
+            BrainRunResult result;
+            std::string error;
+            std::string label = std::to_string(round);
+            Check(RunBrain(spec, std::string(), onLine, &result, &error),
+                  ("第 " + label + " 次起得来（" + error + "）").c_str());
+            Check(result.exitCode == 0, ("第 " + label + " 次退出码 0").c_str());
+            Check(output.find("round-" + label) != std::string::npos,
+                  ("第 " + label + " 次拿得到输出").c_str());
+        }
     }
 
     // =====================================================================

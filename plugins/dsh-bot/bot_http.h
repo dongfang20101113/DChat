@@ -11,6 +11,7 @@
 //     本机界面的正常请求都是几毫秒的事，慢的一定是异常连接。
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <string>
@@ -66,7 +67,9 @@ public:
 private:
     void Loop();
 
-    void* listenSocket_ = nullptr;  // sock::Handle（头文件里不拉平台 socket 头）
+    // sock::Handle 存成 intptr_t，不用 void*：64 位 Linux 上指针比 int 宽，
+    // 来回转换会丢精度（当初只在 Windows 上编过，拿到服务器上直接报错）。
+    intptr_t listenSocket_ = -1;
     int boundPort_ = 0;
     bool stopping_ = false;
     Handler handler_;

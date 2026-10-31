@@ -9,6 +9,7 @@
 // 见 tests/test_dsh_bot.cpp。
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -60,6 +61,31 @@ struct TypingConfig {
 
 /** 大脑（DeepSeek Harness）怎么调。 */
 struct BrainConfig {
+    /**
+     * 用哪个大脑：
+     *   "dsh" —— 起子进程跑本机的 `dsh headless`（工具全、但必须有 DSH）
+     *   "api" —— 直接调 OpenAI 兼容的 HTTP 接口（DeepSeek 等），
+     *            **工具由机器人自己实现**，所以不依赖任何本机程序。
+     *            api 模式可以整个跑在服务器上，改的也就是服务器上的文件。
+     */
+    std::string mode = "dsh";
+    /** api 模式用的接口（OpenAI 兼容的 chat/completions）。 */
+    std::string apiUrl = "https://api.deepseek.com/chat/completions";
+    /** api 模式的模型名。 */
+    std::string apiModel = "deepseek-chat";
+    /** 默认 API Key（可以按房间单独覆盖，见 roomApiKeys）。 */
+    std::string apiKey;
+    /**
+     * 每个房间单独的 API Key（房间 ID -> key）。空 = 用默认的。
+     * 用户要求"每个对话可以在网页里填不同的 key"，就落在这里。
+     */
+    std::map<std::string, std::string> roomApiKeys;
+    /** api 模式下最多来回几轮工具调用（防止模型自己绕死）。 */
+    int apiMaxRounds = 6;
+    /** 单次 HTTP 请求超时（毫秒）。 */
+    int apiTimeoutMs = 120000;
+    /** 额外的系统提示（空 = 用内置的，见 bot_api.cpp）。 */
+    std::string apiSystemPrompt;
     /**
      * 每行一个参数，支持单/双引号；`{prompt}` 会被替换成一个参数，
      * `{session}` 展开成 `--session-id <id>`（没有会话时整个消失）。

@@ -37,6 +37,12 @@ FileDirective ExtractFileDirectives(const std::string& text);
 std::string ResolveInsideWorkspace(const std::string& workspace, const std::string& path);
 
 /**
+ * 只检查"在目录里面"，**不要求文件已经存在** —— 写新文件、改名到新名字要用它。
+ * 另外要求父目录已经存在（写不进去的时候早报错，比写到一半失败清楚）。
+ */
+std::string ResolvePathForWrite(const std::string& workspace, const std::string& path);
+
+/**
  * 在若干个"可以读"的目录里找这个文件。
  *
  * 为什么除了工作目录还要有别的：**发文件是只读操作**，而改文件是写操作，

@@ -95,6 +95,19 @@ std::string ResolveInsideWorkspace(const std::string& workspace, const std::stri
     return resolved;
 }
 
+std::string ResolvePathForWrite(const std::string& workspace, const std::string& path) {
+    if (workspace.empty() || path.empty()) return std::string();
+    std::error_code code;
+    fs::path candidate(path);
+    if (candidate.is_relative()) candidate = fs::path(workspace) / candidate;
+    const std::string resolved = candidate.lexically_normal().string();
+    if (!IsInsideDirectory(workspace, resolved)) return std::string();
+    // 父目录必须已经存在：写新文件时父目录不在，直接写会失败，早说比晚说清楚
+    const fs::path parent = fs::path(resolved).parent_path();
+    if (!parent.empty() && (!fs::is_directory(parent, code) || code)) return std::string();
+    return resolved;
+}
+
 std::string ResolveSendablePath(const std::vector<std::string>& roots, const std::string& path) {
     // 绝对路径：只要落在任意一个允许的目录里就放行
     for (const std::string& root : roots) {

@@ -44,6 +44,7 @@
 #include "bot_file.h"
 #include "bot_http.h"
 #include "bot_json.h"
+#include "bot_api.h"
 #include "bot_policy.h"
 #include "bot_process.h"
 #include "crypto.h"
@@ -223,6 +224,8 @@ private:
         std::string roomName;
         std::string nick;
         std::string prompt;
+        /** 去掉 @ 之后的原始内容（api 模式直接当用户消息用，比塞整段模板干净）。 */
+        std::string userText;
     };
     struct Attempt {
         bool started = false;
@@ -254,6 +257,8 @@ private:
     // ---- 线程 ----
     void StartThreads();
     void StopThreads();
+    /** api 模式的一轮回答（HTTP + 工具都在 bot_api.cpp 里）。 */
+    void RunApiJob(const Job& job);
     void SenderLoop();
     void WorkerLoop();
     void EnqueueOut(int generation, const std::string& room, const std::string& text);
@@ -315,6 +320,10 @@ private:
      * 也不会读到"改了一半"的配置（比如 mode 已经是 blacklist 但名单还没写进去）。
      */
     std::shared_ptr<const Config> Cfg() const;
+
+    // api 模式下每个房间的最近几条纯文本对话（工具消息不入历史，省上下文）
+    std::mutex historyMutex_;
+    std::map<std::string, std::vector<ApiMessage>> histories_;
 
     mutable std::mutex configMutex_;
     std::shared_ptr<const Config> config_;
@@ -950,6 +959,7 @@ void Bot::HandleChat(const std::string& room, const std::string& nick, const std
     job.roomName = RoomDisplayName(room);
     job.nick = nick;
     job.prompt = BuildPrompt(Cfg()->brain, Cfg()->fileRoots, job.roomName, room, nick, match.text);
+    job.userText = match.text;
     // ⚠️ 回执必须**在**投递任务之前进队列：反过来的话工作线程可能先把第一段回答
     // 塞进队列，群里的顺序就变成"第一句 / （正在想…）/ 第二句"，看起来像答非所问。
     if (!Cfg()->ackText.empty()) EnqueueOut(generation, room, Cfg()->ackText);
@@ -1275,7 +1285,10 @@ Bot::Attempt Bot::RunAttempt(const Job& job, const std::string& session) {
     return attempt;
 }
 
-void Bot::RunJob(const Job& job) {
+void Bot::RunJob(const Job& job) {    if (Cfg()->brain.mode == "api") {
+        RunApiJob(job);
+        return;
+    }
     const std::string session = Cfg()->brain.sessionPerRoom ? SessionFor(job.room) : std::string();
     Attempt attempt = RunAttempt(job, session);
     // 会话 id 失效（会话文件被清、HOME 换了）时 dsh 直接报错、一个字都不出。
@@ -1305,8 +1318,51 @@ void Bot::RunJob(const Job& job) {
     }
 }
 
-void Bot::StartThreads() {
-    auto self = shared_from_this();
+void Bot::RunApiJob(const Job& job) {
+    const auto cfg = Cfg();
+    ApiRunOptions options;
+    options.url = cfg->brain.apiUrl;
+    options.model = cfg->brain.apiModel;
+    // 每个群可以有自己的 key（用户在网页里给这个群单独填过就用它）
+    const auto roomKey = cfg->brain.roomApiKeys.find(job.room);
+    options.key = (roomKey != cfg->brain.roomApiKeys.end() && !roomKey->second.empty())
+                      ? roomKey->second
+                      : cfg->brain.apiKey;
+    options.maxRounds = cfg->brain.apiMaxRounds;
+    options.timeoutMs = cfg->brain.apiTimeoutMs;
+    options.workspace = WorkspaceDir();
+    options.sendRoots = cfg->fileRoots;
+    options.systemPrompt = cfg->brain.apiSystemPrompt;
+
+    std::vector<ApiMessage> history;
+    {
+        std::lock_guard<std::mutex> lock(historyMutex_);
+        const auto it = histories_.find(job.room);
+        if (it != histories_.end()) history = it->second;
+    }
+    const std::string userText =
+        "「" + job.roomName + "」里的 " + job.nick + " 说：" + job.userText;
+    const ApiTurnResult turn = RunApiTurn(options, history, userText,
+                                          [&](const std::string& line) { log_.Debug(line); });
+    if (!turn.ok) {
+        log_.Warn("api 大脑失败：" + turn.error);
+        EnqueueOut(job.generation, job.room, "（" + turn.error + "）");
+        return;
+    }
+    if (!turn.answer.empty()) {
+        EmitText(job.generation, job.room, turn.answer);
+        std::lock_guard<std::mutex> lock(historyMutex_);
+        std::vector<ApiMessage>& list = histories_[job.room];
+        list.push_back({"user", userText});
+        list.push_back({"assistant", turn.answer});
+        while (list.size() > 12) list.erase(list.begin());
+    }
+    for (const std::string& file : turn.files) {
+        EnqueueFile(job.generation, job.room, file);
+    }
+}
+
+void Bot::StartThreads() {    auto self = shared_from_this();
     std::thread([self] { self->SenderLoop(); }).detach();
     const int workers = std::max(1, Cfg()->brain.maxConcurrent);
     for (int i = 0; i < workers; ++i) {
@@ -1508,6 +1564,25 @@ std::string Bot::StateJson() {
     const bool canTouch = cfg->brain.permissionMode == "workspace-write" ||
                           cfg->brain.permissionMode == "danger-full-access";
     json += ",\"brainMode\":" + JsonQuote(canTouch ? "local" : "chat");
+    // ---- 大脑类型与 api 配置（key 只回掩码，页面里绝不显示完整 key）----
+    json += ",\"brainType\":" + JsonQuote(cfg->brain.mode);
+    json += ",\"apiUrl\":" + JsonQuote(cfg->brain.apiUrl);
+    json += ",\"apiModel\":" + JsonQuote(cfg->brain.apiModel);
+    {
+        const auto mask = [](const std::string& key) {
+            if (key.empty()) return std::string();
+            if (key.size() <= 8) return std::string("已设置");
+            return key.substr(0, 5) + "…" + key.substr(key.size() - 4);
+        };
+        json += ",\"apiKeyMask\":" + JsonQuote(mask(cfg->brain.apiKey));
+        std::string roomKeys;
+        for (const auto& entry : cfg->brain.roomApiKeys) {
+            if (!roomKeys.empty()) roomKeys += ",";
+            roomKeys += "{\"room\":" + JsonQuote(entry.first) + ",\"mask\":" +
+                        JsonQuote(mask(entry.second)) + "}";
+        }
+        json += ",\"apiRoomKeys\":[" + roomKeys + "]";
+    }
     json += ",\"workDir\":" + JsonQuote(cfg->brain.cwd);
     json += ",\"fileMaxMb\":" + std::to_string(cfg->fileMaxMb);
     json += ",\"fileRoots\":" + JsonQuoteArray(cfg->fileRoots);
@@ -1570,6 +1645,58 @@ HttpResponse Bot::HandleSave(const std::string& body) {
     }
     if (input.GetArray("replyList", &values)) next.reply.nicks = values;
     if (input.Has("ackText")) next.ackText = input.GetString("ackText", std::string());
+    if (input.Has("brainType")) {
+        const std::string type = input.GetString("brainType", "dsh");
+        if (type != "dsh" && type != "api") return JsonError(400, "brainType 只能是 dsh / api");
+        next.brain.mode = type;
+    }
+    if (input.Has("apiUrl")) {
+        const std::string url = input.GetString("apiUrl", std::string());
+        if (!url.empty()) next.brain.apiUrl = url;
+    }
+    if (input.Has("apiModel")) {
+        const std::string model = input.GetString("apiModel", std::string());
+        if (!model.empty()) next.brain.apiModel = model;
+    }
+    // key 的处理约定：**留空 = 不改**（页面里只显示掩码，提交空值不会把 key 抹掉），
+    // 单独填一个 "-" = 清空。这样"每对话一个 key"的编辑才不会互相覆盖。
+    if (input.Has("apiKey")) {
+        const std::string key = input.GetString("apiKey", std::string());
+        if (key == "-") {
+            next.brain.apiKey.clear();
+        } else if (!key.empty()) {
+            next.brain.apiKey = key;
+        }
+    }
+    if (input.Has("apiRoomKeyText")) {
+        // 每行 "房间ID = sk-..."：留空的房间表示"用默认 key"
+        const std::string text = input.GetString("apiRoomKeyText", std::string());
+        std::map<std::string, std::string> keys;
+        std::size_t pos = 0;
+        while (pos <= text.size()) {
+            const std::size_t end = text.find('\n', pos);
+            std::string line = text.substr(pos, end == std::string::npos ? std::string::npos
+                                                                         : end - pos);
+            pos = (end == std::string::npos) ? text.size() + 1 : end + 1;
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            const std::size_t equals = line.find('=');
+            if (equals == std::string::npos) continue;
+            std::string room = line.substr(0, equals);
+            std::string key = line.substr(equals + 1);
+            while (!room.empty() && (room.back() == ' ' || room.back() == '\t')) room.pop_back();
+            while (!room.empty() && (room.front() == ' ' || room.front() == '\t')) room.erase(0, 1);
+            while (!key.empty() && (key.back() == ' ' || key.back() == '\t')) key.pop_back();
+            while (!key.empty() && (key.front() == ' ' || key.front() == '\t')) key.erase(0, 1);
+            // 掩码原样提交回来的情况：说明用户没改这一行
+            if (room.empty() || key.find("…") != std::string::npos) continue;
+            if (!key.empty()) keys[room] = key;
+        }
+        // 只提交了"新内容"：已经存在的房间 key 如果没出现在表单里就保留原值
+        for (const auto& entry : next.brain.roomApiKeys) {
+            if (keys.find(entry.first) == keys.end()) keys[entry.first] = entry.second;
+        }
+        next.brain.roomApiKeys = keys;
+    }
     if (input.Has("brainMode")) {
         const std::string mode = input.GetString("brainMode", "chat");
         if (mode == "local") {
@@ -1752,8 +1879,27 @@ void Bot::WriteConfigFile(const Config& next) {
         {"typing.mingapms", std::to_string(next.typing.minGapMs)},
         {"typing.percharms", std::to_string(next.typing.perCharMs)},
         {"typing.maxgapms", std::to_string(next.typing.maxGapMs)},
+        {"brain.mode", next.brain.mode},
+        {"brain.api.url", EscapeConfigValue(next.brain.apiUrl)},
+        {"brain.api.model", EscapeConfigValue(next.brain.apiModel)},
+        {"brain.api.key", EscapeConfigValue(next.brain.apiKey)},
     };
     const std::string updated = UpdateConfigText(text, changes);
+    // 每个群的 key 单独写（包含"被删掉的"：写成空值，加载时会被当成没有）
+    std::string withRoomKeys = updated;
+    {
+        std::vector<std::pair<std::string, std::string>> roomChanges;
+        for (const auto& entry : next.brain.roomApiKeys) {
+            roomChanges.emplace_back("brain.api.key." + entry.first,
+                                     EscapeConfigValue(entry.second));
+        }
+        for (const auto& entry : Cfg()->brain.roomApiKeys) {
+            if (next.brain.roomApiKeys.find(entry.first) == next.brain.roomApiKeys.end()) {
+                roomChanges.emplace_back("brain.api.key." + entry.first, std::string());
+            }
+        }
+        if (!roomChanges.empty()) withRoomKeys = UpdateConfigText(withRoomKeys, roomChanges);
+    }
     // 先写临时文件再改名：直接覆盖写，写一半断电会留下半份配置，下次启动直接报错。
     const std::string temp = configPath_ + ".tmp";
     {
@@ -1762,7 +1908,7 @@ void Bot::WriteConfigFile(const Config& next) {
             log_.Warn("保存配置失败：写不了 " + temp + "（改动已在内存里生效，重启会丢）");
             return;
         }
-        out.write(updated.data(), static_cast<std::streamsize>(updated.size()));
+        out.write(withRoomKeys.data(), static_cast<std::streamsize>(withRoomKeys.size()));
         if (!out) {
             log_.Warn("保存配置失败：写 " + temp + " 出错");
             return;

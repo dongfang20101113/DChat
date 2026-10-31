@@ -1,0 +1,26 @@
+[Unit]
+Description=dchat × DeepSeek 机器人（api 模式，跑在这台服务器上）
+Documentation=https://github.com/dongfang20101113/DChat
+# dchat 服务在跑它才有意义；dchat 重启时它也会自己重连，所以只排顺序不强依赖
+After=network-online.target dchat.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dchat
+Group=dchat
+WorkingDirectory=/srv/dchat-bot
+
+# 配置里 brain.cwd = /srv/dchat-bot/work：它读写文件、跑命令都在那一个目录里
+ExecStart=/opt/dchat-bot/dchat-dsh-bot --config /etc/dchat-bot/bot.conf
+Restart=always
+RestartSec=5
+
+# 只允许写自己的目录和日志；系统其他地方是只读的
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/srv/dchat-bot /var/log/dchat-bot
+
+[Install]
+WantedBy=multi-user.target
