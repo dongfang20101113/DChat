@@ -315,6 +315,10 @@ bool ParseConfig(const std::string& text, Config* out, std::string* error) {
             if (!ParseInt(value, 100, 3600000, &config.reconnectMaxMs)) return bad("要在 100-3600000 之间");
         } else if (key == "ui.port") {
             if (!ParseInt(value, 0, 65535, &config.uiPort)) return bad("要在 0-65535 之间（0 = 不开管理界面）");
+        } else if (key == "ui.bind") {
+            config.uiBind = value;
+        } else if (key == "ui.opfile") {
+            config.uiOpFile = value;
         } else {
             // 不认识的键直接报错：静默忽略会让"我明明配了黑名单却不生效"变成悬案。
             return bad("未知的配置项（是不是拼错了？）");

@@ -15,6 +15,8 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace dchat {
 namespace dshbot {
@@ -31,6 +33,8 @@ struct HttpResponse {
     int status = 200;
     std::string contentType = "application/json; charset=utf-8";
     std::string body;
+    /** 额外响应头（顺序无所谓）：登录时下发 Set-Cookie、跳转时下发 Location。 */
+    std::vector<std::pair<std::string, std::string>> headers;
 };
 
 /**

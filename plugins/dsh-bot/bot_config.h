@@ -236,6 +236,21 @@ struct Config {
      * 只监听回环：它是"改机器人设置"的入口，里面没有密码，绝不能给外网看。
      */
     int uiPort = 8731;
+    /**
+     * 管理界面绑哪个地址。默认只听本机；要在公网打开就写 0.0.0.0
+     * —— 界面本身有登录（用 dchat 账号，且必须 op 或所在群的群主）。
+     */
+    std::string uiBind = "127.0.0.1";
+    /**
+     * op 名单文件（一行一个昵称，# 开头是注释）。默认指向 dchat 服务端用的那份，
+     * 机器人跑在同一台机器上时直接复用，不用再维护第二份。
+     */
+    std::string uiOpFile =
+#ifdef _WIN32
+        "";
+#else
+        "/var/lib/dchat/dchat-admins.txt";
+#endif
 
     // ---- 重连 ----
     int reconnectMinMs = 3000;

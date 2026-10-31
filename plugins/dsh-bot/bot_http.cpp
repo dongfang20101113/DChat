@@ -229,8 +229,11 @@ void HttpServer::Loop() {
                              "Content-Type: " + response.contentType + "\r\n" +
                              "Content-Length: " + std::to_string(response.body.size()) + "\r\n" +
                              "Cache-Control: no-store\r\n"
-                             "X-Content-Type-Options: nosniff\r\n"
-                             "Connection: close\r\n\r\n";
+                             "X-Content-Type-Options: nosniff\r\n";
+        for (const auto& extra : response.headers) {
+            header += extra.first + ": " + extra.second + "\r\n";
+        }
+        header += "Connection: close\r\n\r\n";
         sock::SendAll(client, header.data(), header.size());
         sock::SendAll(client, response.body.data(), response.body.size());
         sock::Close(client);

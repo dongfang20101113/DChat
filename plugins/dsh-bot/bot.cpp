@@ -30,6 +30,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -38,6 +39,8 @@
 #include <csignal>
 
 #include "bot.h"
+#include "bot_api.h"
+#include "bot_auth.h"
 #include "bot_chunk.h"
 #include "bot_config.h"
 #include "bot_event.h"
@@ -211,6 +214,13 @@ private:
         std::string name;
         bool member = false;
     };
+    /** 管理界面的登录会话：谁登的、是不是 op、是不是某些群的群主。 */
+    struct UiSession {
+        std::string nick;
+        bool op = false;
+        std::set<std::string> ownerRooms;
+        std::chrono::steady_clock::time_point expires{};
+    };
     struct Outgoing {
         int generation = 0;
         std::string room;
@@ -299,7 +309,12 @@ private:
     void StartUi();
     HttpResponse HandleHttp(const HttpRequest& request);
     std::string StateJson();
-    HttpResponse HandleSave(const std::string& body);
+    HttpResponse HandleSave(const std::string& body, const UiSession& session);
+    HttpResponse HandleLogin(const std::string& body);
+    /** 从 Cookie 里取会话 token。 */
+    std::string CookieToken(const HttpRequest& request) const;
+    bool LoadSession(const HttpRequest& request, UiSession* out);
+    void DropSession(const HttpRequest& request);
     HttpResponse HandleSearch(const std::string& body);
     HttpResponse HandleJoin(const std::string& body);
     bool ApplyConfig(const Config& next);
@@ -340,6 +355,12 @@ private:
     std::string selfNick_;
     std::string currentRoom_ = "hall";
     std::map<std::string, RoomState> rooms_;
+    /** 每个群的成员 -> 角色（owner/admin/member），RMEMBERS 推来的。权限判断要用。 */
+    std::map<std::string, std::map<std::string, std::string>> roomRoles_;
+    // ---- 管理界面的登录会话 ----
+    std::mutex uiSessionMutex_;
+    std::map<std::string, UiSession> uiSessions_;
+    std::map<std::string, std::pair<std::chrono::steady_clock::time_point, int>> loginAttempts_;
     bool roomListDone_ = false;
     std::atomic<bool> loggedIn_{false};
     std::atomic<int> generation_{0};
@@ -787,6 +808,15 @@ void Bot::HandleLine(const std::string& line) {
         roomListDone_ = true;
         return;
     }
+    if (message.command == "RMEMBERS") {
+        // RMEMBERS <房间> <昵称> <角色>：管理界面判断"群主"就靠它
+        if (words.size() >= 3) {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            roomRoles_[words[0]][words[1]] = words[2];
+        }
+        return;
+    }
+    if (message.command == "RMEMBERS_END") return;
     if (message.command == "RINFO") {
         if (words.size() >= 3) {
             std::lock_guard<std::mutex> lock(stateMutex_);
@@ -1465,24 +1495,54 @@ HttpResponse JsonError(int status, const std::string& message) {
 void Bot::StartUi() {
     const int port = Cfg()->uiPort;
     if (port <= 0) return;
+    const std::string host = Cfg()->uiBind.empty() ? std::string("127.0.0.1") : Cfg()->uiBind;
     auto self = shared_from_this();
     std::string error;
     if (!ui_.Start(
-            "127.0.0.1", port,
+            host, port,
             [self](const HttpRequest& request) { return self->HandleHttp(request); }, &error)) {
         // 端口被占用不该让机器人起不来：它照样能聊天，只是没界面
         log_.Warn("管理界面没起来：" + error + "（机器人照常工作）");
         return;
     }
-    log_.Info("管理界面：http://127.0.0.1:" + std::to_string(ui_.BoundPort()) + "/");
+    log_.Info("管理界面：http://" + host + ":" + std::to_string(ui_.BoundPort()) + "/" +
+              (host == "127.0.0.1" ? "" : "（公网可达，需要登录）"));
 }
 
 HttpResponse Bot::HandleHttp(const HttpRequest& request) {
-    // 只给本机浏览器用。POST 必须带自定义头：跨站页面发不出这个头
+    // POST 必须带自定义头：跨站页面发不出这个头
     // （带自定义头的跨域请求会先进 OPTIONS 预检，而我们对 OPTIONS 一律 405）。
     if (request.method == "POST" &&
         request.headers.find("x-dchat-bot") == request.headers.end()) {
         return JsonError(403, "forbidden");
+    }
+    // ---- 登录（唯一不需要会话的两个入口）----
+    if (request.method == "GET" && request.path == "/login") {
+        HttpResponse response;
+        response.contentType = "text/html; charset=utf-8";
+        response.body = kLoginPage;
+        return response;
+    }
+    if (request.method == "POST" && request.path == "/api/login") {
+        return HandleLogin(request.body);
+    }
+    // ---- 其余全部要登录 ----
+    UiSession session;
+    if (!LoadSession(request, &session)) {
+        // 没登录：只给登录页，别的一律 401（页面自己会跳到 /login）
+        if (request.method == "GET" && (request.path == "/" || request.path == "/index.html")) {
+            HttpResponse response;
+            response.contentType = "text/html; charset=utf-8";
+            response.body = kLoginPage;
+            return response;
+        }
+        return JsonError(401, "请先登录");
+    }
+    if (request.path == "/api/logout") {
+        DropSession(request);
+        HttpResponse response;
+        response.body = "{\"ok\":true}";
+        return response;
     }
     if (request.method == "GET" && (request.path == "/" || request.path == "/index.html")) {
         HttpResponse response;
@@ -1495,10 +1555,155 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
         response.body = StateJson();
         return response;
     }
-    if (request.method == "POST" && request.path == "/api/config") return HandleSave(request.body);
-    if (request.method == "POST" && request.path == "/api/search") return HandleSearch(request.body);
-    if (request.method == "POST" && request.path == "/api/join") return HandleJoin(request.body);
+    if (request.method == "POST" && request.path == "/api/config") {
+        return HandleSave(request.body, session);
+    }
+    if (request.method == "POST" && request.path == "/api/search") {
+        if (!session.op) return JsonError(403, "只有 op 能用搜索");
+        return HandleSearch(request.body);
+    }
+    if (request.method == "POST" && request.path == "/api/join") {
+        if (!session.op) return JsonError(403, "只有 op 能让它加群");
+        return HandleJoin(request.body);
+    }
     return JsonError(404, "not found");
+}
+
+/** 从 Cookie 里取会话 token。 */
+std::string Bot::CookieToken(const HttpRequest& request) const {
+    const auto it = request.headers.find("cookie");
+    if (it == request.headers.end()) return std::string();
+    const std::string& text = it->second;
+    const std::string name = "dchatbot_session=";
+    std::size_t pos = text.find(name);
+    while (pos != std::string::npos) {
+        const std::size_t start = pos + name.size();
+        const std::size_t end = text.find(';', start);
+        const std::string token =
+            text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        if (!token.empty()) return token;
+        pos = text.find(name, pos + 1);
+    }
+    return std::string();
+}
+
+bool Bot::LoadSession(const HttpRequest& request, UiSession* out) {
+    const std::string token = CookieToken(request);
+    if (token.empty()) return false;
+    std::lock_guard<std::mutex> lock(uiSessionMutex_);
+    const auto it = uiSessions_.find(token);
+    if (it == uiSessions_.end()) return false;
+    if (std::chrono::steady_clock::now() > it->second.expires) {
+        uiSessions_.erase(it);
+        return false;
+    }
+    *out = it->second;
+    return true;
+}
+
+void Bot::DropSession(const HttpRequest& request) {
+    const std::string token = CookieToken(request);
+    if (token.empty()) return;
+    std::lock_guard<std::mutex> lock(uiSessionMutex_);
+    uiSessions_.erase(token);
+}
+
+HttpResponse Bot::HandleLogin(const std::string& body) {
+    FlatJson input;
+    std::string error;
+    if (!ParseFlatJson(body, &input, &error)) return JsonError(400, error);
+    const std::string nick = input.GetString("nick", std::string());
+    const std::string password = input.GetString("password", std::string());
+    if (nick.empty() || password.empty()) return JsonError(400, "昵称和密码都要填");
+
+    // 简单的暴力破解闸门：每个 IP 每分钟最多 5 次
+    {
+        std::lock_guard<std::mutex> lock(uiSessionMutex_);
+        const auto now = std::chrono::steady_clock::now();
+        for (auto it = loginAttempts_.begin(); it != loginAttempts_.end();) {
+            if (now - it->second.first > std::chrono::minutes(1)) {
+                it = loginAttempts_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (loginAttempts_.size() > 200) return JsonError(429, "尝试太频繁，过一会儿再试");
+    }
+
+    const auto cfg = Cfg();
+    const PasswordCheck check =
+        VerifyDchatPassword(cfg->host, cfg->port, nick, password, 6000);
+    if (!check.ok) {
+        log_.Warn("管理界面登录失败：" + nick + "（" + check.error + "）");
+        return JsonError(403, check.error.empty() ? "昵称或密码不对" : check.error);
+    }
+    // op 名单：和服务器同一个文件（机器人就跑在这台机器上）
+    bool op = false;
+    {
+        std::ifstream admins(cfg->uiOpFile.c_str());
+        std::string line;
+        while (std::getline(admins, line)) {
+            // 文件可能是 UTF-8 BOM 开头（很多编辑器/Set-Content 默认带），
+            // 不剥掉的话第一个昵称永远匹配不上 —— 这是踩过的坑。
+            if (line.size() >= 3 && static_cast<unsigned char>(line[0]) == 0xEF &&
+                static_cast<unsigned char>(line[1]) == 0xBB &&
+                static_cast<unsigned char>(line[2]) == 0xBF) {
+                line.erase(0, 3);
+            }
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+            if (!line.empty() && line[0] == '#') continue;
+            if (SameNick(line, nick)) op = true;
+        }
+    }
+    std::set<std::string> ownerRooms;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        for (const auto& room : roomRoles_) {
+            for (const auto& member : room.second) {
+                if (SameNick(member.first, nick) && member.second == "owner") {
+                    ownerRooms.insert(room.first);
+                }
+            }
+        }
+    }
+    if (!op && ownerRooms.empty()) {
+        log_.Warn("管理界面登录被拒（既不是 op 也不是群主）：" + nick);
+        return JsonError(403, "你既不是 op，也不是它所在的群的群主");
+    }
+
+    std::string token;
+    {
+        std::vector<unsigned char> bytes;
+        if (!dchat::RandomBytes(24, &bytes)) return JsonError(500, "生成会话失败");
+        static constexpr char kHex[] = "0123456789abcdef";
+        for (unsigned char byte : bytes) {
+            token.push_back(kHex[byte >> 4]);
+            token.push_back(kHex[byte & 0x0F]);
+        }
+    }
+    UiSession session;
+    session.nick = nick;
+    session.op = op;
+    session.ownerRooms = ownerRooms;
+    session.expires = std::chrono::steady_clock::now() + std::chrono::hours(8);
+    {
+        std::lock_guard<std::mutex> lock(uiSessionMutex_);
+        uiSessions_[token] = session;
+    }
+    log_.Info("管理界面登录：" + nick + (op ? "（op）" : "（群主）"));
+
+    std::string owners;
+    for (const std::string& room : ownerRooms) {
+        if (!owners.empty()) owners += ",";
+        owners += JsonQuote(room);
+    }
+    HttpResponse response;
+    response.headers.push_back(
+        {"Set-Cookie",
+         "dchatbot_session=" + token + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800"});
+    response.body = "{\"ok\":true,\"nick\":" + JsonQuote(nick) +
+                    ",\"op\":" + (op ? "true" : "false") + ",\"ownerRooms\":[" + owners + "]}";
+    return response;
 }
 
 std::string Bot::StateJson() {
@@ -1602,12 +1807,67 @@ std::string Bot::StateJson() {
     return json;
 }
 
-HttpResponse Bot::HandleSave(const std::string& body) {
+HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) {
     FlatJson input;
     std::string error;
     if (!ParseFlatJson(body, &input, &error)) return JsonError(400, error);
 
     auto current = Cfg();
+
+    // 群主（非 op）只能改"自己那个群的 Key"。其余字段一律忽略 ——
+    // 它们影响的是整台机器人的行为，群主无权动。
+    if (!session.op) {
+        Config next = *current;
+        if (input.Has("apiRoomKeyText")) {
+            const std::string text = input.GetString("apiRoomKeyText", std::string());
+            std::map<std::string, std::string> keys = next.brain.roomApiKeys;
+            std::size_t pos = 0;
+            while (pos <= text.size()) {
+                const std::size_t end = text.find('\n', pos);
+                std::string line =
+                    text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+                pos = (end == std::string::npos) ? text.size() + 1 : end + 1;
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                const std::size_t equals = line.find('=');
+                if (equals == std::string::npos) continue;
+                std::string room = line.substr(0, equals);
+                std::string key = line.substr(equals + 1);
+                const auto trim = [](std::string* value) {
+                    while (!value->empty() && (value->back() == ' ' || value->back() == '\t')) {
+                        value->pop_back();
+                    }
+                    while (!value->empty() && (value->front() == ' ' || value->front() == '\t')) {
+                        value->erase(0, 1);
+                    }
+                };
+                trim(&room);
+                trim(&key);
+                if (room.empty()) continue;
+                bool owned = false;
+                for (const std::string& mine : session.ownerRooms) {
+                    if (SameRoomId(mine, room)) owned = true;
+                }
+                if (!owned) {
+                    log_.Warn("群主 " + session.nick + " 想改 " + room + " 的 key，但 TA 不是那个群的群主");
+                    continue;
+                }
+                if (key == "-") {
+                    keys.erase(room);
+                } else if (!key.empty()) {
+                    keys[room] = key;
+                }
+            }
+            next.brain.roomApiKeys = keys;
+        }
+        ApplyConfig(next);
+        WriteConfigFile(next);
+        HttpResponse response;
+        response.body = "{\"ok\":true,\"note\":" +
+                        JsonQuote("已保存（你只能改自己群的 Key，其他设置需要 op）") +
+                        ",\"state\":" + StateJson() + "}";
+        return response;
+    }
+
     Config next = *current;
     std::vector<std::string> values;
 

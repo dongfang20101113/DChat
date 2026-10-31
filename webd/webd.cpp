@@ -2277,6 +2277,89 @@ struct Config {
 // 定义在文件后半部分（ServeConnection 之后）；这里先声明，路由那边要用。
 void ServeAdmin(dchat::sock::Handle handle, const std::string& rawRequest);
 
+/** 给浏览器回一个最小的纯文本响应（转发失败时用）。 */
+void SendPlain(dchat::sock::Handle client, int code, const std::string& text) {
+    const std::string body = text + "\n";
+    const std::string head = "HTTP/1.1 " + std::to_string(code) + " Error\r\n" +
+                             "Content-Type: text/plain; charset=utf-8\r\n"
+                             "Content-Length: " + std::to_string(body.size()) +
+                             "\r\nConnection: close\r\n\r\n";
+    SendAll(client, head.data(), head.size());
+    SendAll(client, body.data(), body.size());
+}
+
+/**
+ * 把 /bot/* 原样转给机器人自己的管理界面（127.0.0.1:8731）。
+ *
+ * 为什么走这条而不是让用户再开一个端口：8080 本来就是公网入口，机器人界面挂在
+ * 它下面等于"像 /admin 一样直接打开"。**鉴权不在网关做** —— 机器人自己用
+ * dchat 账号登录、按 op/群主判权限；这里再拦一道只会多出第二套会走样的规则。
+ */
+void ProxyToBot(dchat::sock::Handle client, const std::string& rawRequest,
+                const std::string& path) {
+    constexpr const char* kBotHost = "127.0.0.1";
+    constexpr int kBotPort = 8731;
+
+    const std::size_t lineEnd = rawRequest.find("\r\n");
+    const std::string firstLine =
+        rawRequest.substr(0, lineEnd == std::string::npos ? rawRequest.size() : lineEnd);
+    const std::size_t space = firstLine.find(' ');
+    const std::string method = space == std::string::npos ? std::string("GET")
+                                                          : firstLine.substr(0, space);
+    // 去掉 /bot 前缀：/bot/ -> /，/bot/api/state -> /api/state
+    std::string target = path;
+    if (target.rfind("/bot", 0) == 0) target = target.substr(4);
+    if (target.empty() || target[0] != '/') target = "/" + target;
+
+    // 请求体：头块之后的全部字节
+    const std::size_t bodyAt = rawRequest.find("\r\n\r\n");
+    const std::string body =
+        bodyAt == std::string::npos ? std::string() : rawRequest.substr(bodyAt + 4);
+
+    std::string upstreamRequest = method + " " + target + " HTTP/1.1\r\n" +
+                                  "Host: 127.0.0.1:" + std::to_string(kBotPort) + "\r\n";
+    // 逐行搬运，跳过逐跳头（Connection/Upgrade/…）和 Host
+    if (lineEnd != std::string::npos) {
+        std::size_t at = lineEnd + 2;
+        while (at < rawRequest.size()) {
+            const std::size_t end = rawRequest.find("\r\n", at);
+            if (end == std::string::npos || end == at) break;  // 空行 = 头结束
+            const std::string line = rawRequest.substr(at, end - at);
+            const std::string lower = Lower(line);
+            if (lower.rfind("host:", 0) != 0 && lower.rfind("connection:", 0) != 0 &&
+                lower.rfind("upgrade:", 0) != 0 && lower.rfind("keep-alive:", 0) != 0 &&
+                lower.rfind("te:", 0) != 0 && lower.rfind("transfer-encoding:", 0) != 0) {
+                upstreamRequest += line + "\r\n";
+            }
+            at = end + 2;
+        }
+    }
+    upstreamRequest += "Connection: close\r\n\r\n";
+    upstreamRequest += body;
+
+    const dchat::sock::Handle upstream = dchat::sock::CreateTcp();
+    if (upstream == dchat::sock::kInvalid) {
+        SendPlain(client, 502, "机器人界面连不上（建 socket 失败）");
+        return;
+    }
+    dchat::sock::SetNoSigpipe(upstream);
+    dchat::sock::SetReceiveTimeout(upstream, 15000);
+    const dchat::sock::Address address = dchat::sock::MakeAddress(kBotHost, kBotPort);
+    if (::connect(upstream, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
+        dchat::sock::Close(upstream);
+        SendPlain(client, 502, "机器人界面没在跑（连不上 127.0.0.1:8731）");
+        return;
+    }
+    SendAll(upstream, upstreamRequest.data(), upstreamRequest.size());
+    char chunk[8192];
+    while (true) {
+        const std::ptrdiff_t got = dchat::sock::Receive(upstream, chunk, sizeof(chunk));
+        if (got <= 0) break;
+        if (!SendAll(client, chunk, static_cast<std::size_t>(got))) break;
+    }
+    dchat::sock::Close(upstream);
+}
+
 Config g_config;
 
 bool ReadRequest(dchat::sock::Handle handle, std::string* out) {
@@ -2541,6 +2624,17 @@ void ServeConnection(dchat::sock::Handle handle) {
         // 也要走一次 FillRoom（房间号填空）：否则页面里留着字面量 "__ROOM_ID__"，
         // 前端会把它当成房间名去 /open，等于每次打开首页都白报一条错。
         reply("200 OK", "text/html; charset=utf-8", FillPage(kIndexHtml, ""));
+    } else if (route == "/bot" || route.rfind("/bot/", 0) == 0) {
+        // 机器人的管理界面挂在这里（公网可达，8080 本来就在用）。
+        // 它自己的登录（dchat 账号 + op/群主）在机器人那边判，网关只做转发 ——
+        // 不在这里再拦一道，否则两套权限迟早对不上。
+        // `/bot`（不带斜杠）要先跳到 `/bot/`：页面里的接口路径是相对写法。
+        if (route == "/bot") {
+            reply("200 OK", "text/html; charset=utf-8",
+                  "<meta http-equiv=\"refresh\" content=\"0;url=/bot/\">");
+        } else {
+            ProxyToBot(handle, request, path);
+        }
     } else if (route == "/download") {
         reply("200 OK", "text/html; charset=utf-8", kDownloadHtml);
     } else if (g_config.adminPort > 0 && (route == "/admin" || route.rfind("/admin/", 0) == 0)) {

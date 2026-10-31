@@ -1,5 +1,4 @@
-// 管理界面的那一页 HTML（内联进二进制，和 webd 的做法一致）
-//
+// 管理界面的那一页 HTML（内联进二进制，和 webd 的做法一致）//
 // 为什么不拆成 .html 文件：那样部署时要多管一个"别弄丢"的文件，而它只有一页。
 // 拼进二进制以后，`dchat-dsh-bot` 拷到哪都能直接开界面。
 //
@@ -9,6 +8,62 @@
 
 namespace dchat {
 namespace dshbot {
+
+// 登录页：管理界面现在可以用 dchat 账号登录后从公网打开。
+// 只有 op，或者机器人所加入的群的群主，才能进去改东西。
+inline constexpr const char* kLoginPage = R"HTML(<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dchat 机器人 · 登录</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       background:#16181d;color:#e6e8ee;font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+  .box{width:min(92vw,360px);background:#1e2129;border:1px solid #2b303b;border-radius:14px;padding:26px}
+  h1{margin:0 0 4px;font-size:19px}
+  p.tip{margin:0 0 18px;color:#8b93a7;font-size:13px}
+  label{display:block;margin:14px 0 6px;color:#aab2c5;font-size:13px}
+  input{width:100%;box-sizing:border-box;padding:10px 12px;border-radius:9px;border:1px solid #333a48;
+        background:#14161b;color:#e6e8ee;font-size:15px}
+  button{margin-top:20px;width:100%;padding:11px;border:0;border-radius:9px;background:#3b82f6;
+         color:#fff;font-size:15px;cursor:pointer}
+  button:disabled{opacity:.6;cursor:default}
+  #msg{margin-top:14px;min-height:20px;font-size:13px;color:#f87171}
+</style></head><body>
+<div class="box">
+  <h1>dchat 机器人</h1>
+  <p class="tip">用你的 dchat 账号登录。只有 <b>op</b> 或<br>机器人所在群的 <b>群主</b> 能进来。</p>
+  <form id="f">
+    <label>昵称</label><input id="nick" autocomplete="username" autofocus>
+    <label>密码</label><input id="pass" type="password" autocomplete="current-password">
+    <button id="go" type="submit">登录</button>
+  </form>
+  <div id="msg"></div>
+</div>
+<script>
+document.getElementById('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const go = document.getElementById('go');
+  const msg = document.getElementById('msg');
+  go.disabled = true; msg.textContent = '';
+  try {
+    const r = await fetch('api/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Dchat-Bot': '1'},
+      body: JSON.stringify({
+        nick: document.getElementById('nick').value.trim(),
+        password: document.getElementById('pass').value
+      })
+    });
+    const data = await r.json();
+    if (data.ok) { location.href = '/'; return; }
+    msg.textContent = data.error || '登录失败';
+  } catch (err) {
+    msg.textContent = '连不上机器人：' + err;
+  }
+  go.disabled = false;
+});
+</script>
+</body></html>)HTML";
 
 inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
 <html lang="zh-CN">
@@ -282,7 +337,7 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     el('log').textContent = (state.log && state.log.length) ? state.log.join('\n') : '（还没有日志）';
   }
   function load(keepMsg) {
-    return api('/api/state').then(function (data) {
+    return api('api/state').then(function (data) {
       if (!data.ok) { setMsg(data.error || '读取失败', 'bad'); return; }
       state = data;
       dirty = false; el('save').disabled = true; el('reload').disabled = true;
@@ -333,7 +388,7 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
   el('save').onclick = function () {
     el('save').disabled = true;
     setMsg('保存中…');
-    api('/api/config', collect()).then(function (data) {
+    api('api/config', collect()).then(function (data) {
       if (!data.ok) { setMsg('保存失败：' + data.error, 'bad'); el('save').disabled = false; return; }
       state = data.state;
       dirty = false; el('reload').disabled = true;
@@ -356,7 +411,7 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
   el('btnSearch').onclick = function () {
     var q = el('searchQ').value.trim(); if (!q) return;
     setMsg('搜索中…');
-    api('/api/search', { q: q }).then(function (data) {
+    api('api/search', { q: q }).then(function (data) {
       setMsg('');
       var hits = el('hits'); hits.innerHTML = '';
       if (!data.ok) { setMsg('搜索失败：' + data.error, 'bad'); return; }
@@ -372,7 +427,7 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
   function joinRoom(id, btn) {
     if (btn) btn.disabled = true;
     setMsg('正在加入 ' + id + '…');
-    api('/api/join', { room: id }).then(function (data) {
+    api('api/join', { room: id }).then(function (data) {
       if (!data.ok) { setMsg('加入失败：' + data.error, 'bad'); if (btn) btn.disabled = false; return; }
       setMsg(data.note || '已加入并接入', 'ok');
       return load(true);
