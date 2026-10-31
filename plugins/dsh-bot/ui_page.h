@@ -462,6 +462,13 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
   }
   el('refresh').onclick = function () { load(); };
   el('reload').onclick = function () { load(); };
+  // 任何输入框 / 下拉框 / 开关一动就点亮"保存"。
+  // 之前只有少数几个控件手写了 markDirty，**文本输入框一个都没绑** ——
+  // 改了字按钮还是灰的，用户只会觉得"保存按钮坏了"（实测就卡在这）。
+  document.querySelectorAll('input, textarea, select').forEach(function (node) {
+    node.addEventListener('input', markDirty);
+    node.addEventListener('change', markDirty);
+  });
   document.querySelectorAll('#mode button').forEach(function (b) {
     b.onclick = function () { state.replyMode = b.dataset.m; render(); markDirty(); };
   });
