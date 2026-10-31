@@ -16,11 +16,13 @@ ExecStart=/opt/dchat-bot/dchat-dsh-bot --config /etc/dchat-bot/bot.conf
 Restart=always
 RestartSec=5
 
-# 只允许写自己的目录和日志；系统其他地方是只读的
+# 只允许写自己的目录、日志，以及配置目录（管理界面改设置要写回 bot.conf）
+# ⚠️ 只改 /etc/dchat-bot 的属主是不够的：ProtectSystem=full 会把 /etc 整个挂成只读，
+#    必须在这里显式开一个可写路径，否则保存会报"写不了 bot.conf.tmp"。
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ReadWritePaths=/srv/dchat-bot /var/log/dchat-bot
+ReadWritePaths=/srv/dchat-bot /var/log/dchat-bot /etc/dchat-bot
 
 [Install]
 WantedBy=multi-user.target

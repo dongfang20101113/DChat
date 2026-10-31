@@ -1612,8 +1612,11 @@ HttpResponse Bot::HandleHttp(const HttpRequest& request) {
             // 那时还没定义的话，单群页会被当成总览页画出来。
             std::string page = kUiPage;
             const std::size_t headAt = page.find("<head>");
-            const std::string mark = "<script>window.__ROOM__ = " + JsonQuote(room) +
-                                     ";window.__PAGE__ = " + JsonQuote(pageName) + ";</script>";
+            const std::string mark =
+                "<script>window.__ROOM__ = " + JsonQuote(room) +
+                ";window.__PAGE__ = " + JsonQuote(pageName) +
+                ";document.documentElement.className = 'room-mode" +
+                (pageName == "manage" ? " room-manage" : "") + "';</script>";
             if (headAt != std::string::npos) {
                 page.insert(headAt + 6, mark);
             } else {

@@ -179,6 +179,14 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
   pre#log { margin:0; max-height:230px; overflow:auto; font:12px/1.5 Consolas,monospace; color:#a8b0c0;
             white-space:pre-wrap; word-break:break-all; }
   .muted { color:var(--muted); }
+  /* 单群页（/room/<群>/bot/...）在**第一帧之前**就把全局卡片藏掉：
+     靠 JS 在 render() 里改 display 会先闪一下整个总览，看着像页面抽风。 */
+  html.room-mode #cardRooms, html.room-mode #cardReply, html.room-mode #cardTrigger,
+  html.room-mode #cardLocal, html.room-mode #cardTyping, html.room-mode #cardRoomManage { display:none; }
+  /* manage 页连"大脑"那块也不要 */
+  html.room-manage #cardBrain { display:none; }
+  a.tag { color:#cfe0ff; text-decoration:none; }
+  a.tag:hover { border-color:#3a5ea8; background:#22304d; }
 </style>
 </head>
 <body>
