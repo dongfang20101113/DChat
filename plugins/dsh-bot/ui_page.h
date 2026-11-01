@@ -298,8 +298,8 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     <div class="row" id="rowApiUrl"><span class="name">接口地址</span><input id="apiUrl" type="text" placeholder="https://api.deepseek.com/chat/completions"></div>
     <div class="row" id="rowApiModel"><span class="name">模型</span>
       <select id="apiModel">
-        <option value="deepseek-chat">deepseek-chat（快，日常聊天）</option>
-        <option value="deepseek-reasoner">deepseek-reasoner（会推理，慢一些）</option>
+        <option value="deepseek-flash">deepseek-flash（快，日常聊天）</option>
+        <option value="deepseek-v4-pro">deepseek-v4-pro（更强，慢一些）</option>
         <option value="__custom__">其它（自己填）</option>
       </select>
       <input id="apiModelCustom" type="text" placeholder="模型名" style="display:none;max-width:220px">
@@ -530,7 +530,7 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     el('apiUrl').value = state.apiUrl || '';
     // 模型用下拉：常见两个直接选，"其它"才出现输入框。
     // 群页上这是**本群**的模型，所以多一个"跟随默认"选项（值空 = 不单独指定）。
-    var knownModels = ['deepseek-chat', 'deepseek-reasoner'];
+    var knownModels = ['deepseek-flash', 'deepseek-v4-pro'];
     var model;
     if (window.__ROOM__) {
       var sel = el('apiModel');
@@ -541,7 +541,7 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
         inherit.value = '';
         sel.insertBefore(inherit, sel.firstChild);
       }
-      inherit.textContent = '跟随默认（' + (state.apiModel || 'deepseek-chat') + '）';
+      inherit.textContent = '跟随默认（' + (state.apiModel || 'deepseek-flash') + '）';
       model = state.roomModel || '';
       if (model === '') {
         el('apiModel').value = '';
@@ -556,7 +556,7 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
         el('apiModelCustom').style.display = '';
         el('apiModelCustom').value = model;
       }
-    } else if (knownModels.indexOf(model = state.apiModel || 'deepseek-chat') >= 0) {
+    } else if (knownModels.indexOf(model = state.apiModel || 'deepseek-flash') >= 0) {
       el('apiModel').value = model;
       el('apiModelCustom').style.display = 'none';
       el('apiModelCustom').value = '';

@@ -72,7 +72,7 @@ struct BrainConfig {
     /** api 模式用的接口（OpenAI 兼容的 chat/completions）。 */
     std::string apiUrl = "https://api.deepseek.com/chat/completions";
     /** api 模式的模型名。 */
-    std::string apiModel = "deepseek-chat";
+    std::string apiModel = "deepseek-flash";
     /** 默认 API Key（可以按房间单独覆盖，见 roomApiKeys）。 */
     std::string apiKey;
     /**
