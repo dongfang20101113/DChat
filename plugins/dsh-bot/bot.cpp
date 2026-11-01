@@ -1376,25 +1376,78 @@ std::string Thousands(int value) {
     return out;
 }
 
+/** 某个模型一档价目（元 / 百万 tokens）。 */
+struct PriceTier {
+    double input = 2.0;
+    double cached = 0.04;
+    double output = 8.0;
+};
+
+/**
+ * 现在是不是高峰时段。
+ *
+ * 官方口径：北京时间周一至周五（不含法定节假日）9:00-12:00、14:00-18:00 为高峰，
+ * 其余时间（含周末）是空闲，空闲价是高峰的一半。
+ * 法定节假日这里没做判断 —— 那几天会按高峰价算，属于**偏高**的估计，不会少算。
+ */
+bool IsBeijingPeak() {
+    const std::time_t beijing = std::time(nullptr) + 8 * 3600;  // 东八区
+    std::tm tm{};
+#ifdef _WIN32
+    gmtime_s(&tm, &beijing);
+#else
+    gmtime_r(&beijing, &tm);
+#endif
+    if (tm.tm_wday == 0 || tm.tm_wday == 6) return false;  // 周日/周六：全天空闲
+    const int minutes = tm.tm_hour * 60 + tm.tm_min;
+    const bool morning = minutes >= 9 * 60 && minutes < 12 * 60;
+    const bool afternoon = minutes >= 14 * 60 && minutes < 18 * 60;
+    return morning || afternoon;
+}
+
+/** 按官方价目表取某个模型的单价；不认识的模型退回配置里那三个数。 */
+PriceTier ModelPrice(const std::string& model, bool peak, const Config& cfg) {
+    const bool pro = model.find("v4-pro") != std::string::npos;
+    const bool flash = model.find("flash") != std::string::npos ||
+                       model.find("chat") != std::string::npos ||
+                       model.find("reasoner") != std::string::npos ||
+                       model.find("deepseek") != std::string::npos;
+    if (!flash && !pro) {
+        // 自己填的第三方模型：用配置里的价（brain.api.price.*）
+        return PriceTier{cfg.brain.apiPriceInput, cfg.brain.apiPriceCached,
+                         cfg.brain.apiPriceOutput};
+    }
+    if (pro) {
+        return peak ? PriceTier{9.0, 0.30, 27.0} : PriceTier{4.5, 0.15, 13.5};
+    }
+    return peak ? PriceTier{2.0, 0.04, 8.0} : PriceTier{1.0, 0.02, 4.0};
+}
+
 /**
  * 一轮任务的用量和花费，拼成给群里看的一行。
  *
- * 价格来自配置（元 / 百万 tokens），算出来的是**估算**：缓存命中部分按 cached 价，
- * 其余输入按 input 价，输出按 output 价。模型/价格变了就改配置，不用改代码。
+ * 价格按**模型 + 时段**算（官方价目表写死在 ModelPrice 里）：
+ *   flash  空闲 1 / 0.02 / 4，高峰 2 / 0.04 / 8
+ *   v4-pro 空闲 4.5 / 0.15 / 13.5，高峰 9 / 0.30 / 27
+ * （顺序：缓存未命中输入 / 命中缓存输入 / 输出，单位元每百万 tokens）
  */
-std::string UsageLine(const ApiTurnResult::Usage& usage, const Config& cfg) {
+std::string UsageLine(const ApiTurnResult::Usage& usage, const Config& cfg,
+                      const std::string& model) {
     const int cached = std::max(0, std::min(usage.cachedTokens, usage.promptTokens));
     const int uncached = std::max(0, usage.promptTokens - cached);
+    const bool peak = IsBeijingPeak();
+    const PriceTier price = ModelPrice(model, peak, cfg);
     const double million = 1000000.0;
-    const double cost = (uncached / million) * cfg.brain.apiPriceInput +
-                        (cached / million) * cfg.brain.apiPriceCached +
-                        (usage.completionTokens / million) * cfg.brain.apiPriceOutput;
+    const double cost = (uncached / million) * price.input +
+                        (cached / million) * price.cached +
+                        (usage.completionTokens / million) * price.output;
     char money[32];
     std::snprintf(money, sizeof(money), "%.4f", cost);
     std::string line = "📊 本轮 " + Thousands(usage.Total()) + " tokens ≈ ¥" + money;
-    line += "（输入 " + Thousands(usage.promptTokens);
-    if (cached > 0) line += "／命中缓存 " + Thousands(cached);
-    line += "，输出 " + Thousands(usage.completionTokens) + "）";
+    line += "（" + model + "｜" + (peak ? "高峰" : "空闲") + "｜输入 " +
+            Thousands(usage.promptTokens);
+    if (cached > 0) line += "（命中缓存 " + Thousands(cached) + "）";
+    line += "／输出 " + Thousands(usage.completionTokens) + "）";
     return line;
 }
 
@@ -1443,7 +1496,7 @@ void Bot::RunApiJob(const Job& job) {
     }
     // 每次任务结束都报一下用量和大概花了多少钱（可以在配置里关掉）
     if (const auto cfg = Cfg(); cfg->brain.apiShowUsage && turn.usage.requests > 0) {
-        EnqueueOut(job.generation, job.room, UsageLine(turn.usage, *cfg));
+        EnqueueOut(job.generation, job.room, UsageLine(turn.usage, *cfg, options.model));
         log_.Info("本轮用量：" + std::to_string(turn.usage.Total()) + " tokens（输入 " +
                   std::to_string(turn.usage.promptTokens) + " / 输出 " +
                   std::to_string(turn.usage.completionTokens) + "，请求 " +
