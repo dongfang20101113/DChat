@@ -946,12 +946,13 @@ const char* kIndexHtml = R"HTML(<!doctype html>
   <b style="font-size:16px">登录 dchat</b>
   <input id="user" placeholder="昵称" autocomplete="username">
   <input id="pass" type="password" placeholder="密码" autocomplete="current-password">
-  <input id="host" value="dchat.xin:5555" placeholder="服务器:端口">
+  <!-- 服务器地址默认自动填"当前访问的域名/IP + 5555"，不用手输；换服务器时才改 -->
+  <input id="host" placeholder="服务器:端口（一般不用改）">
   <label style="font-size:13px;color:#8a8a94">
     <input type="checkbox" id="reg" style="width:auto"> 没有账号，注册一个新的
   </label>
   <label style="font-size:13px;color:#8a8a94">
-    <input type="checkbox" id="remember" style="width:auto"> 记住账号，下次自动登录
+    <input type="checkbox" id="remember" style="width:auto" checked> 记住账号，下次打开直接进
   </label>
   <button type="submit">连接</button>
   <div class="other">想装客户端？<a href="/download">下载 Windows / Android / Linux 版</a></div>
@@ -1365,16 +1366,24 @@ function connect(host, user, pass, reg) {
   ws.onerror = () => add('err', '连接出错');
 }
 
+/** 默认服务器地址：当前访问的这个域名/IP，端口固定 5555。
+ *  这样不管是 IP、域名还是反代进来的地址，都不用用户手改。 */
+function defaultServer() {
+  const host = location.hostname || '127.0.0.1';
+  return host + ':5555';
+}
+
 document.getElementById('loginForm').addEventListener('submit', (e) => {
   e.preventDefault();
-  const host = document.getElementById('host').value.trim() || 'dchat.xin:5555';
+  const host = document.getElementById('host').value.trim() || defaultServer();
   const user = document.getElementById('user').value;
   const pass = document.getElementById('pass').value;
   const reg = document.getElementById('reg').checked;
   credentials = {host: host, user: user, pass: pass, reg: false};
-  // 记住账号：**明文存在这台浏览器的 localStorage 里**。
-  // 页面上写明了这一点 —— 公共电脑上别勾。
+  // 服务器 + 昵称**总是**记住（下次打开不用再填这两项）；
+  // 密码只在勾了「记住账号」时存 —— 页面上写明了是明文放本机浏览器。
   try {
+    localStorage.setItem('dchat_last', JSON.stringify({host: host, user: user}));
     if (document.getElementById('remember').checked) {
       localStorage.setItem('dchat_login', JSON.stringify({host, user, pass}));
     } else {
@@ -1390,13 +1399,28 @@ document.getElementById('loginForm').addEventListener('submit', (e) => {
 // 拿空密码去登只会再来一次「密码错误」。
 (function autoLogin() {
   let saved = null;
-  try { saved = JSON.parse(localStorage.getItem('dchat_login') || 'null'); } catch (e) { saved = null; }
-  if (!saved || !saved.user) return;
-  document.getElementById('host').value = saved.host || 'dchat.xin:5555';
-  document.getElementById('user').value = saved.user;
+  let last = null;
+  try {
+    saved = JSON.parse(localStorage.getItem('dchat_login') || 'null');
+    last = JSON.parse(localStorage.getItem('dchat_last') || 'null');
+  } catch (e) { saved = null; last = null; }
+  // 服务器地址：上次用过的 > 当前访问的域名；两种都不用用户自己填
+  const hostInput = document.getElementById('host');
+  hostInput.value = (saved && saved.host) || (last && last.host) || defaultServer();
+  // 昵称：记住过就填好
+  const userInput = document.getElementById('user');
+  if ((saved && saved.user) || (last && last.user)) {
+    userInput.value = (saved && saved.user) || (last && last.user);
+  }
+  if (!saved || !saved.user) {
+    // 没存过密码：昵称和服务器都填好了，输个密码按回车就进
+    if (userInput.value) document.getElementById('pass').focus();
+    return;
+  }
   if (!saved.pass) {
     document.getElementById('pass').value = '';
     add('sys', '上次记住的密码已失效，请输入新密码登录');
+    document.getElementById('pass').focus();
     return;
   }
   document.getElementById('pass').value = saved.pass || '';
