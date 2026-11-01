@@ -271,6 +271,8 @@ bool OpSessionNick(const std::string& id, std::string* nick);
 std::string RandomHex(int bytes);
 // 网页版单文件上传上限，跟着 chatrule 的 webuploadmb 走（定义在管理员那一节）
 int WebUploadLimitMb();
+// 服务器有没有开彩色聊天（chatcolor 规则），页面据此决定渲不渲染色码
+bool ChatColorEnabled();
 
 class Session : public dchat::ChatCoreDelegate,
                 public std::enable_shared_from_this<Session> {
@@ -967,6 +969,8 @@ window.DCHAT_ROOM = "__ROOM_ID__";
 // 单文件上传上限（MB），由服务器 chatrule 的 webuploadmb 决定、网关填进来。
 // 前端这道检查只是为了早一步拦住、少传一趟——真正的闸在网关和服务器上。
 const UPLOAD_MB = __UPLOAD_MB__;
+// 服务器有没有开彩色聊天（chatcolor 规则）；关了就把色码原样显示，别偷偷吃掉
+const CHAT_COLOR = __CHATCOLOR__;
 </script>
 <script>
 const logEl = document.getElementById('log');
@@ -1065,19 +1069,100 @@ function add(kind, text) {
 const FILE_MARK_RE = /\[\[file:([A-Za-z0-9_-]+)(?:\|([^\]]*))?\]\]/g;
 const IMG_NAME_RE = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
 
-/** 把 @某人 画成金色。 */
-function appendTextWithAt(host, text) {
+/**
+ * 彩色文字：和桌面端/安卓端**同一套规则**（client_core/chat_color.cpp）：
+ *   `&0`～`&f`         16 个快捷色（大小写都认）
+ *   `&#rrggbb`         任意十六进制色
+ *   `&&`               一个字面量 &
+ * 认不出来的 `&x` 原样保留 —— 不能把用户打的字吃掉。
+ */
+const QUICK_COLORS = ['#000000', '#0000aa', '#00aa00', '#00aaaa', '#aa0000', '#aa00aa',
+                      '#aa5500', '#aaaaaa', '#555555', '#5555ff', '#55ff55', '#55ffff',
+                      '#ff5555', '#ff55ff', '#ffff55', '#ffffff'];
+const QUICK_DIGITS = '0123456789abcdef';
+
+/** 把文本按色码切成 [{text, color}]，color 为空表示默认色。 */
+function splitColorSegments(text, maxSpans) {
+  const out = [];
+  let cur = { text: '', color: '' };
+  let spans = 0;
+  const flush = () => {
+    if (cur.text) { out.push(cur); cur = { text: '', color: cur.color }; }
+  };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch !== '&') { cur.text += ch; continue; }
+    const next = text[i + 1];
+    if (next === undefined) { cur.text += ch; break; }
+    if (next === '&') { cur.text += '&'; i++; continue; }
+    if (next === '#') {
+      const hex = text.substr(i + 2, 6);
+      if (hex.length === 6 && /^[0-9a-fA-F]{6}$/.test(hex)) {
+        // 超过段数上限也要把色码吃掉，只是不再换色 —— 桌面端就是这样
+        //（chat_color.cpp：只停止开新段，剩下的文字一个字都不能丢）
+        if (spans < maxSpans) {
+          flush();
+          cur.color = '#' + hex.toLowerCase();
+          spans++;
+        }
+        i += 7;
+        continue;
+      }
+      cur.text += ch;   // &# 后面不是 6 位十六进制：当普通字符
+      continue;
+    }
+    const idx = QUICK_DIGITS.indexOf(next.toLowerCase());
+    if (idx >= 0) {
+      if (spans < maxSpans) {
+        flush();
+        cur.color = QUICK_COLORS[idx];
+        spans++;
+      }
+      i++;
+      continue;
+    }
+    cur.text += ch;
+  }
+  flush();
+  return out;
+}
+
+/** 把 @某人 画成金色（如果这一段本身设了颜色，就用那段的颜色）。 */
+function appendTextWithAt(host, text, color) {
+  const wrap = (node) => {
+    if (!color) return node;
+    const span = document.createElement('span');
+    span.style.color = color;
+    span.appendChild(node);
+    return span;
+  };
   const re = /@[^\s@]+/g;
   let last = 0, m;
   while ((m = re.exec(text))) {
-    if (m.index > last) host.appendChild(document.createTextNode(text.slice(last, m.index)));
+    if (m.index > last) {
+      host.appendChild(wrap(document.createTextNode(text.slice(last, m.index))));
+    }
     const s = document.createElement('span');
-    s.className = 'at';
+    if (color) {
+      s.style.color = color;
+    } else {
+      s.className = 'at';
+    }
     s.textContent = m[0];
     host.appendChild(s);
     last = m.index + m[0].length;
   }
-  if (last < text.length) host.appendChild(document.createTextNode(text.slice(last)));
+  if (last < text.length) host.appendChild(wrap(document.createTextNode(text.slice(last))));
+}
+
+/** 带颜色的一段文字（服务端关了 chatcolor 就整段原样输出）。 */
+function appendStyledText(host, text) {
+  if (!CHAT_COLOR) {
+    appendTextWithAt(host, text, '');
+    return;
+  }
+  const segments = splitColorSegments(text, 64);
+  for (const seg of segments) appendTextWithAt(host, seg.text, seg.color);
 }
 
 /** 把一条消息正文画出来：普通文字 / @高亮 / 行内图片 / 行内文件卡片。 */
@@ -1087,7 +1172,7 @@ function renderRichBody(host, text) {
   let last = 0, m;
   FILE_MARK_RE.lastIndex = 0;
   while ((m = FILE_MARK_RE.exec(text))) {
-    if (m.index > last) appendTextWithAt(host, text.slice(last, m.index));
+    if (m.index > last) appendStyledText(host, text.slice(last, m.index));
     const id = m[1];
     let name = id;
     try { if (m[2]) name = decodeURIComponent(m[2]); } catch (e) { name = m[2] || id; }
@@ -1108,7 +1193,7 @@ function renderRichBody(host, text) {
     }
     last = m.index + m[0].length;
   }
-  if (last < text.length) appendTextWithAt(host, text.slice(last));
+  if (last < text.length) appendStyledText(host, text.slice(last));
 }
 
 /** 一条消息 = 气泡（头像区不画，昵称+时间在气泡里）。 */
@@ -2649,6 +2734,8 @@ std::string FillPage(const char* page, const std::string& roomId) {
     replaceAll("__ROOM_ID__", roomId);
     // 上传上限放进页面，页面上的提示文字和前端那道预检才和服务器一致
     replaceAll("__UPLOAD_MB__", std::to_string(WebUploadLimitMb()));
+    // 服务器有没有开彩色聊天（chatcolor 规则），页面据此决定渲不渲染色码
+    replaceAll("__CHATCOLOR__", ChatColorEnabled() ? "true" : "false");
     return html;
 }
 
@@ -3228,6 +3315,39 @@ int WebUploadLimitMb() {
         if (line.substr(0, tab) != "webuploadmb") continue;
         const int parsed = std::atoi(line.c_str() + static_cast<std::ptrdiff_t>(tab) + 1);
         if (parsed > 0) value = parsed;
+        break;
+    }
+    cached = value;
+    stamp = now;
+    return cached;
+}
+
+/**
+ * 服务器有没有开彩色聊天（chatrule 的 chatcolor）。
+ * 和 webuploadmb 一样：查管理端口、缓存 5 秒。查不到就按"开着"算 ——
+ * 和桌面端/安卓端一致（规则里没这条时默认允许）。
+ */
+bool ChatColorEnabled() {
+    static std::mutex mutex;
+    static bool cached = true;
+    static std::time_t stamp = 0;
+    std::lock_guard<std::mutex> lock(mutex);
+    const std::time_t now = std::time(nullptr);
+    if (stamp != 0 && now - stamp < 5) return cached;
+
+    bool value = true;
+    const std::string listing = AdminCall("LIST");
+    std::size_t from = 0;
+    while (from < listing.size()) {
+        const std::size_t end = listing.find('\n', from);
+        const std::string line =
+            listing.substr(from, end == std::string::npos ? std::string::npos : end - from);
+        from = (end == std::string::npos) ? listing.size() : end + 1;
+        const std::size_t tab = line.find('\t');
+        if (tab == std::string::npos) continue;
+        if (line.substr(0, tab) != "chatcolor") continue;
+        const std::string raw = line.substr(tab + 1);
+        value = !(raw == "0" || raw == "false" || raw == "no" || raw == "off");
         break;
     }
     cached = value;
