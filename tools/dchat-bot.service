@@ -7,8 +7,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=dchat
-Group=dchat
+# 以 root 跑（用户要求：让机器人能装软件、改系统配置、重启服务）。
+# ⚠️ 但**沙箱不拆**：文件系统仍然只有下面 ReadWritePaths 那几处可写，
+#    /usr /boot /etc 其余部分一律只读，NoNewPrivileges 也留着。
+#    真要放开更多路径，就往 ReadWritePaths 里加，别去动 ProtectSystem。
+User=root
+Group=root
 WorkingDirectory=/srv/dchat-bot
 
 # 配置里 brain.cwd = /srv/dchat-bot/work：它读写文件、跑命令都在那一个目录里
@@ -16,13 +20,14 @@ ExecStart=/opt/dchat-bot/dchat-dsh-bot --config /etc/dchat-bot/bot.conf
 Restart=always
 RestartSec=5
 
-# 只允许写自己的目录、日志，以及配置目录（管理界面改设置要写回 bot.conf）
+# 可写路径：工作目录、日志、机器人自己的配置目录。
 # ⚠️ 只改 /etc/dchat-bot 的属主是不够的：ProtectSystem=full 会把 /etc 整个挂成只读，
 #    必须在这里显式开一个可写路径，否则保存会报"写不了 bot.conf.tmp"。
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ReadWritePaths=/srv/dchat-bot /var/log/dchat-bot /etc/dchat-bot
+# 前缀 - 表示"这个路径不存在也不报错"（ReadWritePaths 里写不存在的路径会让服务起不来）
+ReadWritePaths=/srv/dchat-bot /var/log/dchat-bot /etc/dchat-bot /var/lib/dchat /opt/dchat
 
 [Install]
 WantedBy=multi-user.target
