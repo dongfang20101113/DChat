@@ -2078,6 +2078,12 @@ void ApplyRoomKeyLines(const std::string& text, std::map<std::string, std::strin
     }
 }
 
+/** 把整数夹进 [lo, hi]（界面上填超范围的值不该把配置写坏）。 */
+int ClampInt(int value, int lo, int hi) {
+    if (value < lo) return lo;
+    if (value > hi) return hi;
+    return value;
+}
 /** 把一个群自己的设置（专用 key、应答范围）落到配置里。 */
 void ApplyRoomScoped(Config* next, const FlatJson& input, const std::string& room) {
     if (input.Has("apiRoomKeyText")) {
@@ -2235,7 +2241,13 @@ HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) 
         while (!dir.empty() && (dir.back() == '/' || dir.back() == '\\')) dir.pop_back();
         next.brain.cwd = dir;
     }
-    if (input.Has("fileMaxMb")) next.fileMaxMb = input.GetInt("fileMaxMb", next.fileMaxMb);
+    // 数值一律**夹到配置解析器认的范围**里再写。
+    // 教训：界面上把 file.maxmb 填成 1024，写回配置后下次启动直接报
+    // 「配置错误：file.maxmb：要在 0-256 之间」—— 机器人再也起不来。
+    // 界面允许的范围和解析器必须一致，宁可夹住也不让存进去。
+    if (input.Has("fileMaxMb")) {
+        next.fileMaxMb = ClampInt(input.GetInt("fileMaxMb", next.fileMaxMb), 0, 256);
+    }
     if (input.GetArray("fileRoots", &values)) {
         next.fileRoots.clear();
         for (const std::string& raw : values) {
@@ -2244,11 +2256,28 @@ HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) 
             if (!dir.empty()) next.fileRoots.push_back(dir);
         }
     }
-    if (input.Has("maxChars")) next.typing.maxChars = input.GetInt("maxChars", next.typing.maxChars);
-    if (input.Has("minChars")) next.typing.minChars = input.GetInt("minChars", next.typing.minChars);
-    if (input.Has("minGapMs")) next.typing.minGapMs = input.GetInt("minGapMs", next.typing.minGapMs);
-    if (input.Has("perCharMs")) next.typing.perCharMs = input.GetInt("perCharMs", next.typing.perCharMs);
-    if (input.Has("maxGapMs")) next.typing.maxGapMs = input.GetInt("maxGapMs", next.typing.maxGapMs);
+    if (input.Has("maxChars")) {
+        next.typing.maxChars = ClampInt(input.GetInt("maxChars", next.typing.maxChars), 8, 4000);
+    }
+    if (input.Has("minChars")) {
+        next.typing.minChars = ClampInt(input.GetInt("minChars", next.typing.minChars), 0, 4000);
+    }
+    if (input.Has("minGapMs")) {
+        next.typing.minGapMs = ClampInt(input.GetInt("minGapMs", next.typing.minGapMs), 0, 60000);
+    }
+    if (input.Has("perCharMs")) {
+        next.typing.perCharMs = ClampInt(input.GetInt("perCharMs", next.typing.perCharMs), 0, 5000);
+    }
+    if (input.Has("maxGapMs")) {
+        next.typing.maxGapMs = ClampInt(input.GetInt("maxGapMs", next.typing.maxGapMs), 0, 60000);
+    }
+    // 几个成对的约束：夹完之后再把明显矛盾的值扶正，别让保存成功但启动失败
+    if (next.typing.minChars > next.typing.maxChars) {
+        next.typing.minChars = next.typing.maxChars;
+    }
+    if (next.typing.maxGapMs < next.typing.minGapMs) {
+        next.typing.maxGapMs = next.typing.minGapMs;
+    }
 
     if (!ValidateConfig(&next, &error)) return JsonError(400, error);
     ApplyConfig(next);
