@@ -516,12 +516,16 @@ ApiTurnResult RunApiTurn(const ApiRunOptions& options, const std::vector<ApiMess
         if (item.content.empty()) continue;
         messages += "," + MessageJson(item.role.empty() ? "user" : item.role, item.content);
     }
-    messages += "," + MessageJson("user", userText) + "]";
+    // 注意：这里**不要**把数组闭合（不能加 "]")。工具来回时要往 messages 后面
+    // 继续追加 assistant/tool 消息，闭合放在每次拼请求体的时候做。
+    // 之前就是在这里提前关了数组，第二轮请求变成 `[...],{...}`，
+    // DeepSeek 直接回「Failed to parse the request body as JSON」。
+    messages += "," + MessageJson("user", userText);
 
     const int rounds = options.maxRounds <= 0 ? 6 : options.maxRounds;
     for (int round = 0; round < rounds; ++round) {
         const std::string body = "{\"model\":" + JsonQuote(options.model) +
-                                 ",\"messages\":" + messages + ",\"tools\":" + toolsJson +
+                                 ",\"messages\":" + messages + "]" + ",\"tools\":" + toolsJson +
                                  ",\"tool_choice\":\"auto\",\"stream\":false}";
         std::vector<std::string> headers;
         headers.push_back("Authorization: Bearer " + TrimText(options.key));
