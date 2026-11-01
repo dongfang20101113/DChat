@@ -42,6 +42,16 @@ struct ApiTurnResult {
     std::string answer;            // 最终回答（可能为空）
     std::vector<std::string> files;  // 模型要求发到群里的文件（已经是绝对路径）
     std::string error;
+
+    /** 这一轮的用量（接口返回的 usage 累加；工具来回多轮就多算几次）。 */
+    struct Usage {
+        int promptTokens = 0;      // 输入
+        int cachedTokens = 0;      // 其中命中缓存的输入
+        int completionTokens = 0;  // 输出
+        int requests = 0;          // 一共发了几次请求
+        int Total() const { return promptTokens + completionTokens; }
+    };
+    Usage usage;
 };
 
 /** POST 一段 JSON 出去。失败时 error 里有原因（含 HTTP 状态码）。 */

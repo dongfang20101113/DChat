@@ -85,9 +85,21 @@ bool ParseInt(const std::string& raw, int minValue, int maxValue, int* out) {
     return true;
 }
 
+/** 解析一个非负小数（价格用得着）。解析失败就保持原值，不让配置整个起不来。 */
+double ParseDouble(const std::string& raw, double fallback) {
+    const std::string text = Trim(raw);
+    if (text.empty()) return fallback;
+    try {
+        std::size_t used = 0;
+        const double value = std::stod(text, &used);
+        if (used != text.size() || value < 0.0) return fallback;
+        return value;
+    } catch (...) {
+        return fallback;
+    }
+}
 bool ParseBool(const std::string& raw, bool* out) {
-    const std::string lower = Lower(raw);
-    if (lower == "true" || lower == "1" || lower == "yes" || lower == "on") {
+    const std::string lower = Lower(raw);    if (lower == "true" || lower == "1" || lower == "yes" || lower == "on") {
         *out = true;
         return true;
     }
@@ -304,6 +316,15 @@ bool ParseConfig(const std::string& text, Config* out, std::string* error) {
             config.brain.apiSystemPrompt = UnescapeValue(value);
         } else if (key == "brain.api.maxrounds") {
             if (!ParseInt(value, 1, 20, &config.brain.apiMaxRounds)) return bad("要在 1-20 之间");
+        } else if (key == "brain.api.showusage") {
+            const std::string on = Lower(value);
+            config.brain.apiShowUsage = (on == "1" || on == "true" || on == "yes" || on == "on");
+        } else if (key == "brain.api.price.input") {
+            config.brain.apiPriceInput = ParseDouble(value, config.brain.apiPriceInput);
+        } else if (key == "brain.api.price.cached") {
+            config.brain.apiPriceCached = ParseDouble(value, config.brain.apiPriceCached);
+        } else if (key == "brain.api.price.output") {
+            config.brain.apiPriceOutput = ParseDouble(value, config.brain.apiPriceOutput);
         } else if (key == "brain.api.timeoutms") {
             if (!ParseInt(value, 5000, 600000, &config.brain.apiTimeoutMs)) {
                 return bad("要在 5000-600000 之间");

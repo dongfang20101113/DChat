@@ -1362,6 +1362,42 @@ void Bot::RunJob(const Job& job) {    if (Cfg()->brain.mode == "api") {
     }
 }
 
+/** 1234567 → "1,234,567"（用量数字不加分隔看着费劲）。 */
+std::string Thousands(int value) {
+    std::string text = std::to_string(value < 0 ? 0 : value);
+    std::string out;
+    int count = 0;
+    for (auto it = text.rbegin(); it != text.rend(); ++it) {
+        if (count && count % 3 == 0) out.push_back(',');
+        out.push_back(*it);
+        ++count;
+    }
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
+/**
+ * 一轮任务的用量和花费，拼成给群里看的一行。
+ *
+ * 价格来自配置（元 / 百万 tokens），算出来的是**估算**：缓存命中部分按 cached 价，
+ * 其余输入按 input 价，输出按 output 价。模型/价格变了就改配置，不用改代码。
+ */
+std::string UsageLine(const ApiTurnResult::Usage& usage, const Config& cfg) {
+    const int cached = std::max(0, std::min(usage.cachedTokens, usage.promptTokens));
+    const int uncached = std::max(0, usage.promptTokens - cached);
+    const double million = 1000000.0;
+    const double cost = (uncached / million) * cfg.brain.apiPriceInput +
+                        (cached / million) * cfg.brain.apiPriceCached +
+                        (usage.completionTokens / million) * cfg.brain.apiPriceOutput;
+    char money[32];
+    std::snprintf(money, sizeof(money), "%.4f", cost);
+    std::string line = "📊 本轮 " + Thousands(usage.Total()) + " tokens ≈ ¥" + money;
+    line += "（输入 " + Thousands(usage.promptTokens);
+    if (cached > 0) line += "／命中缓存 " + Thousands(cached);
+    line += "，输出 " + Thousands(usage.completionTokens) + "）";
+    return line;
+}
+
 void Bot::RunApiJob(const Job& job) {
     const auto cfg = Cfg();
     ApiRunOptions options;
@@ -1403,6 +1439,14 @@ void Bot::RunApiJob(const Job& job) {
     }
     for (const std::string& file : turn.files) {
         EnqueueFile(job.generation, job.room, file);
+    }
+    // 每次任务结束都报一下用量和大概花了多少钱（可以在配置里关掉）
+    if (const auto cfg = Cfg(); cfg->brain.apiShowUsage && turn.usage.requests > 0) {
+        EnqueueOut(job.generation, job.room, UsageLine(turn.usage, *cfg));
+        log_.Info("本轮用量：" + std::to_string(turn.usage.Total()) + " tokens（输入 " +
+                  std::to_string(turn.usage.promptTokens) + " / 输出 " +
+                  std::to_string(turn.usage.completionTokens) + "，请求 " +
+                  std::to_string(turn.usage.requests) + " 次）");
     }
 }
 

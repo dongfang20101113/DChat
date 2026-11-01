@@ -544,6 +544,16 @@ ApiTurnResult RunApiTurn(const ApiRunOptions& options, const std::vector<ApiMess
             turn.error = "接口报错：" + apiError->GetString("message", "未知错误");
             return turn;
         }
+        // 用量：接口每次响应都带 usage，工具来回多轮就累加。
+        // 注意别写成 `if (const JsonValue* usage = ...)` —— 变量名和成员名撞车，
+        // 某些编译器在 -O2 下会把整段当成死代码删掉（实测 GCC 就是），
+        // 于是 Linux 版永远不报用量。这里用独立变量名，并且无条件读。
+        if (const JsonValue* usageNode = root.Find("usage")) {
+            turn.usage.promptTokens += usageNode->GetInt("prompt_tokens", 0);
+            turn.usage.completionTokens += usageNode->GetInt("completion_tokens", 0);
+            turn.usage.cachedTokens += usageNode->GetInt("prompt_cache_hit_tokens", 0);
+            ++turn.usage.requests;
+        }
         const std::vector<JsonValue> choices = root.GetArray("choices");
         if (choices.empty()) {
             turn.error = "接口没有返回 choices（原始内容：" + response.substr(0, 300) + "）";

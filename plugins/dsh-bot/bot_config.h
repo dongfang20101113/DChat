@@ -80,6 +80,15 @@ struct BrainConfig {
      * 用户要求"每个对话可以在网页里填不同的 key"，就落在这里。
      */
     std::map<std::string, std::string> roomApiKeys;
+    /**
+     * 每次任务结束后要不要报用量和大概花了多少钱。
+     * 价格是**估算**用的参考价（元 / 百万 tokens）；不同模型、不同时间会变，
+     * 放配置里就是让人能自己改 —— 算出来的数只表示量级。
+     */
+    bool apiShowUsage = true;
+    double apiPriceInput = 2.0;    // 输入（未命中缓存）
+    double apiPriceCached = 0.5;   // 输入（命中缓存，不填就按未命中算）
+    double apiPriceOutput = 8.0;   // 输出
     /** api 模式下最多来回几轮工具调用（防止模型自己绕死）。 */
     int apiMaxRounds = 6;
     /** 单次 HTTP 请求超时（毫秒）。 */
