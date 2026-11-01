@@ -2684,6 +2684,21 @@ void ServeConnection(dchat::sock::Handle handle) {
         // ?server=host:port 允许前端指定服务器；默认用命令行给的
         std::string host = g_config.serverHost;
         int port = g_config.serverPort;
+        // 浏览器是拿哪个域名访问网关的（Host 头，去掉端口）
+        std::string selfHost;
+        {
+            const std::string needle = "\r\nhost:";
+            const std::size_t at = headers.find(needle);
+            if (at != std::string::npos) {
+                std::size_t from = at + needle.size();
+                while (from < headers.size() && (headers[from] == ' ' || headers[from] == '\t')) ++from;
+                std::size_t to = headers.find("\r\n", from);
+                if (to == std::string::npos) to = headers.size();
+                selfHost = headers.substr(from, to - from);
+                const std::size_t colon = selfHost.rfind(':');
+                if (colon != std::string::npos) selfHost = selfHost.substr(0, colon);
+            }
+        }
         const std::size_t q = path.find("server=");
         if (q != std::string::npos) {
             std::string value = path.substr(q + 7);
@@ -2697,6 +2712,22 @@ void ServeConnection(dchat::sock::Handle handle) {
                 if (parsed > 0 && parsed < 65536) port = parsed;
             } else if (!value.empty()) {
                 host = value;
+            }
+        }
+        // 有人用域名打开网关、又在登录框里填了同一个域名（比如 dchat.xin:5555）时，
+        // 让网关自己去连那个公网地址是绕远路：安全组多半没开 5555，回家路上还有
+        // NAT 回环问题。这种情况直接改连自己配置的后端 —— 页面照样能用域名。
+        if (!selfHost.empty() && port == g_config.serverPort) {
+            std::string want = host;
+            std::string self = selfHost;
+            for (char& ch : want) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            for (char& ch : self) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            if (want == self) {
+                std::fprintf(stderr, "[session] server=%s 指向网关自身，改连后端 %s:%d\n",
+                             host.c_str(), g_config.serverHost.c_str(), g_config.serverPort);
+                std::fflush(stderr);
+                host = g_config.serverHost;
+                port = g_config.serverPort;
             }
         }
         std::fprintf(stderr, "[session] 上游 %s:%d\n", host.c_str(), port);
