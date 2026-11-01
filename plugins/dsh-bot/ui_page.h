@@ -382,10 +382,20 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
     if (window.__ROOM__) {
       var isApiKeyPage = window.__PAGE__ === 'apikey';
       var canAll = !!state.canManageAll;
-      ['rowBrainType', 'rowApiUrl', 'rowApiModel', 'rowApiKey', 'rowRoomKey'].forEach(function (id) {
+      // 默认 API Key 和"每个群一行"的多行输入都不在这两页出现：
+      // 单群的 key 走 api-key 页那个单独的输入框。
+      ['rowApiKey', 'rowRoomKey'].forEach(function (id) {
         var node = document.getElementById(id);
         if (node) node.style.display = 'none';
       });
+      // api-key 页只要 key；manage 页把「用哪个大脑 / 接口地址 / 模型」留给
+      // 能管所有群的人（整张卡片本身已经被 CSS 按 room-admin 藏好了）。
+      if (isApiKeyPage) {
+        ['rowBrainType', 'rowApiUrl', 'rowApiModel'].forEach(function (id) {
+          var node = document.getElementById(id);
+          if (node) node.style.display = 'none';
+        });
+      }
       var single = document.getElementById('rowSingleRoomKey');
       var nav = document.getElementById('cardRoomNav');
       var h2 = document.querySelector('#cardBrain h2');
