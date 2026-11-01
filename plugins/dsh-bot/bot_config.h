@@ -80,6 +80,8 @@ struct BrainConfig {
      * 用户要求"每个对话可以在网页里填不同的 key"，就落在这里。
      */
     std::map<std::string, std::string> roomApiKeys;
+    /** 每个群自己的模型（房间 ID -> 模型名）。空/没配 = 用上面的默认模型。 */
+    std::map<std::string, std::string> roomApiModels;
     /**
      * 每次任务结束后要不要报用量和大概花了多少钱。
      * 价格是**估算**用的参考价（元 / 百万 tokens）；不同模型、不同时间会变，

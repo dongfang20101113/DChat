@@ -331,7 +331,7 @@ private:
     HttpResponse HandleJoin(const std::string& body, const UiSession& session);
     bool ApplyConfig(const Config& next);
     /** 把界面管的那几个键写回配置文件（保留注释），失败只记日志 —— 内存里已经生效了。 */
-    void WriteConfigFile(const Config& next);
+    void WriteConfigFile(const Config& next, const Config& previous);
 
     struct SearchHit {
         std::string id;
@@ -1402,7 +1402,8 @@ void Bot::RunApiJob(const Job& job) {
     const auto cfg = Cfg();
     ApiRunOptions options;
     options.url = cfg->brain.apiUrl;
-    options.model = cfg->brain.apiModel;
+    // 每个群可以有自己的模型（群里配过就用它，否则用默认的）
+    options.model = EffectiveModel(*cfg, job.room);
     // 每个群可以有自己的 key（用户在网页里给这个群单独填过就用它）
     const auto roomKey = cfg->brain.roomApiKeys.find(job.room);
     options.key = (roomKey != cfg->brain.roomApiKeys.end() && !roomKey->second.empty())
@@ -1993,6 +1994,14 @@ std::string Bot::StateJson(const UiSession& session, const std::string& room) {
     json += ",\"replyList\":" + JsonQuoteArray(shown.nicks);
     json += ",\"replyScoped\":";
     json += room.empty() ? "false" : "true";
+    // 这个群单独指定的模型（空 = 跟随默认）
+    std::string roomModel;
+    if (!room.empty()) {
+        for (const auto& pair : cfg->brain.roomApiModels) {
+            if (SameNick(pair.first, room)) roomModel = pair.second;
+        }
+    }
+    json += ",\"roomModel\":" + JsonQuote(roomModel);
     json += ",\"mentionOnly\":";
     json += cfg->trigger.mentionOnly ? "true" : "false";
     json += ",\"aliases\":" + JsonQuoteArray(cfg->trigger.aliases);
@@ -2108,6 +2117,17 @@ void ApplyRoomScoped(Config* next, const FlatJson& input, const std::string& roo
     if (input.GetArray("roomReplyList", &values)) {
         next->roomReply[room].nicks = values;
     }
+    // 这个群的模型：空串 = 跟随默认（把覆盖删掉）
+    if (input.Has("roomModel")) {
+        std::string model = input.GetString("roomModel", std::string());
+        while (!model.empty() && (model.back() == ' ' || model.back() == '\t')) model.pop_back();
+        while (!model.empty() && (model.front() == ' ' || model.front() == '\t')) model.erase(0, 1);
+        if (model.empty()) {
+            next->brain.roomApiModels.erase(room);
+        } else {
+            next->brain.roomApiModels[room] = model;
+        }
+    }
 }
 
 }  // namespace
@@ -2132,7 +2152,7 @@ HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) 
             }
             ApplyRoomScoped(&next, input, room);
             ApplyConfig(next);
-            WriteConfigFile(next);
+            WriteConfigFile(next, *current);
             HttpResponse response;
             response.body = "{\"ok\":true,\"note\":" + JsonQuote("已保存「" + room + "」的设置") +
                             ",\"state\":" + StateJson(session, room) + "}";
@@ -2146,7 +2166,7 @@ HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) 
             next.brain.roomApiKeys = keys;
         }
         ApplyConfig(next);
-        WriteConfigFile(next);
+        WriteConfigFile(next, *current);
         HttpResponse response;
         response.body = "{\"ok\":true,\"note\":" +
                         JsonQuote("已保存（你只能改自己管理的群的设置，其他设置需要管理员）") +
@@ -2281,7 +2301,7 @@ HttpResponse Bot::HandleSave(const std::string& body, const UiSession& session) 
 
     if (!ValidateConfig(&next, &error)) return JsonError(400, error);
     ApplyConfig(next);
-    WriteConfigFile(next);
+    WriteConfigFile(next, *current);
 
     HttpResponse response;
     response.body = "{\"ok\":true,\"state\":" + StateJson(session, std::string()) + "}";
@@ -2342,14 +2362,15 @@ HttpResponse Bot::HandleJoin(const std::string& body, const UiSession& session) 
         if (!ok) return JsonError(400, "群 ID 只能用字母、数字、下划线和减号");
     }
 
-    Config next = *Cfg();
+    const auto current = Cfg();   // 写回时要和"改之前的"比，才知道哪些要删
+    Config next = *current;
     bool present = false;
     for (const std::string& existing : next.rooms) {
         if (SameRoomId(existing, room)) present = true;
     }
     if (!present) next.rooms.push_back(room);
     ApplyConfig(next);  // 里面会给新群发 GJOIN
-    WriteConfigFile(next);
+    WriteConfigFile(next, *current);
 
     HttpResponse response;
     response.body = "{\"ok\":true,\"note\":" +
@@ -2397,7 +2418,7 @@ bool Bot::ApplyConfig(const Config& next) {
     return true;
 }
 
-void Bot::WriteConfigFile(const Config& next) {
+void Bot::WriteConfigFile(const Config& next, const Config& previous) {
     if (configPath_.empty()) return;
     std::string text;
     {
@@ -2442,6 +2463,15 @@ void Bot::WriteConfigFile(const Config& next) {
         changes.emplace_back("room." + pair.first + ".replymode", roomMode);
         changes.emplace_back("room." + pair.first + ".replylist", JoinList(pair.second.nicks));
     }
+    // 每个群自己的模型（删掉的覆盖写成空值，加载时会被当成"没有"）
+    for (const auto& pair : next.brain.roomApiModels) {
+        changes.emplace_back("brain.api.model." + pair.first, EscapeConfigValue(pair.second));
+    }
+    for (const auto& pair : previous.brain.roomApiModels) {
+        if (next.brain.roomApiModels.find(pair.first) == next.brain.roomApiModels.end()) {
+            changes.emplace_back("brain.api.model." + pair.first, std::string());
+        }
+    }
     const std::string updated = UpdateConfigText(text, changes);
     // 每个群的 key 单独写（包含"被删掉的"：写成空值，加载时会被当成没有）
     std::string withRoomKeys = updated;
@@ -2451,7 +2481,7 @@ void Bot::WriteConfigFile(const Config& next) {
             roomChanges.emplace_back("brain.api.key." + entry.first,
                                      EscapeConfigValue(entry.second));
         }
-        for (const auto& entry : Cfg()->brain.roomApiKeys) {
+        for (const auto& entry : previous.brain.roomApiKeys) {
             if (next.brain.roomApiKeys.find(entry.first) == next.brain.roomApiKeys.end()) {
                 roomChanges.emplace_back("brain.api.key." + entry.first, std::string());
             }

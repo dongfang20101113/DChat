@@ -147,6 +147,12 @@ const ReplyPolicy& EffectiveReply(const Config& config, const std::string& room)
     return config.reply;
 }
 
+std::string EffectiveModel(const Config& config, const std::string& room) {
+    for (const auto& pair : config.brain.roomApiModels) {
+        if (SameNick(pair.first, room) && !pair.second.empty()) return pair.second;
+    }
+    return config.brain.apiModel;
+}
 std::string BuildPrompt(const BrainConfig& config, const std::vector<std::string>& sendRoots,
                         const std::string& roomName, const std::string& roomId,
                         const std::string& nick, const std::string& text) {

@@ -42,6 +42,9 @@ bool ReplyAllowed(const ReplyPolicy& policy, const std::string& nick);
  */
 const ReplyPolicy& EffectiveReply(const Config& config, const std::string& room);
 
+/** 这个群用哪个模型：群里单独配过就用它，否则用全局默认。 */
+std::string EffectiveModel(const Config& config, const std::string& room);
+
 /** 按模板拼提示词：{room} / {roomId} / {nick} / {text} / {workdir} / {fileroots}。 */
 std::string BuildPrompt(const BrainConfig& config, const std::vector<std::string>& sendRoots,
                         const std::string& roomName, const std::string& roomId,

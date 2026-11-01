@@ -528,10 +528,35 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
       : '没有生效的补丁：headless 下没人能点"允许"，需要补丁才能让工具真的执行。';
     el('brainType').value = state.brainType || 'dsh';
     el('apiUrl').value = state.apiUrl || '';
-    // 模型用下拉：常见两个直接选，"其它"才出现输入框
+    // 模型用下拉：常见两个直接选，"其它"才出现输入框。
+    // 群页上这是**本群**的模型，所以多一个"跟随默认"选项（值空 = 不单独指定）。
     var knownModels = ['deepseek-chat', 'deepseek-reasoner'];
-    var model = state.apiModel || 'deepseek-chat';
-    if (knownModels.indexOf(model) >= 0) {
+    var model;
+    if (window.__ROOM__) {
+      var sel = el('apiModel');
+      var inherit = document.getElementById('modelInherit');
+      if (!inherit) {
+        inherit = document.createElement('option');
+        inherit.id = 'modelInherit';
+        inherit.value = '';
+        sel.insertBefore(inherit, sel.firstChild);
+      }
+      inherit.textContent = '跟随默认（' + (state.apiModel || 'deepseek-chat') + '）';
+      model = state.roomModel || '';
+      if (model === '') {
+        el('apiModel').value = '';
+        el('apiModelCustom').style.display = 'none';
+        el('apiModelCustom').value = '';
+      } else if (knownModels.indexOf(model) >= 0) {
+        el('apiModel').value = model;
+        el('apiModelCustom').style.display = 'none';
+        el('apiModelCustom').value = '';
+      } else {
+        el('apiModel').value = '__custom__';
+        el('apiModelCustom').style.display = '';
+        el('apiModelCustom').value = model;
+      }
+    } else if (knownModels.indexOf(model = state.apiModel || 'deepseek-chat') >= 0) {
       el('apiModel').value = model;
       el('apiModelCustom').style.display = 'none';
       el('apiModelCustom').value = '';
@@ -642,6 +667,9 @@ inline constexpr const char* kUiPage = R"HTML(<!DOCTYPE html>
       // 群页：名单是**这个群自己的**，用 roomReply* 提交，别动全局那份
       body.roomReplyMode = state.replyMode;
       body.roomReplyList = state.replyList;
+      // 模型也一样：本群的选择走 roomModel（空串 = 跟随默认），别改全局默认模型
+      body.roomModel = body.apiModel;
+      delete body.apiModel;
     } else {
       body.replyMode = state.replyMode;
       body.replyList = state.replyList;

@@ -310,6 +310,16 @@ bool ParseConfig(const std::string& text, Config* out, std::string* error) {
             config.brain.apiUrl = value;
         } else if (key == "brain.api.model") {
             config.brain.apiModel = value;
+        } else if (key.rfind("brain.api.model.", 0) == 0) {
+            // brain.api.model.<房间> = 模型名：这个群单独用另一个模型
+            const std::string room = key.substr(std::string("brain.api.model.").size());
+            if (room.empty()) return bad("房间 ID 不能为空");
+            const std::string model = Trim(value);
+            if (model.empty()) {
+                config.brain.roomApiModels.erase(room);
+            } else {
+                config.brain.roomApiModels[room] = model;
+            }
         } else if (key == "brain.api.key") {
             config.brain.apiKey = value;
         } else if (key == "brain.api.systemprompt") {
