@@ -518,7 +518,8 @@ public:
             case dchat::ChatMessage::Kind::FileOffer:
                 // 附件卡片：带 isVoice，页面据此画「▶ 播放」还是「⬇ 下载」
                 SendLine("FILEOFFER\t" + message.fileId + "\t" +
-                         (message.isVoice ? "1" : "0") + "\t" + message.text);
+                         (message.isVoice ? "1" : "0") + "\t" + message.text + "\t" +
+                         message.nick);
                 return;
             case dchat::ChatMessage::Kind::System:
             case dchat::ChatMessage::Kind::Notice:
@@ -924,6 +925,28 @@ const char* kIndexHtml = R"HTML(<!doctype html>
   button.ghost { background:#2f2f37; }
   footer { display:flex; gap:8px; padding:10px 16px; background:#232329; border-top:1px solid #33333a; }
   footer input { flex:1; }
+  /* ---- 输入框：可编辑区域 + 内嵌附件小卡片 ---- */
+  .composer { flex:1; min-height:36px; max-height:140px; overflow-y:auto; padding:8px 11px;
+              border-radius:8px; border:1px solid #3a3a42; background:#2a2a31; color:#e6e6e6;
+              outline:none; white-space:pre-wrap; word-break:break-word; line-height:1.5; }
+  .composer:empty::before { content:attr(data-placeholder); color:#7a7a85; pointer-events:none; }
+  .composer.off { opacity:.55; }
+  .chip { display:inline-flex; align-items:center; gap:6px; margin:0 3px; padding:2px 8px 2px 2px;
+          border-radius:8px; background:#1f3a5f; border:1px solid #2f6fed; font-size:13px;
+          vertical-align:middle; user-select:none; }
+  .chip img { width:40px; height:40px; object-fit:cover; border-radius:6px; display:block; }
+  .chip .nm { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* ---- 消息里的附件卡片：和客户端一样，点一下就下载 ---- */
+  .filecard { display:flex; align-items:center; gap:10px; margin:6px 0; padding:8px 10px;
+              background:#2a2a33; border:1px solid #3a3a44; border-radius:10px;
+              color:#e6e6e6; text-decoration:none; max-width:320px; }
+  .own .filecard { background:#24405f; border-color:#3b6ea8; }
+  .filecard:hover { border-color:#4a6ea8; }
+  .filecard .ico { width:34px; height:34px; flex:none; display:flex; align-items:center;
+                   justify-content:center; font-size:20px; }
+  .filecard .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .filecard .sz { color:#8a8a94; font-size:12px; }
+  .msg .inline-img { max-height:260px; }
   a { color:#7aa7ff; }
 </style></head><body>
 <header>
@@ -938,7 +961,8 @@ const char* kIndexHtml = R"HTML(<!doctype html>
 </header>
 <main><aside id="rooms"></aside><div id="log"></div></main>
 <footer>
-  <input id="input" placeholder="说点什么…（/help 看指令，/rooms 看会话，/get <id> 下载文件）" disabled>
+  <input id="input" class="composer" contenteditable="true"
+       data-placeholder="说点什么…（Enter 发送，Shift+Enter 换行；可拖入/粘贴图片和文件）">
   <button class="ghost" id="pick" disabled title="发文件（上限 __UPLOAD_MB__ MB）">📎</button>
   <button class="ghost" id="mic" disabled title="按住说话（点一下开始，再点一下发送）">🎤</button>
   <button id="send" disabled>发送</button>
@@ -1219,6 +1243,85 @@ function appendMessage(msg) {
   logEl.scrollTop = logEl.scrollHeight;
   return d;
 }
+
+/** 从 "📎 文件 名字 (1.2 MB)" 这种描述里拆出文件名和大小。 */
+function parseOfferText(text) {
+  let s = String(text || '').replace(/^\[[^\]]*\]\s*/, '');   // 去掉 "[房间名] " 前缀
+  s = s.replace(/^🎤\s*语音\s*/, '').replace(/^📎\s*文件\s*/, '');
+  const m = /^(.*?)\s*\(([^)]+)\)\s*$/.exec(s);
+  if (m) return { name: m[1], size: m[2] };
+  return { name: s, size: '' };
+}
+
+/**
+ * 附件消息：和客户端一样 —— 图片直接显示（点开大图），其它显示文件卡片，
+ * 整张卡片点一下就下载。
+ */
+function appendFileOffer(id, isVoice, text, nick) {
+  const info = parseOfferText(text);
+  const mine = (window.__MINE__ && nick && nick === window.__MINE__);
+  const isImage = !isVoice && /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(info.name);
+  const d = document.createElement('div');
+  d.className = 'row msg' + (mine ? ' own' : '');
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const n = document.createElement('span');
+  n.className = 'nick';
+  n.textContent = nick || '';
+  meta.appendChild(n);
+  const body = document.createElement('div');
+  body.className = 'body';
+  if (isVoice) {
+    const a = document.createElement('a');
+    a.className = 'filecard';
+    a.href = '#';
+    const ico = document.createElement('div'); ico.className = 'ico'; ico.textContent = '🎤';
+    const wrap = document.createElement('div');
+    const nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = '语音消息';
+    const sz = document.createElement('div'); sz.className = 'sz';
+    sz.textContent = (info.size ? info.size + ' · ' : '') + '点击播放';
+    wrap.appendChild(nm); wrap.appendChild(sz);
+    a.appendChild(ico); a.appendChild(wrap);
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      pendingPlay = id;
+      send('INPUT\t/get ' + id);
+    });
+    body.appendChild(a);
+  } else if (isImage) {
+    const img = document.createElement('img');
+    img.className = 'inline-img';
+    img.src = '/file/' + encodeURIComponent(id);
+    img.alt = info.name;
+    img.title = info.name + '（点开看大图）';
+    img.addEventListener('click', () => window.open(img.src, '_blank'));
+    body.appendChild(img);
+    const a = document.createElement('a');
+    a.className = 'inline-file';
+    a.href = '/file/' + encodeURIComponent(id);
+    a.textContent = '⬇ ' + info.name + (info.size ? '（' + info.size + '）' : '');
+    body.appendChild(a);
+  } else {
+    const a = document.createElement('a');
+    a.className = 'filecard';
+    a.href = '/file/' + encodeURIComponent(id);
+    a.target = '_blank';
+    a.rel = 'noopener';
+    const ico = document.createElement('div'); ico.className = 'ico'; ico.textContent = '📎';
+    const wrap = document.createElement('div');
+    const nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = info.name;
+    const sz = document.createElement('div'); sz.className = 'sz';
+    sz.textContent = (info.size ? info.size + ' · ' : '') + '点击下载';
+    wrap.appendChild(nm); wrap.appendChild(sz);
+    a.appendChild(ico); a.appendChild(wrap);
+    body.appendChild(a);
+  }
+  d.appendChild(meta);
+  d.appendChild(body);
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+  return d;
+}
 function setState(text, on) {
   stateEl.textContent = text;
   stateEl.className = on ? 'on' : '';
@@ -1419,7 +1522,7 @@ function connect(host, user, pass, reg) {
         loggedIn = (f[1] === '已登录');
         if (loggedIn) {
           window.__MINE__ = f[2] || '';   // 记下自己的昵称，在线名单里要标「这是我」
-          inputEl.disabled = false; sendEl.disabled = false; pickEl.disabled = false;
+          setComposerEnabled(true); sendEl.disabled = false; pickEl.disabled = false;
           const micEl = document.getElementById('mic');
           if (micEl) micEl.disabled = false;
           inputEl.focus();
@@ -1436,7 +1539,7 @@ function connect(host, user, pass, reg) {
   };
   ws.onclose = () => {
     setState('已断开', false);
-    inputEl.disabled = true; sendEl.disabled = true; pickEl.disabled = true;
+    setComposerEnabled(false); sendEl.disabled = true; pickEl.disabled = true;
     // **自动重连**：只要还留着账号就退避重试（2s→4s→8s…最多 30s）。
     // 以前没有这一步，网络一抖就得手动刷新页面。
     // 注意 credentials 在登录被拒时已经被清成 null —— 那种情况不该重连。
@@ -1515,14 +1618,47 @@ document.getElementById('loginForm').addEventListener('submit', (e) => {
   connect(saved.host, saved.user, saved.pass, false);
 })();
 
+/**
+ * 把输入框里的内容读成一条消息文本。
+ *
+ * 输入框是 contenteditable：文字是文本节点，图片/文件是**不可编辑的小卡片**
+ * （contenteditable=false，退格键能整块删掉），这里把它们还原成 `[[file:ID|名字]]`
+ * 标记 —— 渲染消息时又变回图片/文件卡片。
+ */
+function composerText() {
+  const parts = [];
+  const walk = (node) => {
+    if (node.nodeType === 3) { parts.push(node.textContent); return; }   // 文本节点
+    if (node.nodeType !== 1) return;
+    if (node.classList && node.classList.contains('chip')) {
+      parts.push('[[file:' + node.dataset.id + '|' + encodeURIComponent(node.dataset.name) + ']]');
+      return;
+    }
+    if (node.tagName === 'BR') { parts.push('\n'); return; }
+    const block = node.tagName === 'DIV' || node.tagName === 'P';
+    if (block && parts.length) parts.push('\n');
+    node.childNodes.forEach(walk);
+  };
+  inputEl.childNodes.forEach(walk);
+  return parts.join('').replace(/\u00a0/g, ' ').trim();
+}
+
+function clearComposer() { inputEl.innerHTML = ''; }
+
+/** 输入框能不能用（contenteditable 用开关，不是 disabled 属性）。 */
+function setComposerEnabled(on) {
+  inputEl.setAttribute('contenteditable', on ? 'true' : 'false');
+  inputEl.classList.toggle('off', !on);
+}
+
 function submit() {
-  const text = inputEl.value.trim();
+  const text = composerText();
   if (!text) return;
   // 在聊天框里直接敲 /cp <新密码>：和「账号」页签走同一条路 —— 先记下新密码，
   // 等服务端回「密码已修改」再把本机记住的那一份换掉。
   notePasswordChange(text);
   send('INPUT\t' + text);
-  inputEl.value = '';
+  clearComposer();
 }
 const roomsEl = document.getElementById('rooms');
 const whereEl = document.getElementById('where');
@@ -1568,7 +1704,31 @@ document.getElementById('menu').addEventListener('click', () => {
 });
 
 sendEl.addEventListener('click', submit);
-inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+// Enter 发送，Shift+Enter 换行（输入框是 contenteditable，不拦的话回车会插 <div>）
+inputEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    submit();
+  }
+});
+// 粘贴：文件/截图走上传；纯文字按纯文本插进来（别把网页格式带进消息）
+inputEl.addEventListener('paste', (e) => {
+  if (!e.clipboardData) return;
+  const files = [...(e.clipboardData.items || [])]
+    .filter((it) => it.kind === 'file')
+    .map((it) => it.getAsFile())
+    .filter(Boolean);
+  if (files.length) {
+    e.preventDefault();
+    for (const f of files) uploadOne(f);
+    return;
+  }
+  const text = e.clipboardData.getData('text/plain');
+  if (text) {
+    e.preventDefault();
+    document.execCommand('insertText', false, text);
+  }
+});
 
 // 发文件：读成 Base64 一帧发过去。网关那边解码写临时文件再走 /send。
 // 上限由 chatrule 的 webuploadmb 决定（以前是写死的 8 MB）——
@@ -1590,6 +1750,68 @@ function insertAtCaret(text) {
   const pos = start + text.length;
   el.focus();
   try { el.setSelectionRange(pos, pos); } catch (e) { /* 老浏览器忽略 */ }
+}
+
+/** 把光标挪到可编辑区末尾。 */
+function caretToEnd() {
+  inputEl.focus();
+  const range = document.createRange();
+  range.selectNodeContents(inputEl);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+/** 在光标处插入一个节点（附件卡片）。 */
+function insertNodeAtCaret(node) {
+  inputEl.focus();
+  const sel = window.getSelection();
+  let range;
+  if (sel && sel.rangeCount && inputEl.contains(sel.anchorNode)) {
+    range = sel.getRangeAt(0);
+    range.deleteContents();
+  } else {
+    range = document.createRange();
+    range.selectNodeContents(inputEl);
+    range.collapse(false);
+  }
+  range.insertNode(node);
+  // 卡片后面留一个可编辑的空位，否则光标会贴在卡片上不好继续打字
+  const space = document.createTextNode('\u00a0');
+  node.parentNode.insertBefore(space, node.nextSibling);
+  range.setStartAfter(space);
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+/**
+ * 往输入框里放一个附件卡片：图片显示缩略图，其它显示 📎 + 名字。
+ * 卡片是 contenteditable=false，所以**退格键能整块删掉**。
+ */
+function insertAttachmentChip(id, name) {
+  const chip = document.createElement('span');
+  chip.className = 'chip';
+  chip.contentEditable = 'false';
+  chip.dataset.id = id;
+  chip.dataset.name = name;
+  chip.title = name + '（退格键可以删掉）';
+  if (/\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name)) {
+    const img = document.createElement('img');
+    img.src = '/file/' + encodeURIComponent(id);
+    img.alt = name;
+    chip.appendChild(img);
+  } else {
+    const ico = document.createElement('span');
+    ico.textContent = '📎';
+    chip.appendChild(ico);
+  }
+  const label = document.createElement('span');
+  label.className = 'nm';
+  label.textContent = name;
+  chip.appendChild(label);
+  insertNodeAtCaret(chip);
 }
 
 /** 上传一个文件（拖进来/粘贴/选择文件都走这里），成功后由 FILEOFFER 插标记。 */
@@ -2029,26 +2251,13 @@ window.__EXTRA_FRAME__ = function (f) {
       // 把标记插到光标处（消息正文里任意位置都能有一张图/一个文件）。
       if (uploadQueue.length) {
         const mine = uploadQueue.shift();
-        insertAtCaret('[[file:' + f[1] + '|' + encodeURIComponent(mine.name) + ']]');
+        insertAttachmentChip(f[1], mine.name);
         add('sys', '已插入 ' + mine.name + '（点发送即可）');
         break;
       }
       // 附件卡片：语音给「▶ 播放」，普通文件给下载
-      const d = document.createElement('div'); d.className = 'row sys';
-      const a = document.createElement('a');
-      a.href = '#';
-      a.textContent = (f[2] === '1' ? '▶ 播放语音 ' : '⬇ 下载文件 ') + f[1] +
-                      (f[3] ? '（' + f[3] + '）' : '');
-      a.addEventListener('click', (e) => {
-        e.preventDefault();
-        pendingPlay = (f[2] === '1' ? f[1] : '');
-        send('INPUT\t/get ' + f[1]);
-        if (f[2] !== '1') add('sys', '正在取 ' + f[1] + '，取好后点这里下载');
-      });
-      d.appendChild(a);
-      const logEl = document.getElementById('log');
-      logEl.appendChild(d);
-      logEl.scrollTop = logEl.scrollHeight;
+      // 别人发的附件：画成和客户端一样的卡片，点一下就下载
+      appendFileOffer(f[1], f[2] === '1', f[3] || '', f[4] || '');
       break;
     }
     case 'FILE': {

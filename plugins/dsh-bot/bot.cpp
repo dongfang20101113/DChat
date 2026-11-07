@@ -320,6 +320,12 @@ private:
     std::string CookieToken(const HttpRequest& request) const;
     bool LoadSession(const HttpRequest& request, UiSession* out);
     void DropSession(const HttpRequest& request);
+    /** 每个群最近聊过什么（给模型当上下文用）。 */
+    static constexpr std::size_t kRoomChatterLines = 30;
+    std::map<std::string, std::vector<std::string>> roomChatter_;
+    mutable std::mutex chatterMutex_;
+    void RecordChatter(const std::string& room, const std::string& nick, const std::string& text);
+    std::string ChatterContext(const std::string& room) const;
     /** 向服务器要一次最新的群成员表（发 ROOM <群>，服务器会回 RMEMBERS）。 */
     void RefreshRoomRoles();
     /**
@@ -928,6 +934,25 @@ void Bot::HandleRules(const std::vector<std::string>& words) {
     }
 }
 
+/** 记一句群聊（每个群留最近 kRoomChatterLines 条，长消息截断）。 */
+void Bot::RecordChatter(const std::string& room, const std::string& nick, const std::string& text) {
+    std::string line = nick.empty() ? text : (nick + "：" + text);
+    if (line.size() > 300) line = line.substr(0, 300) + "…";
+    std::lock_guard<std::mutex> lock(chatterMutex_);
+    std::vector<std::string>& list = roomChatter_[room];
+    list.push_back(line);
+    while (list.size() > kRoomChatterLines) list.erase(list.begin());
+}
+
+/** 取某个群的最近群聊记录（拼成给模型看的几行）。 */
+std::string Bot::ChatterContext(const std::string& room) const {
+    std::lock_guard<std::mutex> lock(chatterMutex_);
+    const auto it = roomChatter_.find(room);
+    if (it == roomChatter_.end() || it->second.empty()) return std::string();
+    std::string out = "【这个群最近的聊天记录（旧 → 新）】\n";
+    for (const std::string& line : it->second) out += "  " + line + "\n";
+    return out;
+}
 void Bot::HandleRoomList(const std::vector<std::string>& words) {
     // ROOMLIST <id> <kind> <名字B64> <成员数> <最大人数> <我的角色>
     if (words.size() < 3) return;
@@ -973,6 +998,9 @@ void Bot::HandleChat(const std::string& room, const std::string& nick, const std
     }
 
     const std::string text = UnescapeText(rawText);
+    // 先记进"最近群聊"，不管这条是不是在叫它 —— 模型要能看懂上下文
+    // （别人刚才聊了什么、它自己上一条回答是什么）。
+    RecordChatter(room, nick, text);
     const TriggerMatch match = MatchTrigger(text, Cfg()->nick, Cfg()->trigger);
     if (!match.matched) return;
 
@@ -1474,8 +1502,10 @@ void Bot::RunApiJob(const Job& job) {
         const auto it = histories_.find(job.room);
         if (it != histories_.end()) history = it->second;
     }
+    // 把最近群聊一起给它 —— 这样它能看懂"刚才在聊什么"，也能接上自己上一条回答
+    const std::string chatter = ChatterContext(job.room);
     const std::string userText =
-        "「" + job.roomName + "」里的 " + job.nick + " 说：" + job.userText;
+        chatter + "【现在】" + "「" + job.roomName + "」里的 " + job.nick + " 说：" + job.userText;
     const ApiTurnResult turn = RunApiTurn(options, history, userText,
                                           [&](const std::string& line) { log_.Debug(line); });
     if (!turn.ok) {
