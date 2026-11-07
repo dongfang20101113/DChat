@@ -883,7 +883,7 @@ const char* kIndexHtml = R"HTML(<!doctype html>
     main { min-height:0; }
     #log { padding:10px 12px; }
     footer { padding:8px 10px; gap:6px; padding-bottom:calc(8px + env(safe-area-inset-bottom)); }
-    footer input, footer button { font-size:16px; }  /* ≥16px 才不会让 iOS 自动放大 */
+    footer input, footer button, .composer { font-size:16px; }  /* ≥16px 才不会让 iOS 自动放大 */
     .room { padding:12px 14px; }  /* 触摸目标大一点 */
   }
   /* ---- 消息气泡：自己的靠右（蓝），别人的靠左（深色）---- */
@@ -961,8 +961,8 @@ const char* kIndexHtml = R"HTML(<!doctype html>
 </header>
 <main><aside id="rooms"></aside><div id="log"></div></main>
 <footer>
-  <input id="input" class="composer" contenteditable="true"
-       data-placeholder="说点什么…（Enter 发送，Shift+Enter 换行；可拖入/粘贴图片和文件）">
+  <div id="input" class="composer" contenteditable="true"
+       data-placeholder="说点什么…（Enter 发送，Shift+Enter 换行；可拖入/粘贴图片和文件）"></div>
   <button class="ghost" id="pick" disabled title="发文件（上限 __UPLOAD_MB__ MB）">📎</button>
   <button class="ghost" id="mic" disabled title="按住说话（点一下开始，再点一下发送）">🎤</button>
   <button id="send" disabled>发送</button>
