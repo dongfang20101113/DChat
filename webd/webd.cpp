@@ -1,4 +1,4 @@
-// dchat 网页版网关（dchat-webd）
+﻿// dchat 网页版网关（dchat-webd）
 //
 // ## 为什么必须有这一层
 //
@@ -901,6 +901,9 @@ const char* kIndexHtml = R"HTML(<!doctype html>
   .at { color:#e8c14a; font-weight:600; }
   .inline-img { display:block; max-width:100%; max-height:320px; border-radius:8px;
                 margin:6px 0; cursor:zoom-in; }
+  /* 还没取到图：给一块灰底占位（不显示文件名）；取不到就干脆不显示 */
+  .inline-img.loading { width:180px; height:120px; background:#2a2a33; cursor:progress; }
+  .inline-img.failed { display:none; }
   .inline-file { display:inline-flex; align-items:center; gap:6px; background:#2a2a33;
                  border:1px solid #3a3a44; border-radius:8px; padding:5px 9px; margin:4px 0;
                  color:#cfe0ff; text-decoration:none; }
@@ -1152,20 +1155,42 @@ function splitColorSegments(text, maxSpans) {
   return out;
 }
 
+/** 正在等 /get 的图片：附件 id -> [img 元素] */
+const imageWaiters = new Map();
+/** 已经发过 /get 的附件 id（同一条消息只请求一次） */
+const imageRequested = new Set();
+
 /**
- * 给 <img> 接上"按需拉取"：/file/<id> 只有网关本地已经下载过那个附件才回 200，
- * 否则 404。所以图片加载失败时顺手发一条 /get（网关去服务器取），过一会儿重试。
+ * 图片预览的取图流程：
+ *   /file/<id> 只在「网关本机已经下载过这个附件」时才回 200，否则 404。
+ *   所以这里先发一条 /get（让网关去服务器取），等 FILE 帧回来再把 src 指过去。
+ *   图片一律不带文件名（alt 留空），加载中是一块灰底占位，失败就不显示。
  */
 function wireImage(img, id) {
-  let tries = 0;
-  const load = () => { img.src = '/file/' + encodeURIComponent(id) + (tries ? ('?r=' + tries) : ''); };
-  img.onerror = () => {
-    if (tries >= 2) { img.onerror = null; return; }
-    tries++;
+  img.alt = '';
+  img.classList.add('loading');
+  const list = imageWaiters.get(id) || [];
+  list.push(img);
+  imageWaiters.set(id, list);
+  if (!imageRequested.has(id)) {
+    imageRequested.add(id);
     send('INPUT\t/get ' + id);
-    setTimeout(load, 800);
-  };
-  load();
+  }
+  setTimeout(() => {
+    if (img.classList.contains('loading')) img.classList.add('failed');
+  }, 12000);
+}
+
+/** FILE 帧到了：把等这张图的 <img> 一次性点亮。 */
+function revealImages(id) {
+  const list = imageWaiters.get(id);
+  if (!list || !list.length) return false;
+  imageWaiters.delete(id);
+  for (const img of list) {
+    img.classList.remove('loading', 'failed');
+    img.src = '/file/' + encodeURIComponent(id) + '?t=' + Date.now();
+  }
+  return true;
 }
 /** 把 @某人 画成金色（如果这一段本身设了颜色，就用那段的颜色）。 */
 function appendTextWithAt(host, text, color) {
@@ -1220,7 +1245,7 @@ function renderRichBody(host, text) {
       const img = document.createElement('img');
       img.className = 'inline-img';
       wireImage(img, id);
-      img.alt = name;
+      img.alt = '';
       img.title = name + '（点开看大图）';
       img.addEventListener('click', () => window.open(img.src, '_blank'));
       host.appendChild(img);
@@ -1308,7 +1333,7 @@ function appendFileOffer(id, isVoice, text, nick) {
     const img = document.createElement('img');
     img.className = 'inline-img';
     wireImage(img, id);
-    img.alt = info.name;
+    img.alt = '';
     img.title = info.name + '（点开看大图）';
     img.addEventListener('click', () => window.open(img.src, '_blank'));
     body.appendChild(img);
@@ -1825,7 +1850,7 @@ function stageFile(f) {
   if (/^image\//.test(f.type || '') || /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name)) {
     const img = document.createElement('img');
     img.src = URL.createObjectURL(f);
-    img.alt = name;
+    img.alt = '';
     chip.appendChild(img);
   } else {
     const ico = document.createElement('span');
@@ -1921,7 +1946,7 @@ function insertAttachmentChip(id, name) {
   if (/\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name)) {
     const img = document.createElement('img');
     wireImage(img, id);
-    img.alt = name;
+    img.alt = '';
     chip.appendChild(img);
   } else {
     const ico = document.createElement('span');
@@ -2370,6 +2395,8 @@ window.__EXTRA_FRAME__ = function (f) {
         document.getElementById('log').appendChild(d);
         pendingPlay = '';
       }
+      // 这是在等预览图的附件：把图片点亮，不要再插一行下载链接
+      revealImages(f[1]);
       break;
     }
   }
