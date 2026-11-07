@@ -1296,11 +1296,7 @@ function appendFileOffer(id, isVoice, text, nick) {
     img.title = info.name + '（点开看大图）';
     img.addEventListener('click', () => window.open(img.src, '_blank'));
     body.appendChild(img);
-    const a = document.createElement('a');
-    a.className = 'inline-file';
-    a.href = '/file/' + encodeURIComponent(id);
-    a.textContent = '⬇ ' + info.name + (info.size ? '（' + info.size + '）' : '');
-    body.appendChild(a);
+    // 图片就长在气泡里，不再额外挂一行"下载"链接 —— 点图看大图、右键可另存
   } else {
     const a = document.createElement('a');
     a.className = 'filecard';
