@@ -1719,7 +1719,10 @@ inputEl.addEventListener('paste', (e) => {
     .map((it) => it.getAsFile())
     .filter(Boolean);
   if (files.length) {
+    // 页面底下还有一个 document 级的 paste 监听（整页粘贴用）。不 stopPropagation
+    // 的话同一张图会被上传两次 —— 用户看到的就是"传图片之后一堆解码失败"。
     e.preventDefault();
+    e.stopPropagation();
     for (const f of files) uploadOne(f);
     return;
   }
@@ -3062,6 +3065,9 @@ void ServeConnection(dchat::sock::Handle handle) {
 
         // ---- WebSocket 帧循环：浏览器发来的帧一律带掩码（RFC 6455 要求） ----
         std::string pending;
+        // 跨帧拼接用：浏览器把大消息拆成多帧时，要等 FIN 才算收完一条
+        std::string frameMessage;
+        bool frameInMessage = false;
         char buffer[4096];
         int idleTimeouts = 0;
         while (!session->closed()) {
@@ -3128,7 +3134,25 @@ void ServeConnection(dchat::sock::Handle handle) {
                     SendAll(handle, pong.data(), pong.size());
                     continue;
                 }
-                if (opcode == 0x1 || opcode == 0x0) session->OnBrowserLine(payload);            }
+                if (opcode == 0x1 || opcode == 0x0) {
+                    // ⚠️ 浏览器发大包（几 MB 的上传）时会**拆成多帧**：
+                    // 第一帧 opcode=1，后面都是 opcode=0（continuation），FIN 位才表示结束。
+                    // 以前每帧都当成一条独立命令，于是 base64 被切成一堆碎片：
+                    // 网关报「上传内容解码失败」，服务端收到一堆「不认识的消息」。
+                    if (opcode == 0x1) {
+                        frameMessage = payload;
+                    } else if (frameInMessage) {
+                        frameMessage += payload;
+                    }
+                    frameInMessage = (opcode == 0x1) || frameInMessage;
+                    if ((b0 & 0x80) != 0) {  // FIN：整条消息收齐了
+                        session->OnBrowserLine(frameMessage);
+                        frameMessage.clear();
+                        frameInMessage = false;
+                    }
+                    continue;
+                }
+            }   // while (pending.size() >= 2)
         }
         session->Close();
         {
