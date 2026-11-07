@@ -936,6 +936,7 @@ const char* kIndexHtml = R"HTML(<!doctype html>
           vertical-align:middle; user-select:none; max-width:240px; white-space:nowrap; }
   .chip img { width:40px; height:40px; flex:none; object-fit:cover; border-radius:6px; display:block; }
   .chip .nm { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chip .ico { font-size:18px; padding:0 4px; }
   /* ---- 消息里的附件卡片：和客户端一样，点一下就下载 ---- */
   .filecard { display:flex; align-items:center; gap:10px; margin:6px 0; padding:8px 10px;
               background:#2a2a33; border:1px solid #3a3a44; border-radius:10px;
@@ -1477,18 +1478,16 @@ function connect(host, user, pass, reg) {
         break;
       case 'SYS': {
         // 上传完成时，服务端只会给**上传者自己**发这条提示（附件卡片推给的是房间里
-        // 其他成员），所以"把图片放回输入框"要在这儿认领。
-        if (uploadQueue.length) {
+        // 其他成员），所以这次上传的附件号要在这儿认领，交回给 submit 等的 Promise。
+        if (uploadWaiters.length) {
           // 两种提示都要认：文件已上传（id=F7），可以 /get F7 下载 和
           // 📎 文件 xxx (15.7 KB) id=F7 （/get F7 下载）
           const notice = f[1] || '';
           const hit = (notice.indexOf('文件') >= 0 || notice.indexOf('附件') >= 0)
             ? /id=([A-Za-z0-9_-]+)/.exec(notice) : null;
           if (hit) {
-            const mine = uploadQueue.shift();
-            insertAttachmentChip(hit[1], mine.name);
-            add('sys', '已插入 ' + mine.name + '（退格键可以删掉）');
-            break;
+            const waiter = uploadWaiters.shift();
+            if (waiter) waiter.fin(hit[1]);
           }
         }
         // 改密码成功：把本机记住的密码换成新的。
@@ -1657,7 +1656,8 @@ function composerText() {
     if (node.nodeType === 3) { parts.push(node.textContent); return; }   // 文本节点
     if (node.nodeType !== 1) return;
     if (node.classList && node.classList.contains('chip')) {
-      parts.push('[[file:' + node.dataset.id + '|' + encodeURIComponent(node.dataset.name) + ']]');
+      const prefix = node.dataset.key ? ('staged:' + node.dataset.key) : node.dataset.id;
+      parts.push('[[file:' + prefix + '|' + encodeURIComponent(node.dataset.name) + ']]');
       return;
     }
     if (node.tagName === 'BR') { parts.push('\n'); return; }
@@ -1677,9 +1677,38 @@ function setComposerEnabled(on) {
   inputEl.classList.toggle('off', !on);
 }
 
-function submit() {
-  const text = composerText();
-  if (!text) return;
+let sending = false;
+
+/**
+ * 发送：附件**到这里才上传**（放进输入框时只是暂存），拿到附件号后
+ * 把消息里的占位标记换成真实 id，再把整条消息发出去。
+ */
+async function submit() {
+  if (sending) return;
+  const raw = composerText();
+  if (!raw) return;
+  let text = raw;
+  const tokens = [...raw.matchAll(/\[\[file:staged:([A-Za-z0-9]+)\|([^\]]*)\]\]/g)];
+  if (tokens.length) {
+    sending = true;
+    try {
+      for (const token of tokens) {
+        const info = stagedFiles.get(token[1]);
+        if (!info) { text = text.replace(token[0], ''); continue; }
+        const id = await uploadStaged(info);
+        if (!id) {
+          add('err', '上传失败：' + info.name + '，这条消息没有发出去');
+          return;
+        }
+        text = text.replace(token[0], '[[file:' + id + '|' + token[2] + ']]');
+        stagedFiles.delete(token[1]);
+      }
+    } finally {
+      sending = false;
+    }
+    text = text.trim();
+    if (!text) return;
+  }
   // 在聊天框里直接敲 /cp <新密码>：和「账号」页签走同一条路 —— 先记下新密码，
   // 等服务端回「密码已修改」再把本机记住的那一份换掉。
   notePasswordChange(text);
@@ -1749,7 +1778,7 @@ inputEl.addEventListener('paste', (e) => {
     // 的话同一张图会被上传两次 —— 用户看到的就是"传图片之后一堆解码失败"。
     e.preventDefault();
     e.stopPropagation();
-    for (const f of files) uploadOne(f);
+    for (const f of files) stageFile(f);
     return;
   }
   const text = e.clipboardData.getData('text/plain');
@@ -1766,8 +1795,71 @@ inputEl.addEventListener('paste', (e) => {
 const pickEl = document.getElementById('pick');
 const fileEl = document.getElementById('file');
 
-/** 等待服务器回附件号的挂起上传（FIFO）：回来一个就认领一个。 */
-let uploadQueue = [];
+/** 等服务器回附件号的挂起上传（FIFO）。上传改成"按发送才上传"之后，
+ *  这里等的是 submit 里那次上传的结果。 */
+let uploadWaiters = [];
+
+/** 已放进输入框、但还没上传的附件：key -> {file, name}。 */
+const stagedFiles = new Map();
+let stageSeq = 0;
+
+/**
+ * 把文件先"放进输入框"（不发送）。图片用 object URL 直接预览 ——
+ * 不经过服务器，所以不会有裂图；文件名只在悬停提示里出现。
+ */
+function stageFile(f) {
+  if (!f) return;
+  if (f.size > UPLOAD_MB * 1024 * 1024) {
+    add('err', '网页版单文件上限 ' + UPLOAD_MB + ' MB（服务器设置），更大的文件请用桌面客户端');
+    return;
+  }
+  const key = 'L' + (++stageSeq);
+  const name = f.name || 'file';
+  stagedFiles.set(key, { file: f, name: name });
+  const chip = document.createElement('span');
+  chip.className = 'chip';
+  chip.contentEditable = 'false';
+  chip.dataset.key = key;
+  chip.dataset.name = name;
+  chip.title = name + '（退格键可以删掉）';
+  if (/^image\//.test(f.type || '') || /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name)) {
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(f);
+    img.alt = name;
+    chip.appendChild(img);
+  } else {
+    const ico = document.createElement('span');
+    ico.className = 'ico';
+    ico.textContent = '📎';
+    chip.appendChild(ico);
+  }
+  inputEl.appendChild(chip);
+  inputEl.appendChild(document.createTextNode('\u00a0'));
+  caretToEnd();
+  add('sys', '已放入附件，按发送时才上传');
+}
+
+/** 真正把暂存的附件发给服务器，等它回附件号（id）。 */
+function uploadStaged(info) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const waiter = { name: info.name, fin: (id) => { if (!settled) { settled = true; resolve(id); } } };
+    uploadWaiters.push(waiter);
+    setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const at = uploadWaiters.indexOf(waiter);
+      if (at >= 0) uploadWaiters.splice(at, 1);
+      resolve(null);
+    }, 25000);
+    const reader = new FileReader();
+    reader.onload = () => {
+      send('UPLOAD\t' + info.name + '\t' + (String(reader.result).split(',')[1] || ''));
+    };
+    reader.onerror = () => waiter.fin(null);
+    reader.readAsDataURL(info.file);
+  });
+}
 
 /** 在输入框光标处插入一段文字（附件标记就是这么进去的）。 */
 function insertAtCaret(text) {
@@ -1846,25 +1938,9 @@ function insertAttachmentChip(id, name) {
   caretToEnd();
 }
 
-/** 上传一个文件（拖进来/粘贴/选择文件都走这里），成功后由 FILEOFFER 插标记。 */
-function uploadOne(f) {
-  if (!f) return;
-  if (f.size > UPLOAD_MB * 1024 * 1024) {
-    add('err', '网页版单文件上限 ' + UPLOAD_MB + ' MB（服务器设置），更大的文件请用桌面客户端');
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = () => {
-    uploadQueue.push({name: f.name || 'file'});
-    send('UPLOAD\t' + (f.name || 'file') + '\t' + (String(reader.result).split(',')[1] || ''));
-    add('sys', '正在上传 ' + (f.name || 'file') + ' …');
-  };
-  reader.readAsDataURL(f);
-}
-
 pickEl.addEventListener('click', () => fileEl.click());
 fileEl.addEventListener('change', () => {
-  for (const f of fileEl.files) uploadOne(f);
+  for (const f of fileEl.files) stageFile(f);
   fileEl.value = '';
 });
 
@@ -1891,7 +1967,7 @@ document.addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
   document.body.classList.remove('dragging');
-  for (const f of files) uploadOne(f);
+  for (const f of files) stageFile(f);
 });
 
 // ---- 粘贴：截图/图片直接粘进输入框 ----
@@ -1903,7 +1979,7 @@ document.addEventListener('paste', (e) => {
     .filter(Boolean);
   if (!files.length) return;      // 纯文字照旧粘
   e.preventDefault();
-  for (const f of files) uploadOne(f);
+  for (const f of files) stageFile(f);
 });
 </script>
 <!-- ==================== 房间面板 / 语音 / 指令面板 ==================== -->
@@ -2279,16 +2355,7 @@ window.__EXTRA_FRAME__ = function (f) {
       if (pendingReqs) { renderPending(pendingReqs); pendingReqs = null; }
       break;
     case 'FILEOFFER': {
-      // 自己刚拖进来/粘贴上来的文件：服务器回来的第一个附件就是它，
-      // 把标记插到光标处（消息正文里任意位置都能有一张图/一个文件）。
-      if (uploadQueue.length) {
-        const mine = uploadQueue.shift();
-        insertAttachmentChip(f[1], mine.name);
-        add('sys', '已插入 ' + mine.name + '（点发送即可）');
-        break;
-      }
-      // 附件卡片：语音给「▶ 播放」，普通文件给下载
-      // 别人发的附件：画成和客户端一样的卡片，点一下就下载
+      // 别人发的附件：画成和客户端一样的卡片（图片直接显示、文件点一下就下载）
       appendFileOffer(f[1], f[2] === '1', f[3] || '', f[4] || '');
       break;
     }
