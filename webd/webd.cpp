@@ -1461,6 +1461,21 @@ function connect(host, user, pass, reg) {
         }
         break;
       case 'SYS': {
+        // 上传完成时，服务端只会给**上传者自己**发这条提示（附件卡片推给的是房间里
+        // 其他成员），所以"把图片放回输入框"要在这儿认领。
+        if (uploadQueue.length) {
+          // 两种提示都要认：文件已上传（id=F7），可以 /get F7 下载 和
+          // 📎 文件 xxx (15.7 KB) id=F7 （/get F7 下载）
+          const notice = f[1] || '';
+          const hit = (notice.indexOf('文件') >= 0 || notice.indexOf('附件') >= 0)
+            ? /id=([A-Za-z0-9_-]+)/.exec(notice) : null;
+          if (hit) {
+            const mine = uploadQueue.shift();
+            insertAttachmentChip(hit[1], mine.name);
+            add('sys', '已插入 ' + mine.name + '（退格键可以删掉）');
+            break;
+          }
+        }
         // 改密码成功：把本机记住的密码换成新的。
         // 不换的话下次自动登录会拿旧密码去登，用户看到的只是「口令不对」，
         // 完全想不到是自己刚才改过密码。没记过新密码（比如在别的客户端改的）
@@ -1810,7 +1825,10 @@ function insertAttachmentChip(id, name) {
   label.className = 'nm';
   label.textContent = name;
   chip.appendChild(label);
-  insertNodeAtCaret(chip);
+  // 直接接到输入框末尾：比"按光标插入"稳 —— 光标在别处（甚至没聚焦）也不会把卡片塞丢
+  inputEl.appendChild(chip);
+  inputEl.appendChild(document.createTextNode('\u00a0'));
+  caretToEnd();
 }
 
 /** 上传一个文件（拖进来/粘贴/选择文件都走这里），成功后由 FILEOFFER 插标记。 */
