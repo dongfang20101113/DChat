@@ -933,9 +933,9 @@ const char* kIndexHtml = R"HTML(<!doctype html>
   .composer.off { opacity:.55; }
   .chip { display:inline-flex; align-items:center; gap:6px; margin:0 3px; padding:2px 8px 2px 2px;
           border-radius:8px; background:#1f3a5f; border:1px solid #2f6fed; font-size:13px;
-          vertical-align:middle; user-select:none; }
-  .chip img { width:40px; height:40px; object-fit:cover; border-radius:6px; display:block; }
-  .chip .nm { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+          vertical-align:middle; user-select:none; max-width:240px; white-space:nowrap; }
+  .chip img { width:40px; height:40px; flex:none; object-fit:cover; border-radius:6px; display:block; }
+  .chip .nm { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   /* ---- 消息里的附件卡片：和客户端一样，点一下就下载 ---- */
   .filecard { display:flex; align-items:center; gap:10px; margin:6px 0; padding:8px 10px;
               background:#2a2a33; border:1px solid #3a3a44; border-radius:10px;
@@ -1151,6 +1151,21 @@ function splitColorSegments(text, maxSpans) {
   return out;
 }
 
+/**
+ * 给 <img> 接上"按需拉取"：/file/<id> 只有网关本地已经下载过那个附件才回 200，
+ * 否则 404。所以图片加载失败时顺手发一条 /get（网关去服务器取），过一会儿重试。
+ */
+function wireImage(img, id) {
+  let tries = 0;
+  const load = () => { img.src = '/file/' + encodeURIComponent(id) + (tries ? ('?r=' + tries) : ''); };
+  img.onerror = () => {
+    if (tries >= 2) { img.onerror = null; return; }
+    tries++;
+    send('INPUT\t/get ' + id);
+    setTimeout(load, 800);
+  };
+  load();
+}
 /** 把 @某人 画成金色（如果这一段本身设了颜色，就用那段的颜色）。 */
 function appendTextWithAt(host, text, color) {
   const wrap = (node) => {
@@ -1203,7 +1218,7 @@ function renderRichBody(host, text) {
     if (IMG_NAME_RE.test(name) || IMG_NAME_RE.test(id)) {
       const img = document.createElement('img');
       img.className = 'inline-img';
-      img.src = '/file/' + encodeURIComponent(id);
+      wireImage(img, id);
       img.alt = name;
       img.title = name + '（点开看大图）';
       img.addEventListener('click', () => window.open(img.src, '_blank'));
@@ -1291,7 +1306,7 @@ function appendFileOffer(id, isVoice, text, nick) {
   } else if (isImage) {
     const img = document.createElement('img');
     img.className = 'inline-img';
-    img.src = '/file/' + encodeURIComponent(id);
+    wireImage(img, id);
     img.alt = info.name;
     img.title = info.name + '（点开看大图）';
     img.addEventListener('click', () => window.open(img.src, '_blank'));
@@ -1813,7 +1828,7 @@ function insertAttachmentChip(id, name) {
   chip.title = name + '（退格键可以删掉）';
   if (/\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name)) {
     const img = document.createElement('img');
-    img.src = '/file/' + encodeURIComponent(id);
+    wireImage(img, id);
     img.alt = name;
     chip.appendChild(img);
   } else {
@@ -3271,12 +3286,34 @@ void ServeConnection(dchat::sock::Handle handle) {
             const long size = std::ftell(file);
             std::fseek(file, 0, SEEK_SET);
             const std::string name = FileNameOf(full);
+            // 图片要能被 <img> 直接显示：用真实的 image/* 类型 + inline；
+            // 其它文件仍然当成下载（attachment + 原始文件名）。
+            std::string ext;
+            const std::size_t dot = name.rfind('.');
+            if (dot != std::string::npos) {
+                ext = name.substr(dot + 1);
+                for (char& ch : ext) {
+                    if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+                }
+            }
+            std::string imageType;
+            if (ext == "png") imageType = "image/png";
+            else if (ext == "jpg" || ext == "jpeg") imageType = "image/jpeg";
+            else if (ext == "gif") imageType = "image/gif";
+            else if (ext == "webp") imageType = "image/webp";
+            else if (ext == "bmp") imageType = "image/bmp";
+            else if (ext == "avif") imageType = "image/avif";
+            const bool inlineImage = !imageType.empty();
             const std::string head =
                 "HTTP/1.1 200 OK\r\n"
-                "Content-Type: application/octet-stream\r\n"
-                "Content-Disposition: attachment; filename=\"" + AsciiFileNameFallback(name) +
-                "\"; filename*=UTF-8''" + Rfc5987Encode(name) +
-                "\r\nContent-Length: " + std::to_string(size) + "\r\nConnection: close\r\n\r\n";
+                "Content-Type: " +
+                (inlineImage ? imageType : std::string("application/octet-stream")) + "\r\n" +
+                (inlineImage
+                     ? std::string("Content-Disposition: inline\r\n")
+                     : std::string("Content-Disposition: attachment; filename=\"") +
+                           AsciiFileNameFallback(name) + "\"; filename*=UTF-8''" +
+                           Rfc5987Encode(name) + "\r\n") +
+                "Content-Length: " + std::to_string(size) + "\r\nConnection: close\r\n\r\n";
             SendAll(handle, head.data(), head.size());
             char chunk[65536];
             std::size_t left = static_cast<std::size_t>(size);
